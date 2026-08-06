@@ -1,0 +1,253 @@
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+enum UserTier {
+  FREE
+  MEMBER
+  VIP
+}
+
+enum Role {
+  USER
+  ADMIN
+}
+
+enum AuthProvider {
+  LOCAL
+  GOOGLE
+}
+
+enum GarmentCategory {
+  UPPER
+  LOWER
+  FULL_BODY
+}
+
+enum ProductStatus {
+  DRAFT
+  ACTIVE
+  ARCHIVED
+}
+
+enum OrderStatus {
+  PENDING
+  PAID
+  CANCELLED
+  EXPIRED
+  FAILED
+}
+
+enum AiActionType {
+  TRY_ON
+  STYLIST
+  CHATBOT
+}
+
+model User {
+  id           String       @id @default(uuid()) @db.Uuid
+  email        String       @unique
+  passwordHash String?      @map("password_hash")
+  name         String?
+  avatarUrl    String?      @map("avatar_url")
+  provider     AuthProvider @default(LOCAL)
+  providerId   String?      @map("provider_id")
+  tier         UserTier     @default(FREE)
+  role         Role         @default(USER)
+  isVerified   Boolean      @default(false) @map("is_verified")
+  createdAt    DateTime     @default(now()) @map("created_at")
+  updatedAt    DateTime     @updatedAt @map("updated_at")
+
+  measurements             Measurement?
+  refreshTokens            RefreshToken[]
+  passwordResetTokens      PasswordResetToken[]
+  emailVerificationTokens EmailVerificationToken[]
+  tryOnResults             TryOnResult[]
+  stylistResults           StylistResult[]
+  orders                   Order[]
+  dailyUsages              DailyUsage[]
+
+  @@map("users")
+}
+
+model Measurement {
+  id        String   @id @default(uuid()) @db.Uuid
+  userId    String   @unique @map("user_id") @db.Uuid
+  height    Decimal? @db.Decimal(5, 1)
+  weight    Decimal? @db.Decimal(5, 1)
+  chest     Decimal? @db.Decimal(5, 1)
+  waist     Decimal? @db.Decimal(5, 1)
+  hip       Decimal? @db.Decimal(5, 1)
+  shoulder  Decimal? @db.Decimal(5, 1)
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("measurements")
+}
+
+model RefreshToken {
+  id        String   @id @default(uuid()) @db.Uuid
+  userId    String   @map("user_id") @db.Uuid
+  tokenHash String   @unique @map("token_hash")
+  expiresAt DateTime @map("expires_at")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("refresh_tokens")
+}
+
+model PasswordResetToken {
+  id        String   @id @default(uuid()) @db.Uuid
+  userId    String   @map("user_id") @db.Uuid
+  tokenHash String   @unique @map("token_hash")
+  expiresAt DateTime @map("expires_at")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("password_reset_tokens")
+}
+
+model EmailVerificationToken {
+  id        String   @id @default(uuid()) @db.Uuid
+  userId    String   @map("user_id") @db.Uuid
+  tokenHash String   @unique @map("token_hash")
+  expiresAt DateTime @map("expires_at")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("email_verification_tokens")
+}
+
+model Product {
+  id          String          @id @default(uuid()) @db.Uuid
+  name        String
+  description String?         @db.Text
+  category    GarmentCategory @default(UPPER)
+  color       String?
+  size        String?
+  price       Decimal         @db.Decimal(10, 2)
+  garmentUrl  String          @map("garment_url")
+  status      ProductStatus   @default(ACTIVE)
+  createdAt   DateTime        @default(now()) @map("created_at")
+  updatedAt   DateTime        @updatedAt @map("updated_at")
+
+  images       ProductImage[]
+  tryOnResults TryOnResult[]
+  stylistResults StylistResult[]
+
+  @@map("products")
+}
+
+model ProductImage {
+  id        String   @id @default(uuid()) @db.Uuid
+  productId String   @map("product_id") @db.Uuid
+  imageUrl  String   @map("image_url")
+  isMain    Boolean  @default(false) @map("is_main")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  product Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  @@map("product_images")
+}
+
+model TryOnResult {
+  id               String          @id @default(uuid()) @db.Uuid
+  userId           String          @map("user_id") @db.Uuid
+  productId        String?         @map("product_id") @db.Uuid
+  humanImageHash   String          @map("human_image_hash")
+  garmentImageHash String          @map("garment_image_hash")
+  category         GarmentCategory @default(UPPER)
+  resultUrl        String          @map("result_url")
+  providerMetadata Json?           @map("provider_metadata")
+  createdAt        DateTime        @default(now()) @map("created_at")
+
+  user    User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  product Product? @relation(fields: [productId], references: [id], onDelete: SetNull)
+
+  @@index([userId])
+  @@index([humanImageHash, garmentImageHash])
+  @@map("try_on_results")
+}
+
+model StylistResult {
+  id                 String   @id @default(uuid()) @db.Uuid
+  userId             String   @map("user_id") @db.Uuid
+  productId          String?  @map("product_id") @db.Uuid
+  humanImageUrl      String   @map("human_image_url")
+  garmentDescription String?  @map("garment_description")
+  occasion           String?
+  stylePreference    String?  @map("style_preference")
+  genderPreference   String?  @map("gender_preference")
+  budget             String?  @map("budget")
+  recommendedSize    String?  @map("recommended_size")
+  model              String?  @map("model")
+  analysisResult     Json     @map("analysis_result")
+  inputContext       Json?    @map("input_context")
+  rawProviderResponse Json?   @map("raw_provider_response")
+  createdAt          DateTime @default(now()) @map("created_at")
+
+  user    User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  product Product? @relation(fields: [productId], references: [id], onDelete: SetNull)
+
+  @@index([userId])
+  @@index([productId])
+  @@map("stylist_results")
+}
+
+model Order {
+  id         String      @id @default(uuid()) @db.Uuid
+  orderCode  Int         @unique @map("order_code")
+  userId     String      @map("user_id") @db.Uuid
+  targetTier UserTier    @map("target_tier")
+  amount     Decimal     @db.Decimal(10, 2)
+  status     OrderStatus @default(PENDING)
+  createdAt  DateTime    @default(now()) @map("created_at")
+  updatedAt  DateTime    @updatedAt @map("updated_at")
+
+  user     User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  payments Payment[]
+
+  @@index([userId])
+  @@map("orders")
+}
+
+model Payment {
+  id            String   @id @default(uuid()) @db.Uuid
+  orderId       String   @map("order_id") @db.Uuid
+  provider      String   @default("PAYOS")
+  transactionId String?  @map("transaction_id")
+  paymentData   Json?    @map("payment_data")
+  createdAt     DateTime @default(now()) @map("created_at")
+
+  order Order @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  @@map("payments")
+}
+
+model DailyUsage {
+  id        String       @id @default(uuid()) @db.Uuid
+  userId    String       @map("user_id") @db.Uuid
+  action    AiActionType
+  date      String       // Format: YYYY-MM-DD
+  count     Int          @default(1)
+  createdAt DateTime     @default(now()) @map("created_at")
+  updatedAt DateTime     @updatedAt @map("updated_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, action, date])
+  @@map("daily_usages")
+}

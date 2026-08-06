@@ -1,0 +1,102 @@
+import { Logger, ValidationPipe } from '@nestjs/common';
+import { NestFactory } from '@nestjs/core';
+import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
+import cookieParser from 'cookie-parser';
+import { AppModule } from './app.module';
+import { GlobalExceptionFilter } from './common/filters/http-exception.filter';
+
+async function bootstrap() {
+  const logger = new Logger('Bootstrap');
+  const app = await NestFactory.create(AppModule);
+
+  const apiPrefix = process.env.API_PREFIX ?? 'api';
+  const swaggerPath = process.env.SWAGGER_PATH ?? 'docs';
+  const swaggerEnabled = parseBoolean(process.env.SWAGGER_ENABLED, true);
+
+  app.use(cookieParser());
+  app.setGlobalPrefix(apiPrefix);
+
+  const corsCredentials = parseBoolean(process.env.CORS_CREDENTIALS, true);
+  app.enableCors({
+    origin: parseCorsOrigins(
+      process.env.CORS_ORIGINS ?? process.env.CORS_ORIGIN,
+      corsCredentials,
+    ),
+    methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization'],
+    credentials: corsCredentials,
+  });
+
+  app.useGlobalFilters(new GlobalExceptionFilter());
+  app.useGlobalPipes(
+    new ValidationPipe({
+      whitelist: true,
+      forbidNonWhitelisted: true,
+      transform: true,
+      transformOptions: { enableImplicitConversion: true },
+    }),
+  );
+
+  if (swaggerEnabled) {
+    const swaggerConfig = new DocumentBuilder()
+      .setTitle(process.env.SWAGGER_TITLE ?? 'AI Fashion Try-On API')
+      .setDescription(
+        process.env.SWAGGER_DESCRIPTION ??
+          `## Hệ thống thử đồ AI tích hợp 2 công nghệ:\n` +
+            `- **Virtual Try-On** (FASHN): Tạo ảnh thử đồ thực tế\n` +
+            `- **AI Stylist** (Gemini Vision): Phân tích Personal Color và tư vấn phong cách`,
+      )
+      .setVersion(process.env.SWAGGER_VERSION ?? '2.0.0')
+      .addBearerAuth(
+        {
+          type: 'http',
+          scheme: 'bearer',
+          bearerFormat: 'JWT',
+          description: `Nhap accessToken lay tu /${apiPrefix}/auth/login hoac /${apiPrefix}/auth/register`,
+        },
+        'access-token',
+      )
+      .addTag('Health', 'Kiểm tra trạng thái hệ thống (DB, Redis)')
+      .addTag('Auth', 'Xác thực và quản lý tài khoản')
+      .addTag('Users', 'Quản lý hồ sơ & số đo người dùng')
+      .addTag('Products', 'Quản lý danh mục sản phẩm thời trang')
+      .addTag('Virtual Try-On', 'Thử đồ ảo AI bằng fal.ai (FASHN v1.6)')
+      .addTag('AI Stylist', 'Tư vấn phong cách bằng Gemini Vision')
+      .addTag('Payments & Subscriptions', 'Thanh toán PayOS & Nâng cấp tài khoản')
+      .build();
+
+    const document = SwaggerModule.createDocument(app, swaggerConfig);
+    SwaggerModule.setup(`${apiPrefix}/${swaggerPath}`, app, document, {
+      swaggerOptions: { persistAuthorization: true },
+    });
+  }
+
+  const port = process.env.PORT ?? 3000;
+  await app.listen(port);
+
+  logger.log(`Server running at: http://localhost:${port}/${apiPrefix}`);
+  if (swaggerEnabled) {
+    logger.log(`Swagger UI:        http://localhost:${port}/${apiPrefix}/${swaggerPath}`);
+  }
+  logger.log(`Try-On endpoint:   POST http://localhost:${port}/${apiPrefix}/try-on`);
+  logger.log(`Stylist endpoint:  POST http://localhost:${port}/${apiPrefix}/stylist/analyze`);
+}
+
+function parseBoolean(value: string | undefined, fallback: boolean) {
+  if (value === undefined) return fallback;
+  return value.toLowerCase() === 'true';
+}
+
+function parseCorsOrigins(value: string | undefined, credentials: boolean) {
+  if (!value || value.trim() === '*') {
+    return credentials
+      ? ['http://localhost:3000', 'http://127.0.0.1:3000']
+      : '*';
+  }
+  return value
+    .split(',')
+    .map((origin) => origin.trim())
+    .filter(Boolean);
+}
+
+bootstrap();
