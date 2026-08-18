@@ -13,13 +13,22 @@
 | `@react-three/fiber` + `@react-three/drei` | Đã cài trong `package.json` |
 | `hooks/useMeasurements.ts` | Lấy số đo từ BE (`GET /users/me/measurements`) |
 
-### ❌ BE chưa có (qua Swagger)
-- **Không có** endpoint `/avatar/generate` hay tương đương
-- Blender headless pipeline **chưa được implement** phía BE
+### ✅ BE đã có (đã implement xong Phase 4 BE)
+| File | Nội dung |
+|---|---|
+| `POST /api/avatar/generate` | Blender + MPFB2 pipeline, sync ~2s, trả `{ id, glbUrl, isCached, measuredCm, timingS }` |
+| `GET /api/avatar/me` / `GET /api/avatar/:id` | Lấy avatar mới nhất / chi tiết theo ID |
+| `GET /api/avatar/:name/file` | Stream file GLB lưu local (fallback khi không có Cloudinary) |
+| `prisma` model `Avatar` | `@@unique([userId, cacheKey])` — cache theo hash số đo |
+| `src/modules/avatar/blender/generate_avatar.py` | Script Blender headless + `calibration.json` (đường cong chiều cao, đo chu vi) |
+| E2E | `test/e2e/avatar.e2e-spec.ts` (5 test) + E2E thật với Blender/Cloudinary |
+
+### ❌ Còn thiếu (thuộc scope FE)
+- FE chưa có `hooks/useAvatar.ts`, chưa load GLB vào `MannequinViewer` (xem Giai Đoạn 3 bên dưới)
 
 ### ⚠️ Nhận định quan trọng
-> **BE Blender pipeline là blocker lớn.** FE không thể hoàn thành FR-08-1, FR-08-3, FR-08-4 (GLB) cho đến khi BE sẵn sàng.
-> **Giải pháp ngay bây giờ:** Triển khai theo 2 luồng song song — Luồng A (FE-only, làm được ngay) và Luồng B (chờ BE).
+> **BE Blender pipeline đã sẵn sàng** (sync ~2s, không cần async/job queue như kế hoạch cũ giả định 30–60s).
+> **Giải pháp ngay bây giờ:** Triển khai theo 2 luồng song song — Luồng A (FE-only, làm được ngay) và Luồng B (FE hook GLB, BE đã xong).
 
 ---
 
@@ -136,11 +145,19 @@ User đã nhập số đo ở `/profile/measurements` → Mannequin tự động
 ---
 
 ## 🎯 Giai Đoạn 3 — GLB Avatar từ BE (Blender Pipeline)
-> **Thời gian:** 3–5 ngày | **Phụ thuộc BE:** ✅ **Cần BE sẵn sàng** | **Hiện tại: Chờ**
+> **Thời gian:** 3–5 ngày | **Phụ thuộc BE:** ✅ **Đã xong (BE)** | **Hiện tại: FE chờ BE output**
 
-### Điều kiện tiên quyết
-- BE phải expose endpoint: `POST /avatar/generate` nhận `{ height, weight, chest, waist, hip, shoulder }` → trả `{ glbUrl: string }`
-- BE cần có Blender + MPFB2 cài đặt và script `generate_avatar.py`
+### Điều kiện tiên quyết ✅ (đã hoàn thành bên BE)
+- ✅ Endpoint `POST /api/avatar/generate` nhận `{ gender, height, weight, chest, waist, hip, shoulder, draco?, morph? }` → trả `{ id, glbUrl, isCached, measuredCm, timingS }`
+- ✅ Blender + MPFB2 cài đặt và script `generate_avatar.py` (sync ~2s, không phải 30–60s)
+- ✅ Cache theo hash số đo (cùng số đo → trả cache ngay, không chạy lại Blender)
+- ✅ GLB upload Cloudinary (raw resource) nếu cấu hình; fallback lưu local `storage/avatars/` + `GET /api/avatar/:name/file`
+- ✅ Bảng `avatars` (Prisma model, `@@unique([userId, cacheKey])`) + migration đã áp
+- ✅ `GET /api/avatar/me` trả avatar mới nhất, `GET /api/avatar/:id` trả chi tiết
+- ✅ E2E test `test/e2e/avatar.e2e-spec.ts` (mock Blender) — 5 test pass
+- ✅ E2E thật: user register → `POST /api/avatar/generate` → 201, GLB 4.6MB (magic `glTF`) trên Cloudinary, lần 2 `AVATAR_CACHE_HIT`
+
+> Lưu ý cho FE: đoạn loading "30–60s Blender render" trong UX Flow bên dưới nên đổi thành ~2s (sync request), không cần polling. `measuredCm` là kết quả đo lại sau khi sinh để FE hiển thị sai lệch nếu muốn.
 
 ### FE sẽ làm khi BE ready
 
@@ -165,7 +182,7 @@ export function useGenerateAvatar() {
 ```
 User nhấn "Tạo Avatar từ số đo"
         ↓
-Loading spinner (30–60s Blender render)
+Loading spinner (~2s Blender render, sync)
         ↓
 GLB load vào Three.js viewer
         ↓

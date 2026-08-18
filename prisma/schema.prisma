@@ -69,6 +69,7 @@ model User {
   updatedAt    DateTime     @updatedAt @map("updated_at")
 
   measurements             Measurement?
+  avatars                  Avatar[]
   refreshTokens            RefreshToken[]
   passwordResetTokens      PasswordResetToken[]
   emailVerificationTokens EmailVerificationToken[]
@@ -94,6 +95,27 @@ model Measurement {
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@map("measurements")
+}
+
+model Avatar {
+  id        String   @id @default(uuid()) @db.Uuid
+  userId    String   @map("user_id") @db.Uuid
+  gender    String   @default("female") // "male" | "female"
+  height    Decimal? @db.Decimal(5, 1)
+  weight    Decimal? @db.Decimal(5, 1)
+  chest     Decimal? @db.Decimal(5, 1)
+  waist     Decimal? @db.Decimal(5, 1)
+  hip       Decimal? @db.Decimal(5, 1)
+  shoulder  Decimal? @db.Decimal(5, 1)
+  glbUrl    String   @map("glb_url")
+  cacheKey  String   @map("cache_key")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, cacheKey])
+  @@index([userId])
+  @@map("avatars")
 }
 
 model RefreshToken {

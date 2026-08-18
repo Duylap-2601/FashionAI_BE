@@ -43,6 +43,45 @@ export class StorageService {
     }
   }
 
+  get isCloudinaryReady(): boolean {
+    return this.isCloudinaryConfigured;
+  }
+
+  /**
+   * Upload một file nhị phân (GLB, PDF, ...) dưới dạng raw resource. Trả về null
+   * khi chưa cấu hình Cloudinary để caller tự xử lý fallback lưu local.
+   */
+  async uploadRaw(
+    fileBuffer: Buffer,
+    folder = 'fashionai',
+    fileName?: string,
+  ): Promise<string | null> {
+    if (!this.isCloudinaryConfigured) {
+      this.logger.warn(
+        'Cloudinary chưa được cấu hình, bỏ qua upload raw. Caller nên dùng local storage.',
+      );
+      return null;
+    }
+
+    return new Promise((resolve, reject) => {
+      const uploadStream = cloudinary.uploader.upload_stream(
+        {
+          folder,
+          public_id: fileName ? fileName.replace(/\.[^/.]+$/, '') : undefined,
+          resource_type: 'raw',
+        },
+        (error: any, result: any) => {
+          if (error) {
+            this.logger.error(`Cloudinary raw upload failed: ${error.message}`);
+            return reject(error);
+          }
+          resolve(result?.secure_url || result?.url || null);
+        },
+      );
+      uploadStream.end(fileBuffer);
+    });
+  }
+
   async uploadImage(fileBuffer: Buffer, folder = 'fashionai', fileName?: string): Promise<string> {
     if (this.isCloudinaryConfigured) {
       return new Promise((resolve, reject) => {
