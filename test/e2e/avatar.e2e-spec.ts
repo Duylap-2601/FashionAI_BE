@@ -262,7 +262,7 @@ describe('Avatar 3D generate (e2e)', () => {
   it('validation: bỏ sót số đo → 400', async () => {
     await bootstrap('user-a');
 
-    const { chest, ...missing } = validBody;
+    const { chest: _chest, ...missing } = validBody;
     await request(app.getHttpServer())
       .post('/api/avatar/generate')
       .send(missing)
