@@ -7,16 +7,25 @@ import {
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../../database/prisma.service';
-import { UserTier, OrderStatus } from '@prisma/client';
+import { UserTier, OrderStatus, Order, Prisma } from '@prisma/client';
 import PayOS from '@payos/node';
-import axios from 'axios';
 import * as crypto from 'crypto';
+import { createWithUniqueOrderCode } from '../../common/utils/order-code.util';
+import { CheckoutDto, PaymentProvider } from './dto/checkout.dto';
 
 const TIER_PRICES: Record<UserTier, number> = {
   FREE: 0,
   MEMBER: 99000,
   VIP: 299000,
 };
+
+/** Link thanh toán coi như hết hiệu lực sau 24h; tạo lại link mới khi user quay lại. */
+const CHECKOUT_TTL_MS = 24 * 60 * 60 * 1000;
+
+interface CheckoutLinkResult {
+  checkoutUrl: string;
+  extra?: Record<string, unknown>;
+}
 
 @Injectable()
 export class PaymentsService {
@@ -39,137 +48,415 @@ export class PaymentsService {
     }
   }
 
-  async createCheckoutLink(userId: string, targetTier: UserTier, provider: 'PAYOS' | 'MOMO' = 'MOMO') {
+  /**
+   * Tạo liên kết thanh toán cho một trong hai loại đơn:
+   * - Nâng cấp gói: truyền `targetTier`, service tự tạo Order mới.
+   * - Đơn sản phẩm: truyền `orderId` của Order đã tạo qua `POST /orders`.
+   */
+  async createCheckoutLink(userId: string, dto: CheckoutDto) {
+    const provider = dto.provider ?? 'SEPAY';
+    const order = dto.orderId
+      ? await this.resolveProductOrder(userId, dto.orderId)
+      : await this.createSubscriptionOrder(userId, dto.targetTier!);
+
+    const { checkoutUrl, extra } = await this.requestProviderCheckout(
+      order,
+      provider,
+    );
+
+    await this.prisma.order.update({
+      where: { id: order.id },
+      data: {
+        paymentProvider: provider,
+        checkoutUrl,
+        checkoutExpiresAt: new Date(Date.now() + CHECKOUT_TTL_MS),
+      },
+    });
+
+    return {
+      orderId: order.id,
+      orderCode: order.orderCode,
+      amount: Number(order.amount),
+      targetTier: order.targetTier,
+      kind: order.targetTier ? 'SUBSCRIPTION' : 'PRODUCT',
+      provider,
+      checkoutUrl,
+      ...extra,
+    };
+  }
+
+  /**
+   * Đơn sản phẩm đã tồn tại: chỉ chấp nhận đơn PENDING của chính user, và tái sử
+   * dụng link cũ nếu còn hiệu lực để không tạo rác ở phía cổng thanh toán.
+   */
+  private async resolveProductOrder(userId: string, orderId: string) {
+    const order = await this.prisma.order.findFirst({
+      where: { id: orderId, userId },
+      include: { items: true },
+    });
+
+    if (!order) {
+      throw new NotFoundException(`Không tìm thấy đơn hàng có ID ${orderId}`);
+    }
+
+    if (order.status === OrderStatus.PAID) {
+      throw new BadRequestException('Đơn hàng này đã được thanh toán.');
+    }
+
+    if (order.status !== OrderStatus.PENDING) {
+      throw new BadRequestException(
+        `Không thể thanh toán đơn hàng ở trạng thái ${order.status}.`,
+      );
+    }
+
+    if (order.items.length === 0 && !order.targetTier) {
+      throw new BadRequestException('Đơn hàng không có sản phẩm nào.');
+    }
+
+    if (Number(order.amount) <= 0) {
+      throw new BadRequestException('Giá trị đơn hàng không hợp lệ.');
+    }
+
+    return order;
+  }
+
+  private async createSubscriptionOrder(userId: string, targetTier: UserTier) {
     if (targetTier === UserTier.FREE) {
       throw new BadRequestException('Không thể tạo thanh toán cho gói FREE.');
     }
 
-    if (provider === 'MOMO') {
-      return this.createMoMoCheckoutLink(userId, targetTier);
+    const user = await this.prisma.user.findUnique({ where: { id: userId } });
+    if (!user) {
+      throw new NotFoundException('Không tìm thấy người dùng');
     }
 
-    return this.createPayOSCheckoutLink(userId, targetTier);
+    if (user.tier === targetTier) {
+      throw new BadRequestException(`Bạn đang ở gói ${targetTier} rồi.`);
+    }
+
+    return createWithUniqueOrderCode((orderCode) =>
+      this.prisma.order.create({
+        data: {
+          orderCode,
+          userId,
+          targetTier,
+          amount: TIER_PRICES[targetTier],
+          status: OrderStatus.PENDING,
+        },
+      }),
+    );
   }
 
-  private async createPayOSCheckoutLink(userId: string, targetTier: UserTier) {
-    const amount = TIER_PRICES[targetTier];
-    const orderCode = Number(String(Date.now()).slice(-6) + Math.floor(Math.random() * 100));
+  private requestProviderCheckout(
+    order: Order,
+    provider: PaymentProvider,
+  ): Promise<CheckoutLinkResult> {
+    switch (provider) {
+      case 'PAYOS':
+        return this.createPayOSCheckoutLink(order);
+      case 'SEPAY':
+      default:
+        return this.createSePayCheckoutLink(order);
+    }
+  }
 
-    const order = await this.prisma.order.create({
-      data: {
-        orderCode,
-        userId,
-        targetTier,
-        amount,
-        status: OrderStatus.PENDING,
+  private buildOrderDescription(order: Order) {
+    return order.targetTier
+      ? `Nang cap tai khoan FashionAI goi ${order.targetTier}`
+      : `Thanh toan don hang FashionAI #${order.orderCode}`;
+  }
+
+  private async createSePayCheckoutLink(
+    order: Order,
+  ): Promise<CheckoutLinkResult> {
+    const amount = Number(order.amount);
+    const orderCode = order.orderCode;
+    const invoiceNumber = `FAI${orderCode}`;
+
+    const merchant = this.configService.get<string>('SEPAY_MERCHANT_ID');
+    const secretKey = this.configService.get<string>('SEPAY_SECRET_KEY');
+    const checkoutBaseUrl = this.configService.get<string>(
+      'SEPAY_CHECKOUT_URL',
+      'https://pay-sandbox.sepay.vn/v1/checkout/init',
+    );
+    const successUrl = this.configService.get<string>(
+      'SEPAY_SUCCESS_URL',
+      'http://localhost:3000/orders/success',
+    );
+    const errorUrl = this.configService.get<string>(
+      'SEPAY_ERROR_URL',
+      'http://localhost:3000/checkout/error',
+    );
+    const cancelUrl = this.configService.get<string>(
+      'SEPAY_CANCEL_URL',
+      'http://localhost:3000/checkout',
+    );
+
+    if (!merchant || !secretKey) {
+      throw new BadRequestException(
+        'SePay credentials are missing. Please configure SEPAY_MERCHANT_ID and SEPAY_SECRET_KEY.',
+      );
+    }
+
+    const fields: Record<string, string> = {
+      order_amount: String(amount),
+      merchant,
+      currency: 'VND',
+      operation: 'PURCHASE',
+      order_description: this.buildOrderDescription(order),
+      order_invoice_number: invoiceNumber,
+      customer_id: order.userId,
+      payment_method: 'BANK_TRANSFER',
+      success_url: successUrl,
+      error_url: errorUrl,
+      cancel_url: cancelUrl,
+    };
+    const signature = this.signSePayFields(fields, secretKey);
+    const signedFields = { ...fields, signature };
+    const checkoutUrl = `${checkoutBaseUrl}?${new URLSearchParams(signedFields).toString()}`;
+
+    return {
+      checkoutUrl,
+      extra: {
+        invoiceNumber,
+        formAction: checkoutBaseUrl,
+        formMethod: 'POST',
+        formFields: signedFields,
       },
-    });
+    };
+  }
 
+  private async createPayOSCheckoutLink(
+    order: Order,
+  ): Promise<CheckoutLinkResult> {
     const returnUrl = this.configService.get<string>('PAYOS_RETURN_URL', 'http://localhost:3000/orders/success');
     const cancelUrl = this.configService.get<string>('PAYOS_CANCEL_URL', 'http://localhost:3000/checkout');
 
-    let checkoutUrl = '';
-
-    if (this.payos) {
-      try {
-        const paymentLinkRes = await this.payos.createPaymentLink({
-          orderCode,
-          amount,
-          description: `Nang cap ${targetTier}`,
-          returnUrl,
-          cancelUrl,
-        });
-        checkoutUrl = paymentLinkRes.checkoutUrl;
-      } catch (err: any) {
-        this.logger.error(`PayOS create payment link failed: ${err.message}`);
-        throw new BadRequestException(`Không thể tạo liên kết thanh toán PayOS: ${err.message}`);
-      }
-    } else {
-      checkoutUrl = `http://localhost:3000/api/payments/mock-success?orderCode=${orderCode}`;
+    if (!this.payos) {
+      return { checkoutUrl: this.buildMockCheckoutUrl(order.orderCode) };
     }
-
-    return {
-      orderId: order.id,
-      orderCode,
-      amount,
-      targetTier,
-      provider: 'PAYOS',
-      checkoutUrl,
-    };
-  }
-
-  private async createMoMoCheckoutLink(userId: string, targetTier: UserTier) {
-    const amount = TIER_PRICES[targetTier];
-    const orderCode = Number(String(Date.now()).slice(-6) + Math.floor(Math.random() * 100));
-    const orderId = `MOMO_${orderCode}_${Date.now()}`;
-    const requestId = orderId;
-
-    const order = await this.prisma.order.create({
-      data: {
-        orderCode,
-        userId,
-        targetTier,
-        amount,
-        status: OrderStatus.PENDING,
-      },
-    });
-
-    const partnerCode = this.configService.get<string>('MOMO_PARTNER_CODE', 'MOMO');
-    const accessKey = this.configService.get<string>('MOMO_ACCESS_KEY', 'F8BBA842ECF81');
-    const secretKey = this.configService.get<string>('MOMO_SECRET_KEY', 'K951B6FA292D6C6F2B57B2F6A1715424D');
-    const endpoint = this.configService.get<string>('MOMO_ENDPOINT', 'https://test-payment.momo.vn/v2/gateway/api/create');
-    const redirectUrl = this.configService.get<string>('MOMO_REDIRECT_URL', 'http://localhost:3000/orders/success');
-    const ipnUrl = this.configService.get<string>('MOMO_IPN_URL', 'http://localhost:3000/api/payments/momo-ipn');
-    const orderInfo = `Nâng cấp tài khoản FashionAI gói ${targetTier}`;
-    const requestType = 'captureWallet';
-    const extraData = Buffer.from(JSON.stringify({ userId, orderCode })).toString('base64');
-
-    // Create raw signature string for MoMo v2 API
-    const rawSignature = `accessKey=${accessKey}&amount=${amount}&extraData=${extraData}&ipnUrl=${ipnUrl}&orderId=${orderId}&orderInfo=${orderInfo}&partnerCode=${partnerCode}&redirectUrl=${redirectUrl}&requestId=${requestId}&requestType=${requestType}`;
-    const signature = crypto.createHmac('sha256', secretKey).update(rawSignature).digest('hex');
-
-    const requestBody = {
-      partnerCode,
-      partnerName: 'FashionAI',
-      storeId: 'FashionAIStore',
-      requestId,
-      amount,
-      orderId,
-      orderInfo,
-      redirectUrl,
-      ipnUrl,
-      lang: 'vi',
-      requestType,
-      autoCapture: true,
-      extraData,
-      signature,
-    };
-
-    let checkoutUrl = '';
 
     try {
-      this.logger.log(`Calling MoMo API: ${endpoint}`);
-      const res = await axios.post(endpoint, requestBody, { timeout: 15000 });
-      if (res.data?.payUrl) {
-        checkoutUrl = res.data.payUrl;
-      } else {
-        this.logger.warn(`MoMo returned message: ${res.data?.message}. Fallback to mock link.`);
-        checkoutUrl = `http://localhost:3000/api/payments/mock-success?orderCode=${orderCode}`;
-      }
+      const paymentLinkRes = await this.payos.createPaymentLink({
+        orderCode: order.orderCode,
+        amount: Number(order.amount),
+        // PayOS giới hạn description ở 25 ký tự.
+        description: this.buildOrderDescription(order).slice(0, 25),
+        returnUrl,
+        cancelUrl,
+      });
+      return { checkoutUrl: paymentLinkRes.checkoutUrl };
     } catch (err: any) {
-      this.logger.warn(`MoMo Sandbox connection failed (${err.message}). Fallback to mock link.`);
-      checkoutUrl = `http://localhost:3000/api/payments/mock-success?orderCode=${orderCode}`;
+      this.logger.error(`PayOS create payment link failed: ${err.message}`);
+      throw new BadRequestException(`Không thể tạo liên kết thanh toán PayOS: ${err.message}`);
+    }
+  }
+
+  private buildMockCheckoutUrl(orderCode: number) {
+    const baseUrl = this.configService.get<string>(
+      'PAYMENT_MOCK_BASE_URL',
+      'http://localhost:3000/api',
+    );
+    return `${baseUrl}/payments/mock-success?orderCode=${orderCode}`;
+  }
+
+  async handleSePayIPN(
+    ipnData: any,
+    headers: Record<string, any>,
+    rawBody?: Buffer,
+  ) {
+    if (ipnData?.id !== undefined && ipnData?.transferAmount !== undefined) {
+      return this.handleSePayBankWebhook(ipnData, headers, rawBody);
     }
 
-    return {
-      orderId: order.id,
+    this.verifySePaySecret(headers);
+
+    const notificationType = ipnData?.notification_type;
+    const invoiceNumber = ipnData?.order?.order_invoice_number;
+    const transactionId = ipnData?.transaction?.transaction_id ?? ipnData?.transaction?.id;
+    const amount = Number(
+      ipnData?.transaction?.transaction_amount ?? ipnData?.order?.order_amount,
+    );
+
+    if (!invoiceNumber) {
+      throw new BadRequestException('Missing SePay order_invoice_number');
+    }
+
+    const orderCode = this.parseSePayOrderCode(invoiceNumber);
+    if (!orderCode) {
+      throw new BadRequestException(`Invalid SePay invoice number: ${invoiceNumber}`);
+    }
+
+    if (notificationType === 'TRANSACTION_VOID') {
+      await this.markOrderCancelled(orderCode, 'SEPAY', ipnData);
+      return { success: true, message: 'SePay transaction void processed' };
+    }
+
+    if (notificationType !== 'ORDER_PAID') {
+      return { success: true, message: 'SePay notification ignored' };
+    }
+
+    await this.processOrderSuccess(
       orderCode,
+      'SEPAY',
+      { ...ipnData, reference: transactionId },
       amount,
-      targetTier,
-      provider: 'MOMO',
-      checkoutUrl,
-      momoOrderId: orderId,
-    };
+    );
+    return { success: true };
+  }
+
+  private async handleSePayBankWebhook(
+    payload: any,
+    headers: Record<string, any>,
+    rawBody?: Buffer,
+  ) {
+    this.verifySePayHmac(headers, rawBody);
+
+    const transactionId = String(payload.id ?? '');
+    if (!transactionId) {
+      throw new BadRequestException('Missing SePay webhook id');
+    }
+
+    if (payload.transferType !== 'in') {
+      return { success: true };
+    }
+
+    const orderCode = this.parseSePayPaymentCode(payload.code, payload.content);
+    if (!orderCode) {
+      throw new BadRequestException('Missing or invalid SePay payment code');
+    }
+
+    await this.processOrderSuccess(
+      orderCode,
+      'SEPAY_WEBHOOK',
+      { ...payload, reference: transactionId },
+      Number(payload.transferAmount),
+    );
+    return { success: true };
+  }
+
+  private signSePayFields(fields: Record<string, string>, secretKey: string) {
+    const allowedFields = [
+      'order_amount',
+      'merchant',
+      'currency',
+      'operation',
+      'order_description',
+      'order_invoice_number',
+      'customer_id',
+      'payment_method',
+      'success_url',
+      'error_url',
+      'cancel_url',
+    ];
+
+    const signedString = allowedFields
+      .filter((field) => fields[field] !== undefined)
+      .map((field) => `${field}=${fields[field]}`)
+      .join(',');
+
+    return crypto
+      .createHmac('sha256', secretKey)
+      .update(signedString)
+      .digest('base64');
+  }
+
+  private verifySePaySecret(headers: Record<string, any>) {
+    const expectedSecret = this.configService.get<string>('SEPAY_IPN_SECRET');
+    const providedSecret = headers['x-secret-key'];
+
+    if (!expectedSecret) {
+      if (this.configService.get<string>('NODE_ENV') === 'production') {
+        throw new BadRequestException('SEPAY_IPN_SECRET is required in production');
+      }
+      return;
+    }
+
+    if (typeof providedSecret !== 'string' || providedSecret !== expectedSecret) {
+      throw new BadRequestException('SePay IPN secret is invalid');
+    }
+  }
+
+  private verifySePayHmac(headers: Record<string, any>, rawBody?: Buffer) {
+    const secret = this.configService.get<string>('SEPAY_WEBHOOK_SECRET');
+    const nodeEnv = this.configService.get<string>('NODE_ENV');
+    const shouldVerify =
+      nodeEnv === 'production' ||
+      this.configService.get<string>('SEPAY_WEBHOOK_VERIFY_HMAC') === 'true';
+
+    if (!shouldVerify && !secret) return;
+
+    const signature = headers['x-sepay-signature'];
+    const timestamp = headers['x-sepay-timestamp'];
+    if (!secret || typeof signature !== 'string' || typeof timestamp !== 'string' || !rawBody) {
+      throw new BadRequestException('Missing SePay HMAC signature, timestamp, raw body, or secret');
+    }
+
+    const timestampNumber = Number(timestamp);
+    if (!Number.isFinite(timestampNumber)) {
+      throw new BadRequestException('Invalid SePay HMAC timestamp');
+    }
+
+    const toleranceSeconds = Number(
+      this.configService.get<string>('SEPAY_WEBHOOK_TIMESTAMP_TOLERANCE_SECONDS') ?? '300',
+    );
+    const nowSeconds = Math.floor(Date.now() / 1000);
+    if (Math.abs(nowSeconds - timestampNumber) > toleranceSeconds) {
+      throw new BadRequestException('SePay webhook timestamp expired');
+    }
+
+    const expectedSignature =
+      'sha256=' +
+      crypto
+        .createHmac('sha256', secret)
+        .update(`${timestamp}.${rawBody.toString('utf8')}`)
+        .digest('hex');
+
+    const expected = Buffer.from(expectedSignature);
+    const provided = Buffer.from(signature);
+    if (provided.length !== expected.length || !crypto.timingSafeEqual(provided, expected)) {
+      throw new BadRequestException('SePay HMAC signature is invalid');
+    }
+  }
+
+  private parseSePayOrderCode(invoiceNumber: string) {
+    const match = invoiceNumber.match(/^FAI(\d+)$/);
+    return match ? Number(match[1]) : null;
+  }
+
+  private parseSePayPaymentCode(code?: string | null, content?: string | null) {
+    const codeMatch = typeof code === 'string' ? code.match(/^FAI(\d+)$/) : null;
+    if (codeMatch) return Number(codeMatch[1]);
+
+    const contentMatch =
+      typeof content === 'string' ? content.match(/\bFAI(\d+)\b/) : null;
+    return contentMatch ? Number(contentMatch[1]) : null;
+  }
+
+  private async markOrderCancelled(orderCode: number, provider: string, paymentData: any) {
+    const order = await this.prisma.order.findUnique({ where: { orderCode } });
+    if (!order) {
+      throw new NotFoundException(`Không tìm thấy đơn hàng mã ${orderCode}`);
+    }
+
+    if (order.status !== OrderStatus.PENDING) {
+      return { message: 'Order is not pending' };
+    }
+
+    await this.prisma.$transaction([
+      this.prisma.order.update({
+        where: { id: order.id },
+        data: { status: OrderStatus.CANCELLED },
+      }),
+      this.prisma.payment.create({
+        data: {
+          orderId: order.id,
+          provider,
+          transactionId: String(paymentData?.transaction?.transaction_id ?? Date.now()),
+          paymentData,
+        },
+      }),
+    ]);
   }
 
   async handleWebhook(webhookData: any) {
@@ -190,43 +477,27 @@ export class PaymentsService {
       throw new BadRequestException('Thiếu thông tin orderCode trong webhook');
     }
 
-    return this.processOrderSuccess(Number(orderCode), 'PAYOS', data);
+    const paidAmount = data?.amount ?? data?.data?.amount;
+
+    return this.processOrderSuccess(
+      Number(orderCode),
+      'PAYOS',
+      data,
+      paidAmount !== undefined ? Number(paidAmount) : undefined,
+    );
   }
 
-  async handleMoMoIPN(ipnData: any) {
-    this.logger.log(`MoMo IPN Webhook received: ${JSON.stringify(ipnData)}`);
-
-    const { resultCode, orderId, extraData, transId } = ipnData;
-
-    let orderCodeNum: number | null = null;
-
-    if (extraData) {
-      try {
-        const decoded = JSON.parse(Buffer.from(extraData, 'base64').toString('utf-8'));
-        orderCodeNum = decoded.orderCode;
-      } catch (e) {}
-    }
-
-    if (!orderCodeNum && orderId) {
-      const parts = orderId.split('_');
-      if (parts.length >= 2) {
-        orderCodeNum = Number(parts[1]);
-      }
-    }
-
-    if (!orderCodeNum) {
-      throw new BadRequestException('Không thể xác định orderCode từ MoMo IPN');
-    }
-
-    if (Number(resultCode) !== 0) {
-      this.logger.warn(`MoMo IPN giao dịch thất bại/hủy (resultCode: ${resultCode})`);
-      return { message: 'MoMo transaction not successful', resultCode };
-    }
-
-    return this.processOrderSuccess(orderCodeNum, 'MOMO', { ...ipnData, transId });
-  }
-
-  private async processOrderSuccess(orderCode: number, provider: string, paymentData: any) {
+  /**
+   * @param paidAmount Số tiền cổng thanh toán báo đã nhận. Truyền vào để chặn
+   * trường hợp người dùng can thiệp số tiền ở phía gateway; bỏ qua khi provider
+   * không cung cấp (ví dụ mock sandbox).
+   */
+  private async processOrderSuccess(
+    orderCode: number,
+    provider: string,
+    paymentData: any,
+    paidAmount?: number,
+  ) {
     const order = await this.prisma.order.findUnique({
       where: { orderCode },
     });
@@ -235,15 +506,45 @@ export class PaymentsService {
       throw new NotFoundException(`Không tìm thấy đơn hàng mã ${orderCode}`);
     }
 
+    if (
+      paidAmount !== undefined &&
+      (!Number.isFinite(paidAmount) || paidAmount !== Number(order.amount))
+    ) {
+      this.logger.warn(
+        `Số tiền không khớp cho đơn #${orderCode} | provider=${provider} | expected=${Number(order.amount)} | received=${paidAmount}`,
+      );
+      throw new BadRequestException(
+        'Số tiền thanh toán không khớp với giá trị đơn hàng.',
+      );
+    }
+
     if (order.status === OrderStatus.PAID) {
       this.logger.log(`Đơn hàng #${orderCode} đã được xử lý trước đó.`);
       return { message: 'Order already processed' };
     }
 
-    await this.prisma.$transaction([
+    // Đơn đã hủy/hết hạn không được âm thầm chuyển sang PAID: tiền đã vào thì cần
+    // người vận hành xử lý hoàn, không phải giao hàng.
+    if (order.status !== OrderStatus.PENDING) {
+      this.logger.warn(
+        `Nhận thanh toán cho đơn #${orderCode} ở trạng thái ${order.status} | provider=${provider}`,
+      );
+      throw new BadRequestException(
+        `Đơn hàng #${orderCode} đang ở trạng thái ${order.status}, không thể ghi nhận thanh toán.`,
+      );
+    }
+
+    const isSubscription = Boolean(order.targetTier);
+
+    const transactionSteps: Prisma.PrismaPromise<any>[] = [
       this.prisma.order.update({
         where: { id: order.id },
-        data: { status: OrderStatus.PAID },
+        data: {
+          status: OrderStatus.PAID,
+          // Link đã dùng xong, không cho tái sử dụng.
+          checkoutUrl: null,
+          checkoutExpiresAt: null,
+        },
       }),
       this.prisma.payment.create({
         data: {
@@ -253,20 +554,46 @@ export class PaymentsService {
           paymentData,
         },
       }),
-      this.prisma.user.update({
-        where: { id: order.userId },
-        data: { tier: order.targetTier },
-      }),
-    ]);
+    ];
 
-    this.logger.log(`Đã nâng cấp thành công User ${order.userId} lên gói ${order.targetTier} qua ${provider}`);
-    return { message: 'Payment processed and user tier updated successfully' };
+    if (order.targetTier) {
+      transactionSteps.push(
+        this.prisma.user.update({
+          where: { id: order.userId },
+          data: { tier: order.targetTier },
+        }),
+      );
+    }
+
+    try {
+      await this.prisma.$transaction(transactionSteps);
+    } catch (err: any) {
+      if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002') {
+        this.logger.log(
+          `Duplicate payment ignored | provider=${provider} | transaction=${paymentData?.reference ?? paymentData?.transId}`,
+        );
+        return { message: 'Payment already processed' };
+      }
+      throw err;
+    }
+
+    if (isSubscription) {
+      this.logger.log(
+        `Đã nâng cấp thành công User ${order.userId} lên gói ${order.targetTier} qua ${provider}`,
+      );
+      return { message: 'Payment processed and user tier updated successfully' };
+    }
+
+    this.logger.log(
+      `Đã ghi nhận thanh toán đơn hàng #${orderCode} của User ${order.userId} qua ${provider}`,
+    );
+    return { message: 'Payment processed and order marked as paid' };
   }
 
   async getUserOrders(userId: string) {
     return this.prisma.order.findMany({
       where: { userId },
-      include: { payments: true },
+      include: { payments: true, items: { include: { product: true } } },
       orderBy: { createdAt: 'desc' },
     });
   }

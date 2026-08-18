@@ -3,7 +3,6 @@ import {
   BadRequestException,
   Injectable,
   UnauthorizedException,
-  NotFoundException,
 } from '@nestjs/common';
 import { User, AuthProvider } from '@prisma/client';
 import * as bcrypt from 'bcrypt';

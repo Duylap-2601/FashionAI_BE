@@ -5,7 +5,6 @@ import {
   Delete,
   HttpCode,
   HttpStatus,
-  Logger,
   UseInterceptors,
   UploadedFiles,
   BadRequestException,
@@ -14,11 +13,10 @@ import {
   Req,
   Param,
   Query,
-  Res,
 } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiResponse, ApiConsumes, ApiBody, ApiBearerAuth } from '@nestjs/swagger';
 import { FileFieldsInterceptor } from '@nestjs/platform-express';
-import { Request, Response } from 'express';
+import { Request } from 'express';
 import { GarmentCategory } from '@prisma/client';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { AuthenticatedUser } from '../auth/interfaces/authenticated-user.interface';
@@ -33,8 +31,6 @@ import { TryOnRequestDto } from './dto/try-on-request.dto';
 @UseGuards(JwtAuthGuard)
 @ApiBearerAuth('access-token')
 export class TryOnController {
-  private readonly logger = new Logger(TryOnController.name);
-
   constructor(private readonly tryOnService: TryOnService) {}
 
   @Post()
@@ -140,6 +136,38 @@ export class TryOnController {
       success: true,
       code: 'TRY_ON_ITEM_SUCCESS',
       message: 'Lấy chi tiết lịch sử thành công',
+      timestamp: new Date().toISOString(),
+      path: req.originalUrl ?? req.url,
+      data,
+    };
+  }
+
+  @Get('history/:id/download')
+  @ApiOperation({
+    summary: 'Tải ảnh kết quả thử đồ',
+    description: 'Trả về file ảnh dạng attachment thay vì JSON envelope.',
+  })
+  @ApiResponse({ status: 200, description: 'File ảnh kết quả thử đồ.' })
+  @ApiResponse({ status: 404, description: 'Không tìm thấy kết quả thử đồ.' })
+  async downloadResult(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id') id: string,
+  ) {
+    return this.tryOnService.downloadResult(user.id, id);
+  }
+
+  // Phải khai báo trước 'history/:id' để 'all' không bị nhận thành id.
+  @Delete('history/all')
+  @ApiOperation({ summary: 'Xóa toàn bộ lịch sử thử đồ của người dùng' })
+  async deleteAllHistory(
+    @Req() req: Request,
+    @CurrentUser() user: AuthenticatedUser,
+  ) {
+    const data = await this.tryOnService.deleteAllHistory(user.id);
+    return {
+      success: true,
+      code: 'TRY_ON_DELETE_ALL_SUCCESS',
+      message: `Đã xóa ${data.deleted} kết quả thử đồ`,
       timestamp: new Date().toISOString(),
       path: req.originalUrl ?? req.url,
       data,

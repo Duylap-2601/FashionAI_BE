@@ -108,8 +108,10 @@ export class StylistService {
       ]);
 
       const prompt = this.buildPrompt(dto, product, measurements);
-      const rawResponse = await this.callGeminiWithRetry(humanImage, prompt);
-      const parsedResult = this.validateResult(this.parseRawResponse(rawResponse));
+      const { rawResponse, parsedResult } = await this.generateAnalysis(
+        humanImage,
+        prompt,
+      );
 
       const record = await this.prisma.stylistResult.create({
         data: {
@@ -316,6 +318,63 @@ export class StylistService {
       default:
         return category;
     }
+  }
+
+  /**
+   * Gọi Gemini rồi parse kết quả. Nếu model trả về JSON sai/thiếu field, gửi lại
+   * một lượt "repair" kèm chính output lỗi và thông báo lỗi cụ thể — gọi lại y
+   * nguyên prompt cũ thường cho ra đúng lỗi đó lần nữa.
+   */
+  private async generateAnalysis(
+    humanImage: Express.Multer.File,
+    prompt: string,
+  ): Promise<{ rawResponse: string; parsedResult: ParsedStylistResult }> {
+    const rawResponse = await this.callGeminiWithRetry(humanImage, prompt);
+
+    try {
+      return {
+        rawResponse,
+        parsedResult: this.validateResult(this.parseRawResponse(rawResponse)),
+      };
+    } catch (parseError) {
+      const reason = this.getErrorMessage(parseError);
+      this.logger.warn(`Gemini trả về JSON không hợp lệ (${reason}). Thử repair prompt.`);
+
+      const repaired = await this.callGeminiWithRetry(
+        humanImage,
+        this.buildRepairPrompt(prompt, rawResponse, reason),
+        1,
+      );
+
+      // Nếu lượt repair vẫn sai, để lỗi nổi lên cho handleError xử lý (502).
+      return {
+        rawResponse: repaired,
+        parsedResult: this.validateResult(this.parseRawResponse(repaired)),
+      };
+    }
+  }
+
+  private buildRepairPrompt(
+    originalPrompt: string,
+    invalidOutput: string,
+    reason: string,
+  ): string {
+    return [
+      originalPrompt,
+      '',
+      '--- SỬA LỖI ĐỊNH DẠNG ---',
+      'Câu trả lời trước của bạn không dùng được. Lý do:',
+      reason,
+      '',
+      'Output trước đó (đã bị từ chối):',
+      invalidOutput.slice(0, 2000),
+      '',
+      'Hãy trả lời lại. Bắt buộc:',
+      '- CHỈ trả về một object JSON hợp lệ, không kèm markdown, không kèm giải thích.',
+      '- Ký tự đầu tiên phải là "{" và ký tự cuối phải là "}".',
+      '- Đầy đủ tất cả field bắt buộc với đúng kiểu dữ liệu như đã mô tả ở trên.',
+      '- colorSuggestions và outfitCombinations phải là mảng các chuỗi.',
+    ].join('\n');
   }
 
   private async callGeminiWithRetry(

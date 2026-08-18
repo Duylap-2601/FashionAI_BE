@@ -18,7 +18,10 @@ export class QuotaService {
     const redisKey = `quota:${action.toLowerCase()}:${userId}:${today}`;
 
     // Increment in Redis
-    const used = await this.redisService.incr(redisKey, 86400);
+    const used = await this.redisService.incr(
+      redisKey,
+      this.secondsUntilNextMidnight(),
+    );
 
     // Sync to DB for persistence
     this.prisma.dailyUsage.upsert({
@@ -41,5 +44,13 @@ export class QuotaService {
     });
 
     return used;
+  }
+
+  private secondsUntilNextMidnight() {
+    const now = new Date();
+    const nextMidnight = new Date(now);
+    nextMidnight.setDate(now.getDate() + 1);
+    nextMidnight.setHours(0, 0, 0, 0);
+    return Math.max(1, Math.ceil((nextMidnight.getTime() - now.getTime()) / 1000));
   }
 }

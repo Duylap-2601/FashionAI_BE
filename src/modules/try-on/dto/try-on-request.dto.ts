@@ -1,6 +1,6 @@
 import { ApiProperty } from '@nestjs/swagger';
 import { GarmentCategory } from '@prisma/client';
-import { IsEnum, IsOptional, IsString, IsUUID } from 'class-validator';
+import { IsEnum, IsOptional, IsUUID } from 'class-validator';
 
 export class TryOnRequestDto {
   @ApiProperty({

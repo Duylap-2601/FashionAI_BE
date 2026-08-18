@@ -2,6 +2,7 @@ import {
   Body,
   Controller,
   Delete,
+  BadRequestException,
   Get,
   HttpCode,
   HttpStatus,
@@ -10,15 +11,19 @@ import {
   Put,
   Query,
   Req,
+  UploadedFile,
+  UseInterceptors,
   UseGuards,
 } from '@nestjs/common';
-import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
+import { FileInterceptor } from '@nestjs/platform-express';
+import { ApiBearerAuth, ApiBody, ApiConsumes, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { Request } from 'express';
 import { Role } from '@prisma/client';
 import { Public } from '../../common/decorators/public.decorator';
 import { Roles } from '../../common/decorators/roles.decorator';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../../common/guards/roles.guard';
+import { FileValidationPipe } from '../../common/pipes/file-validation.pipe';
 import { CreateProductDto } from './dto/create-product.dto';
 import { QueryProductDto } from './dto/query-product.dto';
 import { ProductsService } from './products.service';
@@ -64,13 +69,103 @@ export class ProductsController {
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(Role.ADMIN)
   @ApiBearerAuth('access-token')
-  @ApiOperation({ summary: 'Tạo mới sản phẩm (Admin Only)' })
-  async create(@Req() req: Request, @Body() dto: CreateProductDto) {
-    const data = await this.productsService.create(dto);
+  @ApiOperation({ summary: 'Tạo mới sản phẩm kèm upload ảnh (Admin Only)' })
+  @ApiConsumes('multipart/form-data')
+  @ApiBody({
+    schema: {
+      type: 'object',
+      required: ['name', 'category', 'price'],
+      properties: {
+        name: { type: 'string', example: 'Áo sơ mi trắng premium' },
+        description: { type: 'string' },
+        category: { type: 'string', enum: ['UPPER', 'LOWER', 'FULL_BODY'] },
+        color: { type: 'string', example: 'Trắng' },
+        size: { type: 'string', example: 'L' },
+        price: { type: 'number', example: 350000 },
+        status: { type: 'string', enum: ['DRAFT', 'ACTIVE', 'ARCHIVED'] },
+        garmentUrl: {
+          type: 'string',
+          description: 'URL ảnh nếu không upload file image',
+        },
+        image: {
+          type: 'string',
+          format: 'binary',
+          description: 'Ảnh sản phẩm/garment. Nếu có image thì backend tự upload và set garmentUrl.',
+        },
+      },
+    },
+  })
+  @UseInterceptors(FileInterceptor('image'))
+  async create(
+    @Req() req: Request,
+    @Body() dto: CreateProductDto,
+    @UploadedFile() image?: Express.Multer.File,
+  ) {
+    if (image) {
+      const filePipe = new FileValidationPipe({ maxSize: 10 * 1024 * 1024 });
+      filePipe.transform(image);
+    }
+
+    const data = await this.productsService.create(dto, image);
     return {
       success: true,
       code: 'PRODUCT_CREATE_SUCCESS',
       message: 'Tạo mới sản phẩm thành công',
+      timestamp: new Date().toISOString(),
+      path: req.originalUrl ?? req.url,
+      data,
+    };
+  }
+
+  @Post(':id/images')
+  @HttpCode(HttpStatus.CREATED)
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(Role.ADMIN)
+  @ApiBearerAuth('access-token')
+  @ApiOperation({ summary: 'Upload ảnh sản phẩm (Admin Only)' })
+  @ApiConsumes('multipart/form-data')
+  @ApiBody({
+    schema: {
+      type: 'object',
+      required: ['image'],
+      properties: {
+        image: {
+          type: 'string',
+          format: 'binary',
+          description: 'Ảnh sản phẩm hoặc ảnh garment dùng cho Try-On',
+        },
+        isMain: {
+          type: 'boolean',
+          default: false,
+          description: 'Nếu true, ảnh này trở thành ảnh chính và cập nhật garmentUrl',
+        },
+      },
+    },
+  })
+  @UseInterceptors(FileInterceptor('image'))
+  async uploadImage(
+    @Req() req: Request,
+    @Param('id') id: string,
+    @UploadedFile() image: Express.Multer.File,
+    @Body('isMain') isMain?: string | boolean,
+  ) {
+    if (!image) {
+      throw new BadRequestException('Vui lòng upload ảnh sản phẩm');
+    }
+
+    const filePipe = new FileValidationPipe({ maxSize: 10 * 1024 * 1024 });
+    filePipe.transform(image);
+
+    const data = await this.productsService.uploadProductImage(
+      id,
+      image,
+      this.parseBoolean(isMain),
+    );
+
+    return {
+      success: true,
+      code: 'PRODUCT_IMAGE_UPLOAD_SUCCESS',
+      message: 'Upload ảnh sản phẩm thành công',
       timestamp: new Date().toISOString(),
       path: req.originalUrl ?? req.url,
       data,
@@ -113,5 +208,11 @@ export class ProductsController {
       path: req.originalUrl ?? req.url,
       data: null,
     };
+  }
+
+  private parseBoolean(value: string | boolean | undefined) {
+    if (typeof value === 'boolean') return value;
+    if (!value) return false;
+    return ['true', '1', 'yes', 'on'].includes(value.toLowerCase());
   }
 }

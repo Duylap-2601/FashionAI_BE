@@ -11,17 +11,21 @@ import {
 } from 'class-validator';
 
 export class CreateProductDto {
-  @ApiProperty({ description: 'Tên sản phẩm thời trang', example: 'Áo Sơ Mi Trắng Premium' })
+  @ApiProperty({ description: 'Tên sản phẩm', example: 'Áo sơ mi trắng premium' })
   @IsString()
   @IsNotEmpty()
   name!: string;
 
-  @ApiProperty({ description: 'Mô tả chi tiết sản phẩm', required: false })
+  @ApiProperty({ description: 'Mô tả sản phẩm', required: false })
   @IsString()
   @IsOptional()
   description?: string;
 
-  @ApiProperty({ enum: GarmentCategory, description: 'Phân loại trang phục (UPPER, LOWER, FULL_BODY)', example: GarmentCategory.UPPER })
+  @ApiProperty({
+    enum: GarmentCategory,
+    description: 'Phân loại trang phục',
+    example: GarmentCategory.UPPER,
+  })
   @IsEnum(GarmentCategory)
   category!: GarmentCategory;
 
@@ -30,20 +34,24 @@ export class CreateProductDto {
   @IsOptional()
   color?: string;
 
-  @ApiProperty({ description: 'Kích cỡ (S, M, L, XL)', example: 'L', required: false })
+  @ApiProperty({ description: 'Kích cỡ', example: 'L', required: false })
   @IsString()
   @IsOptional()
   size?: string;
 
-  @ApiProperty({ description: 'Giá tiền (VND)', example: 350000 })
+  @ApiProperty({ description: 'Giá tiền VND', example: 350000 })
   @IsNumber()
   @Min(0)
   price!: number;
 
-  @ApiProperty({ description: 'URL ảnh quần áo dùng cho AI Try-On', example: 'https://example.com/garment.jpg' })
+  @ApiProperty({
+    description: 'URL ảnh garment. Không bắt buộc nếu upload file image.',
+    example: 'https://example.com/garment.jpg',
+    required: false,
+  })
   @IsUrl()
-  @IsNotEmpty()
-  garmentUrl!: string;
+  @IsOptional()
+  garmentUrl?: string;
 
   @ApiProperty({ enum: ProductStatus, default: ProductStatus.ACTIVE, required: false })
   @IsEnum(ProductStatus)

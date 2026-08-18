@@ -39,7 +39,11 @@ enum ProductStatus {
 enum OrderStatus {
   PENDING
   PAID
+  CONFIRMED
+  SHIPPING
+  DELIVERED
   CANCELLED
+  RETURNED
   EXPIRED
   FAILED
 }
@@ -147,6 +151,7 @@ model Product {
   images       ProductImage[]
   tryOnResults TryOnResult[]
   stylistResults StylistResult[]
+  orderItems   OrderItem[]
 
   @@map("products")
 }
@@ -171,6 +176,8 @@ model TryOnResult {
   garmentImageHash String          @map("garment_image_hash")
   category         GarmentCategory @default(UPPER)
   resultUrl        String          @map("result_url")
+  cacheKey         String?         @map("cache_key")
+  expiresAt        DateTime?       @map("expires_at")
   providerMetadata Json?           @map("provider_metadata")
   createdAt        DateTime        @default(now()) @map("created_at")
 
@@ -179,6 +186,8 @@ model TryOnResult {
 
   @@index([userId])
   @@index([humanImageHash, garmentImageHash])
+  @@index([cacheKey])
+  @@index([expiresAt])
   @@map("try_on_results")
 }
 
@@ -211,17 +220,40 @@ model Order {
   id         String      @id @default(uuid()) @db.Uuid
   orderCode  Int         @unique @map("order_code")
   userId     String      @map("user_id") @db.Uuid
-  targetTier UserTier    @map("target_tier")
+  targetTier UserTier?   @map("target_tier")
   amount     Decimal     @db.Decimal(10, 2)
   status     OrderStatus @default(PENDING)
+  shippingInfo Json?     @map("shipping_info")
+  paymentProvider   String?   @map("payment_provider")
+  checkoutUrl       String?   @map("checkout_url")
+  checkoutExpiresAt DateTime? @map("checkout_expires_at")
   createdAt  DateTime    @default(now()) @map("created_at")
   updatedAt  DateTime    @updatedAt @map("updated_at")
 
   user     User      @relation(fields: [userId], references: [id], onDelete: Cascade)
   payments Payment[]
+  items    OrderItem[]
 
   @@index([userId])
   @@map("orders")
+}
+
+model OrderItem {
+  id        String   @id @default(uuid()) @db.Uuid
+  orderId   String   @map("order_id") @db.Uuid
+  productId String   @map("product_id") @db.Uuid
+  quantity  Int      @default(1)
+  size      String?
+  color     String?
+  price     Decimal  @db.Decimal(10, 2)
+  createdAt DateTime @default(now()) @map("created_at")
+
+  order   Order   @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  product Product @relation(fields: [productId], references: [id], onDelete: Restrict)
+
+  @@index([orderId])
+  @@index([productId])
+  @@map("order_items")
 }
 
 model Payment {
@@ -234,6 +266,7 @@ model Payment {
 
   order Order @relation(fields: [orderId], references: [id], onDelete: Cascade)
 
+  @@unique([provider, transactionId])
   @@map("payments")
 }
 

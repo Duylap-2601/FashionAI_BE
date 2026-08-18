@@ -149,6 +149,25 @@ export class RedisService implements OnModuleInit, OnModuleDestroy {
     this.inMemoryStore.delete(key);
   }
 
+  async health() {
+    if (this.isConnected && this.client) {
+      try {
+        const pong = await this.client.ping();
+        return {
+          status: pong === 'PONG' ? 'up' : 'down',
+          mode: 'redis',
+        };
+      } catch (err: any) {
+        this.logger.warn(`Redis health check failed: ${err.message}`);
+      }
+    }
+
+    return {
+      status: 'up',
+      mode: 'fallback-memory',
+    };
+  }
+
   onModuleDestroy() {
     if (this.client) {
       this.client.disconnect();

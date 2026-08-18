@@ -74,7 +74,11 @@ export class QuotaGuard implements CanActivate {
         },
       });
       used = dbUsage ? dbUsage.count : 0;
-      await this.redisService.set(redisKey, used.toString(), 86400);
+      await this.redisService.set(
+        redisKey,
+        used.toString(),
+        this.secondsUntilNextMidnight(),
+      );
     }
 
     if (used >= limit) {
@@ -99,8 +103,17 @@ export class QuotaGuard implements CanActivate {
       );
     }
 
-    // Attach quota info to request for consumption after execution
-    request.quotaContext = { redisKey, userId: user.id, action, date: today };
+    // Guard chỉ kiểm tra hạn mức. Việc trừ quota do service thực hiện sau khi
+    // gọi provider thành công (xem QuotaService.consumeQuota), để request lỗi
+    // hoặc cache hit không bị tính lượt.
     return true;
+  }
+
+  private secondsUntilNextMidnight() {
+    const now = new Date();
+    const nextMidnight = new Date(now);
+    nextMidnight.setDate(now.getDate() + 1);
+    nextMidnight.setHours(0, 0, 0, 0);
+    return Math.max(1, Math.ceil((nextMidnight.getTime() - now.getTime()) / 1000));
   }
 }

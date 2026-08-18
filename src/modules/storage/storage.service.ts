@@ -1,16 +1,28 @@
-import { Injectable, Logger } from '@nestjs/common';
+import {
+  Injectable,
+  Logger,
+  ServiceUnavailableException,
+} from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { v2 as cloudinary } from 'cloudinary';
+
+/**
+ * Ảnh fallback được nhúng base64 vào DB, nên chỉ cho phép với file nhỏ. Vượt ngưỡng
+ * này thì báo lỗi cấu hình thay vì âm thầm ghi vài MB text vào Postgres.
+ */
+const FALLBACK_MAX_BYTES = 256 * 1024;
 
 @Injectable()
 export class StorageService {
   private readonly logger = new Logger(StorageService.name);
   private isCloudinaryConfigured = false;
+  private readonly isProduction: boolean;
 
   constructor(private readonly configService: ConfigService) {
     const cloudName = this.configService.get<string>('CLOUDINARY_CLOUD_NAME');
     const apiKey = this.configService.get<string>('CLOUDINARY_API_KEY');
     const apiSecret = this.configService.get<string>('CLOUDINARY_API_SECRET');
+    this.isProduction = this.configService.get<string>('NODE_ENV') === 'production';
 
     if (cloudName && apiKey && apiSecret) {
       cloudinary.config({
@@ -20,8 +32,14 @@ export class StorageService {
       });
       this.isCloudinaryConfigured = true;
       this.logger.log('Cloudinary storage successfully initialized');
+    } else if (this.isProduction) {
+      throw new Error(
+        'CLOUDINARY_CLOUD_NAME, CLOUDINARY_API_KEY và CLOUDINARY_API_SECRET là bắt buộc khi NODE_ENV=production.',
+      );
     } else {
-      this.logger.warn('Cloudinary credentials missing. Images will return pass-through URLs.');
+      this.logger.warn(
+        'Cloudinary credentials missing. Ảnh nhỏ sẽ trả về data URL (chỉ dùng cho local/test).',
+      );
     }
   }
 
@@ -46,9 +64,19 @@ export class StorageService {
       });
     }
 
-    // Fallback: convert to base64 Data URL or return mock URL for testing
-    const base64 = fileBuffer.toString('base64');
-    return `data:image/png;base64,${base64}`;
+    // Fallback cho môi trường local chưa cấu hình Cloudinary.
+    if (fileBuffer.length > FALLBACK_MAX_BYTES) {
+      throw new ServiceUnavailableException(
+        `Ảnh ${(fileBuffer.length / 1024).toFixed(0)}KB vượt giới hạn fallback ` +
+          `${FALLBACK_MAX_BYTES / 1024}KB. Vui lòng cấu hình Cloudinary (CLOUDINARY_CLOUD_NAME, ` +
+          'CLOUDINARY_API_KEY, CLOUDINARY_API_SECRET).',
+      );
+    }
+
+    this.logger.warn(
+      `Trả về data URL cho ảnh ${(fileBuffer.length / 1024).toFixed(0)}KB vì chưa cấu hình Cloudinary.`,
+    );
+    return `data:image/png;base64,${fileBuffer.toString('base64')}`;
   }
 
   async uploadUrl(imageUrl: string, folder = 'fashionai'): Promise<string> {

@@ -7,7 +7,7 @@ import { GlobalExceptionFilter } from './common/filters/http-exception.filter';
 
 async function bootstrap() {
   const logger = new Logger('Bootstrap');
-  const app = await NestFactory.create(AppModule);
+  const app = await NestFactory.create(AppModule, { rawBody: true });
 
   const apiPrefix = process.env.API_PREFIX ?? 'api';
   const swaggerPath = process.env.SWAGGER_PATH ?? 'docs';
@@ -62,7 +62,9 @@ async function bootstrap() {
       .addTag('Products', 'Quản lý danh mục sản phẩm thời trang')
       .addTag('Virtual Try-On', 'Thử đồ ảo AI bằng fal.ai (FASHN v1.6)')
       .addTag('AI Stylist', 'Tư vấn phong cách bằng Gemini Vision')
-      .addTag('Payments & Subscriptions', 'Thanh toán PayOS & Nâng cấp tài khoản')
+      .addTag('Orders', 'Đơn hàng sản phẩm')
+      .addTag('Payments & Subscriptions', 'Thanh toán SePay/PayOS & Nâng cấp tài khoản')
+      .addTag('Admin', 'Thống kê & quản trị hệ thống')
       .build();
 
     const document = SwaggerModule.createDocument(app, swaggerConfig);

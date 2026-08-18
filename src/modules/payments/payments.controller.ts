@@ -27,17 +27,18 @@ export class PaymentsController {
   @HttpCode(HttpStatus.OK)
   @UseGuards(JwtAuthGuard)
   @ApiBearerAuth('access-token')
-  @ApiOperation({ summary: 'Tạo link thanh toán nâng cấp tài khoản (MoMo / PayOS)' })
+  @ApiOperation({
+    summary: 'Tạo liên kết thanh toán',
+    description:
+      'Truyền `orderId` để thanh toán đơn hàng sản phẩm đã tạo qua `POST /orders`, ' +
+      'hoặc truyền `targetTier` để nâng cấp gói tài khoản.',
+  })
   async checkout(
     @Req() req: Request,
     @CurrentUser() user: AuthenticatedUser,
     @Body() dto: CheckoutDto,
   ) {
-    const data = await this.paymentsService.createCheckoutLink(
-      user.id,
-      dto.targetTier,
-      dto.provider ?? 'MOMO',
-    );
+    const data = await this.paymentsService.createCheckoutLink(user.id, dto);
     return {
       success: true,
       code: 'PAYMENT_CHECKOUT_CREATED',
@@ -51,23 +52,27 @@ export class PaymentsController {
   @Public()
   @Post('webhook')
   @HttpCode(HttpStatus.OK)
-  @ApiOperation({ summary: 'Nhận Webhook xử lý giao dịch từ PayOS' })
+  @ApiOperation({ summary: 'Nhận webhook thanh toán từ PayOS' })
   async webhook(@Body() webhookData: any) {
     return this.paymentsService.handleWebhook(webhookData);
   }
 
   @Public()
-  @Post('momo-ipn')
+  @Post('sepay-ipn')
   @HttpCode(HttpStatus.OK)
-  @ApiOperation({ summary: 'Nhận IPN Webhook xử lý giao dịch từ MoMo' })
-  async momoIPN(@Body() ipnData: any) {
-    return this.paymentsService.handleMoMoIPN(ipnData);
+  @ApiOperation({ summary: 'Nhận IPN thanh toán từ SePay' })
+  async sepayIPN(@Req() req: Request, @Body() ipnData: any) {
+    return this.paymentsService.handleSePayIPN(
+      ipnData,
+      req.headers,
+      (req as Request & { rawBody?: Buffer }).rawBody,
+    );
   }
 
   @Get('orders')
   @UseGuards(JwtAuthGuard)
   @ApiBearerAuth('access-token')
-  @ApiOperation({ summary: 'Xem danh sách lịch sử đơn hàng của tôi' })
+  @ApiOperation({ summary: 'Xem lịch sử đơn thanh toán của tôi' })
   async getMyOrders(@Req() req: Request, @CurrentUser() user: AuthenticatedUser) {
     const data = await this.paymentsService.getUserOrders(user.id);
     return {
@@ -82,7 +87,7 @@ export class PaymentsController {
 
   @Public()
   @Get('mock-success')
-  @ApiOperation({ summary: 'Mock thanh toán thành công (Dev/Testing Mode)' })
+  @ApiOperation({ summary: 'Mock thanh toán thành công trong development' })
   async mockSuccess(@Req() req: Request, @Query('orderCode') orderCode: number) {
     const result = await this.paymentsService.mockSuccess(Number(orderCode));
     return {

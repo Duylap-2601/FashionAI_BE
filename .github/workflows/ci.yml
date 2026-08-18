@@ -1,0 +1,43 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      # Prisma Client là generated code, phải có trước khi typecheck/build.
+      - name: Generate Prisma Client
+        run: npm run prisma:generate
+
+      - name: Lint
+        run: npm run lint:check
+
+      - name: Build
+        run: npm run build
+
+      - name: Unit tests
+        run: npm run test:unit -- --runInBand
+
+      # E2E ở repo này dùng Prisma/Redis mock nên không cần service container.
+      - name: E2E tests
+        run: npm run test:e2e -- --runInBand

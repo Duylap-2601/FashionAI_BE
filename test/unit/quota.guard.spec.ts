@@ -1,4 +1,4 @@
-import { ExecutionContext, HttpException, HttpStatus } from '@nestjs/common';
+import { ExecutionContext, HttpException } from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
 import { QuotaGuard } from '../../src/common/guards/quota.guard';
 import { RedisService } from '../../src/common/services/redis.service';
@@ -17,6 +17,7 @@ describe('QuotaGuard', () => {
   const mockRedisService = {
     get: jest.fn(),
     set: jest.fn(),
+    incr: jest.fn(),
   };
 
   const mockPrismaService = {
@@ -78,9 +79,9 @@ describe('QuotaGuard', () => {
     await expect(guard.canActivate(mockContext)).rejects.toThrow(HttpException);
   });
 
-  it('should allow FREE user to use STYLIST action within its limit of 5', async () => {
+  it('should allow FREE user to use STYLIST action within its limit of 3', async () => {
     mockReflector.getAllAndOverride.mockReturnValue('STYLIST');
-    mockRedisService.get.mockResolvedValue('4');
+    mockRedisService.get.mockResolvedValue('2');
 
     const mockContext = {
       getHandler: () => {},
@@ -94,9 +95,9 @@ describe('QuotaGuard', () => {
     expect(result).toBe(true);
   });
 
-  it('should block FREE user when STYLIST daily limit of 5 is reached', async () => {
+  it('should block FREE user when STYLIST daily limit of 3 is reached', async () => {
     mockReflector.getAllAndOverride.mockReturnValue('STYLIST');
-    mockRedisService.get.mockResolvedValue('5');
+    mockRedisService.get.mockResolvedValue('3');
 
     const mockContext = {
       getHandler: () => {},
@@ -125,7 +126,7 @@ describe('QuotaGuard', () => {
     expect(result).toBe(true);
   });
 
-  it('should attach quotaContext to the request after passing', async () => {
+  it('should not consume quota itself when allowing the request', async () => {
     mockReflector.getAllAndOverride.mockReturnValue('STYLIST');
     mockRedisService.get.mockResolvedValue('1');
 
@@ -136,10 +137,11 @@ describe('QuotaGuard', () => {
       switchToHttp: () => ({ getRequest: () => request }),
     } as ExecutionContext;
 
-    await guard.canActivate(mockContext);
-    expect((request as any).quotaContext).toMatchObject({
-      userId: 'free-5',
-      action: 'STYLIST',
-    });
+    const result = await guard.canActivate(mockContext);
+
+    // Guard chỉ kiểm tra hạn mức; việc tăng counter do service làm sau khi
+    // provider trả kết quả, nên cache hit / lỗi provider không bị tính lượt.
+    expect(result).toBe(true);
+    expect(mockRedisService.incr).not.toHaveBeenCalled();
   });
 });

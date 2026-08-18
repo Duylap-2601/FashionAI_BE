@@ -1,14 +1,30 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../../database/prisma.service';
+import { StorageService } from '../storage/storage.service';
 import { CreateProductDto } from './dto/create-product.dto';
 import { QueryProductDto } from './dto/query-product.dto';
 import { Prisma, ProductStatus } from '@prisma/client';
 
 @Injectable()
 export class ProductsService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly storageService: StorageService,
+  ) {}
 
-  async create(dto: CreateProductDto) {
+  async create(dto: CreateProductDto, image?: Express.Multer.File) {
+    const garmentUrl = image
+      ? await this.storageService.uploadImage(
+          image.buffer,
+          'product-images',
+          `product_${Date.now()}`,
+        )
+      : dto.garmentUrl;
+
+    if (!garmentUrl) {
+      throw new BadRequestException('Vui lòng upload ảnh sản phẩm hoặc truyền garmentUrl');
+    }
+
     return this.prisma.product.create({
       data: {
         name: dto.name,
@@ -17,10 +33,10 @@ export class ProductsService {
         color: dto.color,
         size: dto.size,
         price: dto.price,
-        garmentUrl: dto.garmentUrl,
+        garmentUrl,
         status: dto.status ?? ProductStatus.ACTIVE,
         images: {
-          create: [{ imageUrl: dto.garmentUrl, isMain: true }],
+          create: [{ imageUrl: garmentUrl, isMain: true }],
         },
       },
       include: { images: true },
@@ -113,6 +129,46 @@ export class ProductsService {
     await this.findOne(id);
     return this.prisma.product.delete({
       where: { id },
+    });
+  }
+
+  async uploadProductImage(
+    productId: string,
+    file: Express.Multer.File,
+    isMain = false,
+  ) {
+    await this.findOne(productId);
+
+    const imageUrl = await this.storageService.uploadImage(
+      file.buffer,
+      'product-images',
+      `product_${productId}_${Date.now()}`,
+    );
+
+    return this.prisma.$transaction(async (tx) => {
+      if (isMain) {
+        await tx.productImage.updateMany({
+          where: { productId },
+          data: { isMain: false },
+        });
+      }
+
+      const image = await tx.productImage.create({
+        data: {
+          productId,
+          imageUrl,
+          isMain,
+        },
+      });
+
+      if (isMain) {
+        await tx.product.update({
+          where: { id: productId },
+          data: { garmentUrl: imageUrl },
+        });
+      }
+
+      return image;
     });
   }
 }

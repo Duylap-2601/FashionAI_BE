@@ -34,6 +34,7 @@ export class TryOnService {
   private readonly TIMEOUT_MS: number;
   private readonly SAM2_ENABLED: boolean;
   private readonly provider: 'fal' | 'mock';
+  private readonly CACHE_TTL_MS: number;
 
   private readonly FASHN_MODEL: string;
   private readonly SAM2_MODEL: string;
@@ -52,6 +53,12 @@ export class TryOnService {
     this.SAM2_MODEL = this.config.get<string>('SAM2_MODEL') ?? 'fal-ai/sam2/auto-segment';
     this.provider =
       this.config.get<string>('AI_TRYON_PROVIDER') === 'mock' ? 'mock' : 'fal';
+    this.CACHE_TTL_MS =
+      parseInt(this.config.get<string>('TRYON_CACHE_TTL_DAYS') ?? '30', 10) *
+      24 *
+      60 *
+      60 *
+      1000;
 
     if (!falKey) {
       this.logger.warn('[fal.ai] FAL_KEY chưa được cấu hình!');
@@ -114,6 +121,23 @@ export class TryOnService {
     return crypto.createHash('sha256').update(buffer).digest('hex');
   }
 
+  /**
+   * Cache key gắn userId: ảnh kết quả là dữ liệu cá nhân, nên hai user upload
+   * cùng một ảnh vẫn phải sinh kết quả riêng thay vì dùng lại của nhau.
+   */
+  private buildCacheKey(
+    userId: string,
+    humanHash: string,
+    garmentHash: string,
+    category: GarmentCategory,
+  ): string {
+    return `${userId}:${humanHash}:${garmentHash}:${category}`;
+  }
+
+  private buildCacheExpiry(): Date {
+    return new Date(Date.now() + this.CACHE_TTL_MS);
+  }
+
   async generateTryOn(
     userId: string,
     humanImage: Express.Multer.File,
@@ -165,20 +189,26 @@ export class TryOnService {
       );
     }
 
+    const cacheKey = this.buildCacheKey(
+      userId,
+      humanHash,
+      garmentHash,
+      garmentCategory,
+    );
+
     try {
       // ── Step 0: Check Cache ───────────────────────────────────────────────
       const cachedResult = await this.prisma.tryOnResult.findFirst({
         where: {
-          humanImageHash: humanHash,
-          garmentImageHash: garmentHash,
-          category: garmentCategory,
+          userId,
+          cacheKey,
+          OR: [{ expiresAt: null }, { expiresAt: { gt: new Date() } }],
         },
         orderBy: { createdAt: 'desc' },
       });
 
       if (cachedResult) {
         this.logger.log(`[Cache Hit] Trả về kết quả thử đồ cũ cho user ${userId}`);
-        await this.redisService.releaseLock(lockKey);
         return {
           id: cachedResult.id,
           resultUrl: cachedResult.resultUrl,
@@ -197,6 +227,7 @@ export class TryOnService {
           garmentHash,
           garmentCategory,
           productEntity,
+          cacheKey,
         );
       }
 
@@ -259,6 +290,8 @@ export class TryOnService {
           garmentImageHash: garmentHash,
           category: garmentCategory,
           resultUrl: permanentResultUrl,
+          cacheKey,
+          expiresAt: this.buildCacheExpiry(),
           providerMetadata: (tryOnResult.data as any) ?? {},
         },
       });
@@ -281,15 +314,64 @@ export class TryOnService {
     }
   }
 
-  async fetchImageStream(url: string): Promise<StreamableFile> {
-    const imgRes = await axios.get<ArrayBuffer>(url, {
-      responseType: 'arraybuffer',
-      timeout: 30000,
+  /**
+   * Tải ảnh kết quả về dưới dạng attachment. Đi qua backend thay vì trả URL gốc
+   * để FE không phải xử lý CORS của storage provider khi người dùng bấm tải.
+   */
+  async downloadResult(userId: string, id: string): Promise<StreamableFile> {
+    const item = await this.getHistoryItem(userId, id);
+
+    // Ảnh fallback lưu dạng data URL khi chưa cấu hình Cloudinary.
+    const dataUrlMatch = item.resultUrl.match(
+      /^data:(image\/[a-z+]+);base64,(.+)$/i,
+    );
+    if (dataUrlMatch) {
+      return new StreamableFile(Buffer.from(dataUrlMatch[2], 'base64'), {
+        type: dataUrlMatch[1],
+        disposition: `attachment; filename="tryon-${id}.${this.extensionFor(dataUrlMatch[1])}"`,
+      });
+    }
+
+    let response: { data: ArrayBuffer; headers: Record<string, any> };
+    try {
+      response = await axios.get<ArrayBuffer>(item.resultUrl, {
+        responseType: 'arraybuffer',
+        timeout: 30000,
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'unknown';
+      this.logger.error(`[Download] Không tải được ảnh kết quả ${id}: ${message}`);
+      throw new HttpException(
+        {
+          statusCode: 502,
+          message: 'Không thể tải ảnh kết quả từ storage. Vui lòng thử lại.',
+          error: 'RESULT_FETCH_FAILED',
+        },
+        HttpStatus.BAD_GATEWAY,
+      );
+    }
+
+    const contentType =
+      typeof response.headers?.['content-type'] === 'string' &&
+      response.headers['content-type'].startsWith('image/')
+        ? response.headers['content-type']
+        : 'image/jpeg';
+
+    return new StreamableFile(Buffer.from(response.data), {
+      type: contentType,
+      disposition: `attachment; filename="tryon-${id}.${this.extensionFor(contentType)}"`,
     });
-    return new StreamableFile(Buffer.from(imgRes.data), {
-      type: 'image/jpeg',
-      disposition: 'inline; filename="tryon-result.jpg"',
-    });
+  }
+
+  private extensionFor(mimeType: string): string {
+    switch (mimeType) {
+      case 'image/png':
+        return 'png';
+      case 'image/webp':
+        return 'webp';
+      default:
+        return 'jpg';
+    }
   }
 
   private async generateMockTryOnResult(
@@ -299,6 +381,7 @@ export class TryOnService {
     garmentHash: string,
     garmentCategory: GarmentCategory,
     productEntity: any,
+    cacheKey: string,
   ): Promise<TryOnResultResponse> {
     const configuredUrl = this.config.get<string>('MOCK_TRYON_RESULT_URL');
     const resultUrl =
@@ -317,6 +400,8 @@ export class TryOnService {
         garmentImageHash: garmentHash,
         category: garmentCategory,
         resultUrl,
+        cacheKey,
+        expiresAt: this.buildCacheExpiry(),
         providerMetadata: {
           provider: 'mock',
           model: 'mock-tryon',
@@ -395,6 +480,14 @@ export class TryOnService {
   async deleteHistoryItem(userId: string, id: string) {
     await this.getHistoryItem(userId, id);
     return this.prisma.tryOnResult.delete({ where: { id } });
+  }
+
+  async deleteAllHistory(userId: string) {
+    const { count } = await this.prisma.tryOnResult.deleteMany({
+      where: { userId },
+    });
+    this.logger.log(`[History] Đã xóa ${count} kết quả thử đồ của user ${userId}`);
+    return { deleted: count };
   }
 
   private handleError(error: unknown): never {

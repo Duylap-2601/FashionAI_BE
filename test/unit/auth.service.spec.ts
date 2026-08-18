@@ -3,12 +3,10 @@ import { AuthService } from '../../src/modules/auth/auth.service';
 import { PrismaService } from '../../src/database/prisma.service';
 import { TokenService } from '../../src/modules/auth/token.service';
 import { MailService } from '../../src/modules/mail/mail.service';
-import { ConflictException, BadRequestException, UnauthorizedException } from '@nestjs/common';
+import { ConflictException, BadRequestException } from '@nestjs/common';
 
 describe('AuthService', () => {
   let service: AuthService;
-  let prisma: PrismaService;
-  let tokenService: TokenService;
 
   const mockPrisma = {
     user: {
@@ -55,8 +53,6 @@ describe('AuthService', () => {
     }).compile();
 
     service = module.get<AuthService>(AuthService);
-    prisma = module.get<PrismaService>(PrismaService);
-    tokenService = module.get<TokenService>(TokenService);
   });
 
   it('should be defined', () => {

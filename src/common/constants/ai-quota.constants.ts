@@ -9,7 +9,7 @@ export const AI_ACTION_LIMITS: Record<AiActionName, Record<UserTier, number>> = 
     VIP: Infinity,
   },
   STYLIST: {
-    FREE: 5,
+    FREE: 3,
     MEMBER: 20,
     VIP: Infinity,
   },
@@ -21,8 +21,8 @@ export const AI_ACTION_LIMITS: Record<AiActionName, Record<UserTier, number>> = 
 };
 
 export const AI_ACTION_LABELS: Record<AiActionName, string> = {
-  TRY_ON: 'Thử Đồ',
-  STYLIST: 'Tư Vấn AI',
+  TRY_ON: 'Thử đồ',
+  STYLIST: 'Tư vấn AI',
   CHATBOT: 'Chatbot',
 };
 
