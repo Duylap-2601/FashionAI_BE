@@ -4,6 +4,7 @@ import {
   Param,
   Post,
   Body,
+  Query,
   UseGuards,
   Req,
 } from '@nestjs/common';
@@ -61,6 +62,52 @@ export class AvatarController {
     };
   }
 
+  @Get('presets/nearest')
+  @ApiOperation({
+    summary: 'Preset GLB gần nhất theo số đo + delta morph để FE áp vào GLB',
+    description: `Preset sinh sẵn (lưới gender × height × weight, không cần Blender).\n\n- \`preset.glbUrl\` → load vào Three.js.\n- \`presetMeasurements\` → số đo đã nướng trong GLB.\n- \`morphDeltasCm\` = số đo user − preset.\n- \`morphFactors\` = cm/đơn vị morph (đã scale theo chiều cao preset).\n- FE: \`influence[incr] = clamp(delta/factor, 0, 1)\`, \`influence[decr] = clamp(-delta/factor, 0, 1)\`.`,
+  })
+  async getNearestPreset(
+    @Req() req: Request,
+    @Query('gender') gender: string,
+    @Query('height') height: string,
+    @Query('weight') weight: string,
+    @Query('chest') chest: string,
+    @Query('waist') waist: string,
+    @Query('hip') hip: string,
+    @Query('shoulder') shoulder: string,
+  ) {
+    const data = await this.avatarService.getNearestPreset(
+      gender,
+      this.toNumbers({ height, weight, chest, waist, hip, shoulder }),
+    );
+    return {
+      success: true,
+      code: 'AVATAR_PRESET_NEAREST',
+      message: 'Lấy preset gần nhất thành công',
+      timestamp: new Date().toISOString(),
+      path: req.originalUrl ?? req.url,
+      data,
+    };
+  }
+
+  @Get('presets')
+  @ApiOperation({ summary: 'Danh sách toàn bộ preset GLB theo giới tính' })
+  async getPresets(
+    @Req() req: Request,
+    @Query('gender') gender: string,
+  ) {
+    const data = await this.avatarService.getPresets(gender);
+    return {
+      success: true,
+      code: 'AVATAR_PRESET_LIST',
+      message: 'Lấy danh sách preset thành công',
+      timestamp: new Date().toISOString(),
+      path: req.originalUrl ?? req.url,
+      data,
+    };
+  }
+
   @Get(':id')
   @ApiOperation({ summary: 'Lấy thông tin avatar theo ID' })
   async getById(
@@ -77,6 +124,29 @@ export class AvatarController {
       path: req.originalUrl ?? req.url,
       data,
     };
+  }
+
+  private toNumbers(input: Record<string, string>): {
+    height: number;
+    weight: number;
+    chest: number;
+    waist: number;
+    hip: number;
+    shoulder: number;
+  } {
+    const out = {} as {
+      height: number;
+      weight: number;
+      chest: number;
+      waist: number;
+      hip: number;
+      shoulder: number;
+    };
+    for (const [k, v] of Object.entries(input)) {
+      const n = Number(v);
+      out[k as keyof typeof out] = Number.isFinite(n) ? n : NaN;
+    }
+    return out;
   }
 
   @Get(':name/file')

@@ -118,6 +118,23 @@ model Avatar {
   @@map("avatars")
 }
 
+// Lưới GLB preset sinh offline (gender x height x weight) - dùng cho FE không cần
+// chạy Blender. presetMeasurements là số đo mặc định đã nướng vào GLB; FE dùng
+// morph targets để chỉnh theo số đo thật của user.
+model AvatarPreset {
+  id                 String   @id @default(uuid()) @db.Uuid
+  gender             String // "male" | "female"
+  height             Decimal  @db.Decimal(5, 1) // cm
+  weight             Decimal  @db.Decimal(5, 1) // kg
+  glbUrl             String   @map("glb_url")
+  presetMeasurements Json     @map("preset_measurements") // { chest, waist, hip, shoulder }
+  createdAt          DateTime @default(now()) @map("created_at")
+
+  @@unique([gender, height, weight])
+  @@index([gender])
+  @@map("avatar_presets")
+}
+
 model RefreshToken {
   id        String   @id @default(uuid()) @db.Uuid
   userId    String   @map("user_id") @db.Uuid

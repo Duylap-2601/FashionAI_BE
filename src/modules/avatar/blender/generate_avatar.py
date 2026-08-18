@@ -15,6 +15,8 @@ input.json:
   "shoulder": 44.0,   // cm (biacromial width)
   "draco": true,      // enable Draco mesh compression
   "morph": true       // keep morph targets (shape keys) in the GLB
+  // "force_morph_targets": true  // preset mode: base=macro-only, all measure-*
+  //                              // shape keys loaded at weight 0 (cho FE morph)
 }
 
 Prints a single JSON line prefixed with AVATAR_RESULT= on success.
@@ -210,42 +212,58 @@ def main():
         "shoulder": ("shoulder", "measure-shoulder-dist-incr", "measure-shoulder-dist-decr"),
     }
 
-    # Pass 1: measure, compute target values, load shape keys.
-    measured = measure(human, deps)
-    values = {}
-    stack = []
-    ref_height = calib["reference_cm"][gender]["height"]
-    scale = measured["height"] / ref_height
-    for field, (key, incr, decr) in target_map.items():
-        desired = float(cfg.get(field, measured[key]))
-        delta = calib["delta_cm_per_unit"][gender][key] * scale
-        val = (desired - measured[key]) / delta if delta else 0.0
-        val = max(-2.0, min(2.0, val))
-        values[field] = val
-        if abs(val) < 1e-3:
-            continue
-        stack.append({"target": incr if val > 0 else decr, "value": abs(val)})
-    if stack:
+    force_morph = bool(cfg.get("force_morph_targets", False))
+    morph_base = float(cfg.get("morph_base_value", 0.05))
+    if force_morph:
+        # Preset mode: base = hình macro-only (≈ reference_cm), mọi shape key
+        # measure-* (cả incr lẫn decr) được load ở 1 giá trị nhỏ để tồn tại trong
+        # GLB → FE tự áp morph theo số đo người dùng (weight gần 0 = base nguyên).
+        values = {field: 0.0 for field in target_map}
+        stack = [
+            {"target": name, "value": morph_base}
+            for _field, (_key, incr, decr) in target_map.items()
+            for name in (incr, decr)
+        ]
         TargetService.bulk_load_targets(human, stack)
-    t_target = time.time()
+        t_target = time.time()
+        t_refine = t_target
+    else:
+        # Pass 1: measure, compute target values, load shape keys.
+        measured = measure(human, deps)
+        values = {}
+        stack = []
+        ref_height = calib["reference_cm"][gender]["height"]
+        scale = measured["height"] / ref_height
+        for field, (key, incr, decr) in target_map.items():
+            desired = float(cfg.get(field, measured[key]))
+            delta = calib["delta_cm_per_unit"][gender][key] * scale
+            val = (desired - measured[key]) / delta if delta else 0.0
+            val = max(-2.0, min(2.0, val))
+            values[field] = val
+            if abs(val) < 1e-3:
+                continue
+            stack.append({"target": incr if val > 0 else decr, "value": abs(val)})
+        if stack:
+            TargetService.bulk_load_targets(human, stack)
+        t_target = time.time()
 
-    # Pass 2: refinement using residual from re-measurement.
-    deps = bpy.context.evaluated_depsgraph_get()
-    human.data.update()
-    measured2 = measure(human, deps)
-    for field, (key, incr, decr) in target_map.items():
-        residual = float(cfg.get(field, measured2[key])) - measured2[key]
-        if abs(residual) < 0.3:
-            continue
-        delta = calib["delta_cm_per_unit"][gender][key] * scale
-        correction = (residual / delta) if delta else 0.0
-        new_val = max(-2.0, min(2.0, values[field] + correction))
-        if abs(new_val - values[field]) < 1e-3:
-            continue
-        name = incr if new_val > 0 else decr
-        TargetService.set_target_value(human, name, abs(new_val), delete_target_on_zero=False)
-        values[field] = new_val
-    t_refine = time.time()
+        # Pass 2: refinement using residual from re-measurement.
+        deps = bpy.context.evaluated_depsgraph_get()
+        human.data.update()
+        measured2 = measure(human, deps)
+        for field, (key, incr, decr) in target_map.items():
+            residual = float(cfg.get(field, measured2[key])) - measured2[key]
+            if abs(residual) < 0.3:
+                continue
+            delta = calib["delta_cm_per_unit"][gender][key] * scale
+            correction = (residual / delta) if delta else 0.0
+            new_val = max(-2.0, min(2.0, values[field] + correction))
+            if abs(new_val - values[field]) < 1e-3:
+                continue
+            name = incr if new_val > 0 else decr
+            TargetService.set_target_value(human, name, abs(new_val), delete_target_on_zero=False)
+            values[field] = new_val
+        t_refine = time.time()
 
     draco = bool(cfg.get("draco", True))
     morph = bool(cfg.get("morph", True))

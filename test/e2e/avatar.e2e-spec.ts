@@ -259,7 +259,7 @@ describe('Avatar 3D generate (e2e)', () => {
       .expect(404);
   });
 
-  it('validation: bỏ sót số đo → 400', async () => {
+it('validation: bỏ sót số đo → 400', async () => {
     await bootstrap('user-a');
 
     const { chest: _chest, ...missing } = validBody;
@@ -267,5 +267,97 @@ describe('Avatar 3D generate (e2e)', () => {
       .post('/api/avatar/generate')
       .send(missing)
       .expect(400);
+  });
+
+  // ── Presets ──────────────────────────────────────────────────────────────
+
+  function presetRow(id: string, height: number, weight: number) {
+    return {
+      id,
+      gender: 'female',
+      height,
+      weight,
+      glbUrl: `https://cdn.test/${id}.glb`,
+      presetMeasurements: { chest: 84.6, waist: 62.9, hip: 99.0, shoulder: 40.8 },
+      createdAt: new Date(),
+    };
+  }
+
+  it('GET /avatar/presets trả danh sách preset của giới', async () => {
+    await bootstrap('user-a');
+    prisma.avatarPreset.findMany.mockResolvedValue([
+      presetRow('p-165-50', 165, 50),
+      presetRow('p-170-60', 170, 60),
+    ]);
+
+    const res = await request(app.getHttpServer())
+      .get('/api/avatar/presets?gender=female')
+      .expect(200);
+
+    expect(res.body.data).toHaveLength(2);
+    expect(res.body.data[0]).toMatchObject({
+      height: 165,
+      weight: 50,
+      glbUrl: 'https://cdn.test/p-165-50.glb',
+      presetMeasurements: { chest: 84.6 },
+    });
+    expect(prisma.avatarPreset.findMany).toHaveBeenCalledWith({
+      where: { gender: 'female' },
+      orderBy: [{ height: 'asc' }, { weight: 'asc' }],
+    });
+  });
+
+  it('GET /avatar/presets/nearest trả preset gần nhất + morph delta + factor', async () => {
+    await bootstrap('user-a');
+    prisma.avatarPreset.findMany.mockResolvedValue([
+      presetRow('p-160-50', 160, 50),
+      presetRow('p-165-50', 165, 50),
+      presetRow('p-165-60', 165, 60),
+    ]);
+
+    const res = await request(app.getHttpServer())
+      .get(
+        '/api/avatar/presets/nearest?gender=female&height=165&weight=56&chest=88&waist=70&hip=94&shoulder=39',
+      )
+      .expect(200);
+
+    expect(res.body.data.preset).toMatchObject({
+      height: 165,
+      weight: 60,
+      glbUrl: 'https://cdn.test/p-165-60.glb',
+    });
+    // preset 165/60 cùng presetMeasurements 84.6/62.9/99.0/40.8
+    expect(res.body.data.morphDeltasCm).toEqual({
+      chest: 3.4,
+      waist: 7.1,
+      hip: -5,
+      shoulder: -1.8,
+    });
+    // factor nữ đã scale theo chiều cao preset (165 / 159.1)
+    expect(res.body.data.morphFactors.chest).toBeCloseTo(17.5, 1);
+    expect(res.body.data.morphFactors.waist).toBeCloseTo(8.8, 1);
+    expect(res.body.data.morphFactors.hip).toBeCloseTo(19.8, 1);
+    expect(res.body.data.morphFactors.shoulder).toBeCloseTo(5.2, 1);
+  });
+
+  it('GET /avatar/presets/nearest → 404 khi chưa có preset', async () => {
+    await bootstrap('user-a');
+    prisma.avatarPreset.findMany.mockResolvedValue([]);
+
+    await request(app.getHttpServer())
+      .get(
+        '/api/avatar/presets/nearest?gender=female&height=165&weight=56&chest=88&waist=70&hip=94&shoulder=39',
+      )
+      .expect(404);
+  });
+
+  it('GET /avatar/presets/nearest → 400 khi gender không hợp lệ', async () => {
+    await bootstrap('user-a');
+
+    await request(app.getHttpServer())
+      .get(
+        '/api/avatar/presets/nearest?gender=robot&height=165&weight=56&chest=88&waist=70&hip=94&shoulder=39',
+      )
+.expect(400);
   });
 });

@@ -147,6 +147,8 @@ User đã nhập số đo ở `/profile/measurements` → Mannequin tự động
 ## 🎯 Giai Đoạn 3 — GLB Avatar từ BE (Blender Pipeline)
 > **Thời gian:** 3–5 ngày | **Phụ thuộc BE:** ✅ **Đã xong (BE)** | **Hiện tại: FE chờ BE output**
 
+> 📄 **Handover FE mới nhất:** `docs/phase4-avatar-fe-handover.md` — chiến lược **preset + morph** để mọi user dùng được mà không cần cài Blender. BE đã xong: bảng `avatar_presets`, script `npm run presets:generate`, endpoint `GET /avatar/presets[/nearest]` + 9 e2e test. FE chỉ cần code theo tài liệu (load GLB + áp morph influence).
+
 ### Điều kiện tiên quyết ✅ (đã hoàn thành bên BE)
 - ✅ Endpoint `POST /api/avatar/generate` nhận `{ gender, height, weight, chest, waist, hip, shoulder, draco?, morph? }` → trả `{ id, glbUrl, isCached, measuredCm, timingS }`
 - ✅ Blender + MPFB2 cài đặt và script `generate_avatar.py` (sync ~2s, không phải 30–60s)

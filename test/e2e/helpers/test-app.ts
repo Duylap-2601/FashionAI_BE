@@ -42,6 +42,7 @@ export function createPrismaMock(overrides: PrismaMock = {}): PrismaMock {
     tryOnResult: model(),
     stylistResult: model(),
     avatar: model(),
+    avatarPreset: model(),
     order: model(),
     orderItem: model(),
     payment: model(),

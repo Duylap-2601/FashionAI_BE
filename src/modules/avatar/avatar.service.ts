@@ -40,6 +40,19 @@ export interface AvatarResult {
 export class AvatarService {
   private readonly logger = new Logger(AvatarService.name);
 
+  /**
+   * Hằng số calibration (đồng bộ với src/modules/avatar/blender/calibration.json).
+   * Được nhúng trực tiếp để endpoint presets hoạt động cả khi không triển khai
+   * Blender (production không có file calibration.json trong dist/).
+   */
+  private static readonly CALIB: Record<
+    string,
+    { refHeight: number; factors: Record<string, number> }
+  > = {
+    female: { refHeight: 159.1, factors: { chest: 16.9, waist: 8.5, hip: 19.1, shoulder: 5.0 } },
+    male: { refHeight: 172.9, factors: { chest: 16.9, waist: 9.9, hip: 19.0, shoulder: 5.0 } },
+  };
+
   private readonly blenderPath: string;
   private readonly scriptPath: string;
   private readonly storageDir: string;
@@ -296,6 +309,98 @@ export class AvatarService {
     fs.writeFileSync(finalPath, buffer);
     this.logger.log(`[Avatar] Lưu local: ${finalPath} (${buffer.length} bytes)`);
     return `${this.publicBaseUrl}/${fileName}/file`;
+  }
+
+  // ── Presets (grid GLB sinh offline, FE dùng morph targets) ────────────────
+
+  async getPresets(gender: string) {
+    if (!['male', 'female'].includes(gender)) {
+      throw new BadRequestException(`gender phải là 'male' hoặc 'female'`);
+    }
+    const presets = await this.prisma.avatarPreset.findMany({
+      where: { gender },
+      orderBy: [{ height: 'asc' }, { weight: 'asc' }],
+    });
+    return presets.map((p) => this.mapPreset(p));
+  }
+
+  /**
+   * Tìm preset gần nhất theo (height, weight) và trả các thông tin FE cần để
+   * áp morph targets: presetMeasurements (số đo nướng trong GLB), morphDeltasCm
+   * (user - preset), morphFactors (cm/đơn vị morph, đã scale theo chiều cao preset).
+   */
+  async getNearestPreset(
+    gender: string,
+    measurements: {
+      height: number;
+      weight: number;
+      chest: number;
+      waist: number;
+      hip: number;
+      shoulder: number;
+    },
+  ) {
+    if (!['male', 'female'].includes(gender)) {
+      throw new BadRequestException(`gender phải là 'male' hoặc 'female'`);
+    }
+    for (const [field, v] of Object.entries(measurements)) {
+      if (!(v > 0)) throw new BadRequestException(`${field} phải là số dương`);
+    }
+
+    const presets = await this.prisma.avatarPreset.findMany({ where: { gender } });
+    if (!presets.length) {
+      throw new NotFoundException('Chưa có preset nào cho giới tính này. Chạy npm run presets:generate.');
+    }
+
+    let best = presets[0];
+    let bestD = Infinity;
+    for (const p of presets) {
+      const d = Math.hypot(
+        (Number(p.height) - measurements.height) / 40,
+        (Number(p.weight) - measurements.weight) / 60,
+      );
+      if (d < bestD) {
+        bestD = d;
+        best = p;
+      }
+    }
+
+    const preset = this.mapPreset(best);
+    const calib = AvatarService.CALIB[gender];
+    const heightScale = preset.height / calib.refHeight;
+
+    const fields = ['chest', 'waist', 'hip', 'shoulder'] as const;
+    const morphDeltasCm: Record<string, number> = {};
+    const morphFactors: Record<string, number> = {};
+    for (const f of fields) {
+      morphDeltasCm[f] = +(measurements[f] - preset.presetMeasurements[f]).toFixed(1);
+      morphFactors[f] = +(calib.factors[f] * heightScale).toFixed(1);
+    }
+
+    return {
+      gender,
+      preset: { id: preset.id, height: preset.height, weight: preset.weight, glbUrl: preset.glbUrl },
+      presetMeasurements: preset.presetMeasurements,
+      morphDeltasCm,
+      morphFactors,
+    };
+  }
+
+  private mapPreset(p: any) {
+    const pm = (p.presetMeasurements ?? {}) as Record<string, any>;
+    return {
+      id: p.id,
+      gender: p.gender,
+      height: Number(p.height),
+      weight: Number(p.weight),
+      glbUrl: p.glbUrl,
+      presetMeasurements: {
+        chest: Number(pm.chest ?? 0),
+        waist: Number(pm.waist ?? 0),
+        hip: Number(pm.hip ?? 0),
+        shoulder: Number(pm.shoulder ?? 0),
+      },
+    };
   }
 
   private toResult(
