@@ -52,17 +52,16 @@ export class AvatarService {
     private readonly storageService: StorageService,
     private readonly redisService: RedisService,
   ) {
-    this.blenderPath =
-      this.config.get<string>('BLENDER_PATH') ?? 'blender';
+    this.blenderPath = this.config.get<string>('BLENDER_PATH')?.trim() || 'blender';
     this.scriptPath =
-      this.config.get<string>('AVATAR_SCRIPT_PATH') ??
+      this.config.get<string>('AVATAR_SCRIPT_PATH')?.trim() ||
       path.join(process.cwd(), 'src', 'modules', 'avatar', 'blender', 'generate_avatar.py');
     this.storageDir =
-      this.config.get<string>('AVATAR_STORAGE_DIR') ?? 'storage/avatars';
+      this.config.get<string>('AVATAR_STORAGE_DIR')?.trim() || 'storage/avatars';
     this.publicBaseUrl =
-      this.config.get<string>('AVATAR_PUBLIC_BASE_URL') ??
-      `${this.config.get<string>('PUBLIC_API_URL') ?? 'http://localhost:3000'}/api/avatar`;
-    this.timeoutMs = parseInt(this.config.get<string>('AVATAR_TIMEOUT_MS') ?? '60000', 10);
+      this.config.get<string>('AVATAR_PUBLIC_BASE_URL')?.trim() ||
+      `${this.config.get<string>('PUBLIC_API_URL')?.trim() || 'http://localhost:3000'}/api/avatar`;
+    this.timeoutMs = parseInt(this.config.get<string>('AVATAR_TIMEOUT_MS') || '60000', 10);
 
     if (!fs.existsSync(this.scriptPath)) {
       this.logger.error(`Không tìm thấy script avatar: ${this.scriptPath}`);
