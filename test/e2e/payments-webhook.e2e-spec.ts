@@ -4,6 +4,7 @@ import request from 'supertest';
 import { OrderStatus, UserTier } from '@prisma/client';
 import { PaymentsController } from '../../src/modules/payments/payments.controller';
 import { PaymentsService } from '../../src/modules/payments/payments.service';
+import { MailService } from '../../src/modules/mail/mail.service';
 import { JwtAuthGuard } from '../../src/modules/auth/guards/jwt-auth.guard';
 import { RateLimitGuard } from '../../src/common/guards/rate-limit.guard';
 import {
@@ -35,7 +36,7 @@ describe('SePay IPN (e2e)', () => {
           }),
         ],
         controllers: [PaymentsController],
-        providers: [PaymentsService],
+        providers: [PaymentsService, MailService],
       },
       configure: (builder) =>
         builder

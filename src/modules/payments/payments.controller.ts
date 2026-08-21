@@ -87,8 +87,21 @@ export class PaymentsController {
 
   @Public()
   @Get('mock-success')
-  @ApiOperation({ summary: 'Mock thanh toán thành công trong development' })
+  @ApiOperation({ 
+    summary: 'Mock thanh toán thành công (chỉ development)', 
+    description: 'Endpoint này bị chặn hoàn toàn ở production (NODE_ENV=production)' 
+  })
   async mockSuccess(@Req() req: Request, @Query('orderCode') orderCode: number) {
+    const nodeEnv = process.env.NODE_ENV;
+    if (nodeEnv === 'production') {
+      return {
+        success: false,
+        code: 'MOCK_DISABLED_IN_PRODUCTION',
+        message: 'Mock payment endpoint is disabled in production.',
+        timestamp: new Date().toISOString(),
+        path: req.originalUrl ?? req.url,
+      };
+    }
     const result = await this.paymentsService.mockSuccess(Number(orderCode));
     return {
       success: true,

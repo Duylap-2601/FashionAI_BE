@@ -26,6 +26,9 @@
     "test:e2e": "jest --config test/jest-e2e.json",
     "test:watch": "jest --watch"
   },
+  "prisma": {
+    "seed": "ts-node prisma/seed.ts"
+  },
   "dependencies": {
     "@fal-ai/client": "^1.10.1",
     "@google/genai": "^2.6.0",

@@ -3,6 +3,7 @@ import { ConfigService } from '@nestjs/config';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { PrismaService } from '../../database/prisma.service';
 import { AuthService } from '../auth/auth.service';
+import { OrderStatus } from '@prisma/client';
 
 /**
  * Dọn dẹp định kỳ những bảng chỉ phình ra theo thời gian: token đã hết hạn và
@@ -37,10 +38,24 @@ export class MaintenanceService {
         where: { expiresAt: { lt: new Date() } },
       });
 
+      // Expire PENDING orders that haven't been paid after 24h
+      const expiredOrders = await this.prisma.order.updateMany({
+        where: {
+          status: OrderStatus.PENDING,
+          targetTier: null, // Chỉ hết hạn đơn sản phẩm, không áp dụng cho nâng cấp gói
+          createdAt: { lt: new Date(Date.now() - 24 * 60 * 60 * 1000) },
+        },
+        data: {
+          status: OrderStatus.EXPIRED,
+          checkoutUrl: null,
+          checkoutExpiresAt: null,
+        },
+      });
+
       this.logger.log(
         `Dọn dẹp định kỳ hoàn tất | refreshTokens=${tokens.deletedRefreshTokens} ` +
           `resetTokens=${tokens.deletedResetTokens} verifyTokens=${tokens.deletedVerifyTokens} ` +
-          `tryOnCache=${tryOnCache.count}`,
+          `tryOnCache=${tryOnCache.count} expiredOrders=${expiredOrders.count}`,
       );
     } catch (err) {
       // Cron thất bại không được làm sập process.

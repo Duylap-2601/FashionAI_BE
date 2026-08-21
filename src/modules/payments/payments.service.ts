@@ -12,6 +12,7 @@ import PayOS from '@payos/node';
 import * as crypto from 'crypto';
 import { createWithUniqueOrderCode } from '../../common/utils/order-code.util';
 import { CheckoutDto, PaymentProvider } from './dto/checkout.dto';
+import { MailService } from '../mail/mail.service';
 
 const TIER_PRICES: Record<UserTier, number> = {
   FREE: 0,
@@ -35,6 +36,7 @@ export class PaymentsService {
   constructor(
     private readonly configService: ConfigService,
     private readonly prisma: PrismaService,
+    private readonly mailService: MailService,
   ) {
     const clientId = this.configService.get<string>('PAYOS_CLIENT_ID');
     const apiKey = this.configService.get<string>('PAYOS_API_KEY');
@@ -265,11 +267,8 @@ export class PaymentsService {
     headers: Record<string, any>,
     rawBody?: Buffer,
   ) {
-    if (ipnData?.id !== undefined && ipnData?.transferAmount !== undefined) {
-      return this.handleSePayBankWebhook(ipnData, headers, rawBody);
-    }
-
-    this.verifySePaySecret(headers);
+    // Verify HMAC signature for all environments (mandatory in production)
+    this.verifySePayIPNSignature(headers, rawBody);
 
     const notificationType = ipnData?.notification_type;
     const invoiceNumber = ipnData?.order?.order_invoice_number;
@@ -361,35 +360,79 @@ export class PaymentsService {
       .digest('base64');
   }
 
-  private verifySePaySecret(headers: Record<string, any>) {
-    const expectedSecret = this.configService.get<string>('SEPAY_IPN_SECRET');
-    const providedSecret = headers['x-secret-key'];
+  private verifySePayIPNSignature(headers: Record<string, any>, rawBody?: Buffer) {
+    const secret = this.configService.get<string>('SEPAY_IPN_SECRET');
+    const nodeEnv = this.configService.get<string>('NODE_ENV');
+    const isProduction = nodeEnv === 'production';
 
-    if (!expectedSecret) {
-      if (this.configService.get<string>('NODE_ENV') === 'production') {
+    if (!secret) {
+      if (isProduction) {
         throw new BadRequestException('SEPAY_IPN_SECRET is required in production');
       }
+      this.logger.warn('SEPAY_IPN_SECRET not configured, skipping signature verification (non-production)');
       return;
     }
 
-    if (typeof providedSecret !== 'string' || providedSecret !== expectedSecret) {
-      throw new BadRequestException('SePay IPN secret is invalid');
+    const signature = headers['x-sepay-signature'] || headers['x-signature'];
+    const timestamp = headers['x-sepay-timestamp'] || headers['x-timestamp'];
+
+    if (!signature || !timestamp) {
+      throw new BadRequestException('Missing SePay IPN signature or timestamp headers');
+    }
+
+    if (!rawBody) {
+      throw new BadRequestException('Raw body required for SePay IPN signature verification');
+    }
+
+    const timestampNumber = Number(timestamp);
+    if (!Number.isFinite(timestampNumber)) {
+      throw new BadRequestException('Invalid SePay IPN timestamp');
+    }
+
+    const toleranceSeconds = Number(
+      this.configService.get<string>('SEPAY_IPN_TIMESTAMP_TOLERANCE_SECONDS') ?? '300',
+    );
+    const nowSeconds = Math.floor(Date.now() / 1000);
+    if (Math.abs(nowSeconds - timestampNumber) > toleranceSeconds) {
+      throw new BadRequestException('SePay IPN timestamp expired');
+    }
+
+    const expectedSignature =
+      'sha256=' +
+      crypto
+        .createHmac('sha256', secret)
+        .update(`${timestamp}.${rawBody.toString('utf8')}`)
+        .digest('hex');
+
+    const expected = Buffer.from(expectedSignature);
+    const provided = Buffer.from(signature.replace(/^sha256=/, ''));
+    if (provided.length !== expected.length || !crypto.timingSafeEqual(provided, expected)) {
+      throw new BadRequestException('SePay IPN signature is invalid');
     }
   }
 
   private verifySePayHmac(headers: Record<string, any>, rawBody?: Buffer) {
     const secret = this.configService.get<string>('SEPAY_WEBHOOK_SECRET');
     const nodeEnv = this.configService.get<string>('NODE_ENV');
-    const shouldVerify =
-      nodeEnv === 'production' ||
-      this.configService.get<string>('SEPAY_WEBHOOK_VERIFY_HMAC') === 'true';
+    const isProduction = nodeEnv === 'production';
 
-    if (!shouldVerify && !secret) return;
+    if (!secret) {
+      if (isProduction) {
+        throw new BadRequestException('SEPAY_WEBHOOK_SECRET is required in production');
+      }
+      this.logger.warn('SEPAY_WEBHOOK_SECRET not configured, skipping HMAC verification (non-production)');
+      return;
+    }
 
     const signature = headers['x-sepay-signature'];
     const timestamp = headers['x-sepay-timestamp'];
-    if (!secret || typeof signature !== 'string' || typeof timestamp !== 'string' || !rawBody) {
-      throw new BadRequestException('Missing SePay HMAC signature, timestamp, raw body, or secret');
+
+    if (!signature || !timestamp) {
+      throw new BadRequestException('Missing SePay HMAC signature or timestamp headers');
+    }
+
+    if (!rawBody) {
+      throw new BadRequestException('Raw body required for SePay HMAC verification');
     }
 
     const timestampNumber = Number(timestamp);
@@ -413,7 +456,7 @@ export class PaymentsService {
         .digest('hex');
 
     const expected = Buffer.from(expectedSignature);
-    const provided = Buffer.from(signature);
+    const provided = Buffer.from(signature.replace(/^sha256=/, ''));
     if (provided.length !== expected.length || !crypto.timingSafeEqual(provided, expected)) {
       throw new BadRequestException('SePay HMAC signature is invalid');
     }
@@ -500,6 +543,7 @@ export class PaymentsService {
   ) {
     const order = await this.prisma.order.findUnique({
       where: { orderCode },
+      include: { items: true },
     });
 
     if (!order) {
@@ -563,6 +607,17 @@ export class PaymentsService {
           data: { tier: order.targetTier },
         }),
       );
+    } else {
+      // Đơn sản phẩm: trừ tồn kho khi đã xác nhận thanh toán. Trừ tại đây (không
+      // phải lúc tạo đơn PENDING) để đơn bỏ dở không giữ chỗ hàng vô thời hạn.
+      for (const item of order.items ?? []) {
+        transactionSteps.push(
+          this.prisma.product.update({
+            where: { id: item.productId },
+            data: { stock: { decrement: item.quantity } },
+          }),
+        );
+      }
     }
 
     try {
@@ -584,10 +639,60 @@ export class PaymentsService {
       return { message: 'Payment processed and user tier updated successfully' };
     }
 
+    // Gửi email xác nhận đơn hàng cho user. Không để lỗi email làm hỏng luồng
+    // thanh toán (đã ghi PAID thành công rồi).
+    await this.sendOrderConfirmationEmail(order.id).catch((err) =>
+      this.logger.error(
+        `Không gửi được email xác nhận đơn #${orderCode}: ${err?.message}`,
+      ),
+    );
+
     this.logger.log(
       `Đã ghi nhận thanh toán đơn hàng #${orderCode} của User ${order.userId} qua ${provider}`,
     );
     return { message: 'Payment processed and order marked as paid' };
+  }
+
+  /** Lấy đơn kèm sản phẩm + email user và gửi mail xác nhận. */
+  private async sendOrderConfirmationEmail(orderId: string) {
+    const order = await this.prisma.order.findUnique({
+      where: { id: orderId },
+      include: {
+        items: { include: { product: true } },
+        user: { select: { email: true } },
+      },
+    });
+
+    if (!order?.user?.email || !order.items?.length) {
+      return;
+    }
+
+    const itemsTotal = order.items.reduce(
+      (sum, item) => sum + Number(item.price) * item.quantity,
+      0,
+    );
+
+    await this.mailService.sendOrderConfirmationEmail(order.user.email, {
+      orderId: order.id,
+      orderCode: order.orderCode,
+      items: order.items.map((item) => ({
+        name: item.product.name,
+        quantity: item.quantity,
+        size: item.size,
+        color: item.color,
+        price: Number(item.price),
+      })),
+      itemsTotal,
+      shippingFee: Number(order.shippingFee ?? 0),
+      discountAmount: Number(order.discountAmount ?? 0),
+      total: Number(order.amount),
+      shippingInfo: order.shippingInfo as {
+        name?: string;
+        phone?: string;
+        address?: string;
+        note?: string;
+      } | null,
+    });
   }
 
   async getUserOrders(userId: string) {

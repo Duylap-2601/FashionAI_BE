@@ -175,22 +175,27 @@ model EmailVerificationToken {
 }
 
 model Product {
-  id          String          @id @default(uuid()) @db.Uuid
-  name        String
-  description String?         @db.Text
-  category    GarmentCategory @default(UPPER)
-  color       String?
-  size        String?
-  price       Decimal         @db.Decimal(10, 2)
-  garmentUrl  String          @map("garment_url")
-  status      ProductStatus   @default(ACTIVE)
-  createdAt   DateTime        @default(now()) @map("created_at")
-  updatedAt   DateTime        @updatedAt @map("updated_at")
+  id            String          @id @default(uuid()) @db.Uuid
+  name          String
+  description   String?         @db.Text
+  category      GarmentCategory @default(UPPER)
+  color         String?
+  size          String?
+  price         Decimal         @db.Decimal(10, 2)
+  originalPrice Decimal?        @db.Decimal(10, 2) @map("original_price")
+  stock         Int             @default(0)
+  brand         String?         @default("StAle. SIGNATURE")
+  garmentUrl    String          @map("garment_url")
+  status        ProductStatus   @default(ACTIVE)
+  colors        Json?           // [{ name: string, hex: string }]
+  sizes         Json?           // ["S", "M", "L"]
+  createdAt     DateTime        @default(now()) @map("created_at")
+  updatedAt     DateTime        @updatedAt @map("updated_at")
 
-  images       ProductImage[]
-  tryOnResults TryOnResult[]
+  images        ProductImage[]
+  tryOnResults  TryOnResult[]
   stylistResults StylistResult[]
-  orderItems   OrderItem[]
+  orderItems    OrderItem[]
 
   @@map("products")
 }
@@ -256,18 +261,22 @@ model StylistResult {
 }
 
 model Order {
-  id         String      @id @default(uuid()) @db.Uuid
-  orderCode  Int         @unique @map("order_code")
-  userId     String      @map("user_id") @db.Uuid
-  targetTier UserTier?   @map("target_tier")
-  amount     Decimal     @db.Decimal(10, 2)
-  status     OrderStatus @default(PENDING)
-  shippingInfo Json?     @map("shipping_info")
-  paymentProvider   String?   @map("payment_provider")
-  checkoutUrl       String?   @map("checkout_url")
+  id            String      @id @default(uuid()) @db.Uuid
+  orderCode     Int         @unique @map("order_code")
+  userId        String      @map("user_id") @db.Uuid
+  targetTier    UserTier?   @map("target_tier")
+  amount        Decimal     @db.Decimal(10, 2)
+  status        OrderStatus @default(PENDING)
+  shippingInfo  Json?       @map("shipping_info")
+  paymentMethod String?     @map("payment_method")
+  paymentProvider String?   @map("payment_provider")
+  checkoutUrl   String?     @map("checkout_url")
   checkoutExpiresAt DateTime? @map("checkout_expires_at")
-  createdAt  DateTime    @default(now()) @map("created_at")
-  updatedAt  DateTime    @updatedAt @map("updated_at")
+  shippingFee   Decimal?    @db.Decimal(10, 2) @map("shipping_fee")
+  discountAmount Decimal?   @db.Decimal(10, 2) @map("discount_amount")
+  couponCode    String?     @map("coupon_code")
+  createdAt     DateTime    @default(now()) @map("created_at")
+  updatedAt     DateTime    @updatedAt @map("updated_at")
 
   user     User      @relation(fields: [userId], references: [id], onDelete: Cascade)
   payments Payment[]

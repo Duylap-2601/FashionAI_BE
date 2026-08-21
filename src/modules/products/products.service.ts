@@ -25,20 +25,32 @@ export class ProductsService {
       throw new BadRequestException('Vui lòng upload ảnh sản phẩm hoặc truyền garmentUrl');
     }
 
-    return this.prisma.product.create({
-      data: {
-        name: dto.name,
-        description: dto.description,
-        category: dto.category,
-        color: dto.color,
-        size: dto.size,
-        price: dto.price,
-        garmentUrl,
-        status: dto.status ?? ProductStatus.ACTIVE,
-        images: {
-          create: [{ imageUrl: garmentUrl, isMain: true }],
-        },
+    const createData: Prisma.ProductCreateInput = {
+      name: dto.name,
+      description: dto.description,
+      category: dto.category,
+      color: dto.color,
+      size: dto.size,
+      price: dto.price,
+      originalPrice: dto.originalPrice,
+      stock: dto.stock ?? 0,
+      brand: dto.brand ?? 'StAle. SIGNATURE',
+      garmentUrl,
+      status: dto.status ?? ProductStatus.ACTIVE,
+      images: {
+        create: [{ imageUrl: garmentUrl, isMain: true }],
       },
+    };
+
+    if (dto.colors !== undefined) {
+      createData.colors = dto.colors;
+    }
+    if (dto.sizes !== undefined) {
+      createData.sizes = dto.sizes;
+    }
+
+    return this.prisma.product.create({
+      data: createData,
       include: { images: true },
     });
   }
