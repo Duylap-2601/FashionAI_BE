@@ -122,7 +122,7 @@ export async function createTestApp(options: TestAppOptions): Promise<{
   }
 
   const moduleRef = await builder.compile();
-  const app = moduleRef.createNestApplication();
+  const app = moduleRef.createNestApplication({ rawBody: true });
 
   // Khớp với cấu hình trong src/main.ts để e2e phản ánh hành vi thật.
   app.setGlobalPrefix('api');

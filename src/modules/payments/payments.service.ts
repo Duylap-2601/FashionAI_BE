@@ -397,15 +397,13 @@ export class PaymentsService {
       throw new BadRequestException('SePay IPN timestamp expired');
     }
 
-    const expectedSignature =
-      'sha256=' +
-      crypto
-        .createHmac('sha256', secret)
-        .update(`${timestamp}.${rawBody.toString('utf8')}`)
-        .digest('hex');
+    const expectedSignature = crypto
+      .createHmac('sha256', secret)
+      .update(`${timestamp}.${rawBody.toString('utf8')}`)
+      .digest('hex');
 
     const expected = Buffer.from(expectedSignature);
-    const provided = Buffer.from(signature.replace(/^sha256=/, ''));
+    const provided = Buffer.from(String(signature).replace(/^sha256=/, ''));
     if (provided.length !== expected.length || !crypto.timingSafeEqual(provided, expected)) {
       throw new BadRequestException('SePay IPN signature is invalid');
     }
@@ -448,15 +446,13 @@ export class PaymentsService {
       throw new BadRequestException('SePay webhook timestamp expired');
     }
 
-    const expectedSignature =
-      'sha256=' +
-      crypto
-        .createHmac('sha256', secret)
-        .update(`${timestamp}.${rawBody.toString('utf8')}`)
-        .digest('hex');
+    const expectedSignature = crypto
+      .createHmac('sha256', secret)
+      .update(`${timestamp}.${rawBody.toString('utf8')}`)
+      .digest('hex');
 
     const expected = Buffer.from(expectedSignature);
-    const provided = Buffer.from(signature.replace(/^sha256=/, ''));
+    const provided = Buffer.from(String(signature).replace(/^sha256=/, ''));
     if (provided.length !== expected.length || !crypto.timingSafeEqual(provided, expected)) {
       throw new BadRequestException('SePay HMAC signature is invalid');
     }
