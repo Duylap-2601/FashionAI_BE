@@ -1,5 +1,6 @@
 import { INestApplication } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
+import crypto from 'crypto';
 import request from 'supertest';
 import { OrderStatus, UserTier } from '@prisma/client';
 import { PaymentsController } from '../../src/modules/payments/payments.controller';
@@ -76,9 +77,19 @@ describe('SePay IPN (e2e)', () => {
     };
   }
 
-  function post(payload: unknown, secret: string | null = IPN_SECRET) {
+  function post(payload: unknown, signingSecret: string | null = IPN_SECRET) {
     const req = request(app.getHttpServer()).post('/api/payments/sepay-ipn');
-    if (secret !== null) req.set('x-secret-key', secret);
+    if (signingSecret !== null) {
+      const timestamp = String(Math.floor(Date.now() / 1000));
+      const rawBody = JSON.stringify(payload);
+      const signature = `sha256=${crypto
+        .createHmac('sha256', signingSecret)
+        .update(`${timestamp}.${rawBody}`)
+        .digest('hex')}`;
+      req.set('x-sepay-timestamp', timestamp);
+      req.set('x-sepay-signature', signature);
+      return req.set('Content-Type', 'application/json').send(rawBody);
+    }
     return req.send(payload as object);
   }
 
@@ -115,7 +126,7 @@ describe('SePay IPN (e2e)', () => {
     expect(prisma.$transaction).not.toHaveBeenCalled();
   });
 
-  it('từ chối khi secret không đúng', async () => {
+  it('từ chối khi signature không đúng', async () => {
     prisma.order.findUnique.mockResolvedValue(pendingProductOrder);
 
     await post(orderPaidPayload(), 'wrong-secret').expect(400);
