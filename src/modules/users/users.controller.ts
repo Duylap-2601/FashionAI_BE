@@ -10,6 +10,7 @@ import { UpdateMeasurementsDto } from './dto/update-measurements.dto';
 import { UpdateProfileDto } from './dto/update-profile.dto';
 import { UpdateUserAdminDto } from './dto/update-user-admin.dto';
 import { AuthenticatedUser } from '../auth/interfaces/authenticated-user.interface';
+import { buildApiResponse } from '../../common/utils/api-response.util';
 import { UsersService } from './users.service';
 
 type RequestUser = AuthenticatedUser;
@@ -25,7 +26,7 @@ export class UsersController {
   @ApiOperation({ summary: 'Lấy thông tin người dùng hiện tại' })
   async getMe(@Req() req: Request, @CurrentUser() user: RequestUser) {
     const data = await this.usersService.getMe(user.id);
-    return this.buildResponse(
+    return buildApiResponse(
       req,
       'USER_PROFILE_SUCCESS',
       'Lấy thông tin người dùng thành công',
@@ -41,7 +42,7 @@ export class UsersController {
     @Body() dto: UpdateProfileDto,
   ) {
     const data = await this.usersService.updateMe(user.id, dto);
-    return this.buildResponse(
+    return buildApiResponse(
       req,
       'USER_PROFILE_UPDATED',
       'Cập nhật hồ sơ thành công',
@@ -53,7 +54,7 @@ export class UsersController {
   @ApiOperation({ summary: 'Lấy số đo cơ thể' })
   async getMeasurements(@Req() req: Request, @CurrentUser() user: RequestUser) {
     const data = await this.usersService.getMeasurements(user.id);
-    return this.buildResponse(
+    return buildApiResponse(
       req,
       'USER_MEASUREMENTS_SUCCESS',
       'Lấy số đo cơ thể thành công',
@@ -69,7 +70,7 @@ export class UsersController {
     @Body() dto: UpdateMeasurementsDto,
   ) {
     const data = await this.usersService.updateMeasurements(user.id, dto);
-    return this.buildResponse(
+    return buildApiResponse(
       req,
       'USER_MEASUREMENTS_UPDATED',
       'Cập nhật số đo cơ thể thành công',
@@ -85,7 +86,7 @@ export class UsersController {
     @Query('action') action?: string,
   ) {
     const data = await this.usersService.getQuota(user.id, action);
-    return this.buildResponse(
+    return buildApiResponse(
       req,
       'USER_QUOTA_SUCCESS',
       'Lấy quota AI thành công',
@@ -107,15 +108,13 @@ export class UsersController {
       Number(page) || 1,
       Number(limit) || 20,
     );
-    return {
-      success: true,
-      code: 'ADMIN_USERS_FETCH_SUCCESS',
-      message: 'Lấy danh sách người dùng thành công',
-      timestamp: new Date().toISOString(),
-      path: req.originalUrl ?? req.url,
-      data: result.items,
-      meta: result.meta,
-    };
+    return buildApiResponse(
+      req,
+      'ADMIN_USERS_FETCH_SUCCESS',
+      'Lấy danh sách người dùng thành công',
+      result.items,
+      result.meta,
+    );
   }
 
   @Patch(':id')
@@ -129,27 +128,11 @@ export class UsersController {
     @Body() dto: UpdateUserAdminDto,
   ) {
     const data = await this.usersService.updateByAdmin(id, dto);
-    return this.buildResponse(
+    return buildApiResponse(
       req,
       'ADMIN_USER_UPDATED',
       'Cập nhật thông tin người dùng thành công',
       data,
     );
-  }
-
-  private buildResponse<TData>(
-    req: Request,
-    code: string,
-    message: string,
-    data: TData,
-  ) {
-    return {
-      success: true,
-      code,
-      message,
-      timestamp: new Date().toISOString(),
-      path: req.originalUrl ?? req.url,
-      data,
-    };
   }
 }

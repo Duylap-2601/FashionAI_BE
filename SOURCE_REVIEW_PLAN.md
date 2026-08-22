@@ -101,9 +101,8 @@ Recent verification:
 ### Payments & Tier Upgrade
 
 - Checkout endpoint for tier upgrade.
-- PayOS checkout link support.
-- MoMo sandbox checkout link support.
-- Webhook/IPN handlers.
+- SePay checkout link support.
+- SePay IPN and bank-transfer webhook handlers (HMAC verified).
 - Mock success endpoint disabled in production.
 - Paid order upgrades user tier.
 - User order history endpoint.
@@ -112,7 +111,7 @@ Recent verification:
 
 ### Documentation & Consistency
 
-- `README.md`, `GETTING_STARTED.md`, `SRS.md`, and several Swagger descriptions contain mojibake/broken Vietnamese encoding.
+- Vietnamese encoding in `README.md`, `GETTING_STARTED.md`, `SRS.md`, and Swagger descriptions has been cleaned up.
 - The older review plan was stale and understated implemented functionality.
 - Some docs still imply older Gradio/Kolors history while source uses fal.ai/FASHN.
 - Response shape is not fully consistent: most feature modules return `{ success, code, message, data }`, while `users` returns raw objects.
@@ -121,8 +120,8 @@ Recent verification:
 
 - Google OAuth exists, but production OAuth state/CSRF behavior should be verified end to end.
 - Maintenance endpoint is public-route plus header secret in production; acceptable for internal use but should be documented.
-- MoMo IPN currently processes success without signature verification.
-- PayOS webhook verification depends on PayOS config; mock/fallback behavior should be explicitly separated from production.
+- SePay IPN and bank-transfer webhook both verify HMAC signature and timestamp before processing.
+- Mock/fallback behavior is explicitly separated from production (mock-success endpoint is blocked when NODE_ENV=production).
 - No automated scheduled cleanup job for expired tokens; only manual cleanup endpoint exists.
 
 ### Try-On
@@ -191,7 +190,8 @@ Recent verification:
 - [x] Change quota TTL to expire at the next local midnight.
 - [x] Align Stylist Free quota with SRS.
 - [x] Add Redis health indicator.
-- [x] Add MoMo IPN signature verification.
+- [x] Add SePay IPN/webhook HMAC signature verification.
+- [x] Consolidate payments on SePay only (PayOS/MoMo removed).
 - [ ] Document production payment modes and disable fallback behavior in production.
 - [ ] Add provider-cost safe guards where practical.
 

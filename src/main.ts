@@ -17,10 +17,13 @@ async function bootstrap() {
   app.setGlobalPrefix(apiPrefix);
 
   const corsCredentials = parseBoolean(process.env.CORS_CREDENTIALS, true);
+  const isProduction = process.env.NODE_ENV === 'production';
   app.enableCors({
     origin: parseCorsOrigins(
       process.env.CORS_ORIGINS ?? process.env.CORS_ORIGIN,
       corsCredentials,
+      isProduction,
+      logger,
     ),
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
     allowedHeaders: ['Content-Type', 'Authorization'],
@@ -63,7 +66,7 @@ async function bootstrap() {
       .addTag('Virtual Try-On', 'Thử đồ ảo AI bằng fal.ai (FASHN v1.6)')
       .addTag('AI Stylist', 'Tư vấn phong cách bằng Gemini Vision')
       .addTag('Orders', 'Đơn hàng sản phẩm')
-      .addTag('Payments & Subscriptions', 'Thanh toán SePay/PayOS & Nâng cấp tài khoản')
+      .addTag('Payments & Subscriptions', 'Thanh toán SePay & Nâng cấp tài khoản')
       .addTag('Admin', 'Thống kê & quản trị hệ thống')
       .build();
 
@@ -89,8 +92,25 @@ function parseBoolean(value: string | undefined, fallback: boolean) {
   return value.toLowerCase() === 'true';
 }
 
-function parseCorsOrigins(value: string | undefined, credentials: boolean) {
-  if (!value || value.trim() === '*') {
+function parseCorsOrigins(
+  value: string | undefined,
+  credentials: boolean,
+  isProduction: boolean,
+  logger: Logger,
+) {
+  const explicit = value && value.trim() !== '*';
+
+  if (isProduction && !explicit) {
+    // Production không được mở CORS cho '*' hay ngầm rơi về localhost. Bắt buộc
+    // khai báo CORS_ORIGINS để tránh vô tình để lộ API cho mọi domain.
+    logger.warn(
+      'CORS_ORIGINS chưa được cấu hình ở production. Chỉ cho phép localhost tạm thời — ' +
+        'hãy đặt CORS_ORIGINS=<domain FE> để khóa đúng domain.',
+    );
+    return ['http://localhost:3000', 'http://127.0.0.1:3000'];
+  }
+
+  if (!explicit) {
     return credentials
       ? ['http://localhost:3000', 'http://127.0.0.1:3000']
       : '*';

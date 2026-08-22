@@ -37,8 +37,8 @@ Backend API cho nền tảng FashionAI: thử đồ ảo bằng AI, tư vấn ph
   - Redis counter, fallback in-memory, sync DB.
   - Global rate limit và auth endpoint rate limit.
 - Payments:
-  - Checkout nâng cấp tier qua MoMo hoặc PayOS.
-  - Webhook/IPN cập nhật order và user tier.
+  - Checkout nâng cấp tier hoặc thanh toán đơn sản phẩm qua SePay.
+  - IPN/webhook (có xác thực HMAC) cập nhật order và user tier.
   - Mock payment success cho môi trường development.
 
 ## Tech Stack
@@ -49,7 +49,7 @@ Backend API cho nền tảng FashionAI: thử đồ ảo bằng AI, tư vấn ph
 - fal.ai FASHN + SAM2
 - Google Gemini
 - Cloudinary-compatible storage
-- PayOS / MoMo sandbox
+- SePay sandbox
 - Jest
 - Docker / Docker Compose
 

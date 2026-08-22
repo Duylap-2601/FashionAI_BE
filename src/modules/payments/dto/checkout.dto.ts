@@ -9,7 +9,7 @@ import {
   ValidateIf,
 } from 'class-validator';
 
-export type PaymentProvider = 'SEPAY' | 'PAYOS';
+export type PaymentProvider = 'SEPAY';
 
 export class CheckoutDto {
   @ApiProperty({
@@ -35,13 +35,13 @@ export class CheckoutDto {
   targetTier?: UserTier;
 
   @ApiProperty({
-    description: 'Cổng thanh toán lựa chọn',
-    enum: ['SEPAY', 'PAYOS'],
+    description: 'Cổng thanh toán (hiện chỉ hỗ trợ SePay)',
+    enum: ['SEPAY'],
     example: 'SEPAY',
     required: false,
     default: 'SEPAY',
   })
-  @IsIn(['SEPAY', 'PAYOS'])
+  @IsIn(['SEPAY'])
   @IsOptional()
   provider?: PaymentProvider = 'SEPAY';
 }

@@ -38,6 +38,7 @@ import {
 } from './dto/password.dto';
 import { JwtAuthGuard } from './guards/jwt-auth.guard';
 import { AuthenticatedUser } from './interfaces/authenticated-user.interface';
+import { buildApiResponse } from '../../common/utils/api-response.util';
 
 type AuthTokens = Awaited<ReturnType<AuthService['login']>>;
 type GoogleOAuthUser = {
@@ -160,7 +161,7 @@ export class AuthController {
     }
     await this.blacklistBearerToken(req);
     this.clearRefreshCookie(res);
-    return this.buildResponse(req, 'AUTH_LOGOUT_SUCCESS', 'Đăng xuất thành công', null);
+    return buildApiResponse(req, 'AUTH_LOGOUT_SUCCESS', 'Đăng xuất thành công', null);
   }
 
   @Post('logout-all')
@@ -176,7 +177,7 @@ export class AuthController {
     const result = await this.authService.logoutAll(user.id);
     await this.authService.blacklistAccessToken(user.jti, user.exp);
     this.clearRefreshCookie(res);
-    return this.buildResponse(
+    return buildApiResponse(
       req,
       'AUTH_LOGOUT_ALL_SUCCESS',
       'All sessions revoked',
@@ -196,7 +197,7 @@ export class AuthController {
   ) {
     const result = await this.authService.changePassword(user.id, dto);
     await this.authService.blacklistAccessToken(user.jti, user.exp);
-    return this.buildResponse(req, 'AUTH_CHANGE_PASSWORD_SUCCESS', result.message, null);
+    return buildApiResponse(req, 'AUTH_CHANGE_PASSWORD_SUCCESS', result.message, null);
   }
 
   @Public()
@@ -208,7 +209,7 @@ export class AuthController {
     @Body() dto: ForgotPasswordDto,
   ) {
     const result = await this.authService.forgotPassword(dto);
-    return this.buildResponse(req, 'AUTH_FORGOT_PASSWORD_SENT', result.message, null);
+    return buildApiResponse(req, 'AUTH_FORGOT_PASSWORD_SENT', result.message, null);
   }
 
   @Public()
@@ -220,7 +221,7 @@ export class AuthController {
     @Body() dto: ResetPasswordDto,
   ) {
     const result = await this.authService.resetPassword(dto);
-    return this.buildResponse(req, 'AUTH_RESET_PASSWORD_SUCCESS', result.message, null);
+    return buildApiResponse(req, 'AUTH_RESET_PASSWORD_SUCCESS', result.message, null);
   }
 
   @Public()
@@ -232,7 +233,7 @@ export class AuthController {
     @Body() dto: VerifyEmailDto,
   ) {
     const result = await this.authService.verifyEmail(dto);
-    return this.buildResponse(req, 'AUTH_VERIFY_EMAIL_SUCCESS', result.message, null);
+    return buildApiResponse(req, 'AUTH_VERIFY_EMAIL_SUCCESS', result.message, null);
   }
 
   @Post('resend-verification')
@@ -245,7 +246,7 @@ export class AuthController {
     @CurrentUser() user: AuthenticatedUser,
   ) {
     const result = await this.authService.sendEmailVerification(user.id);
-    return this.buildResponse(req, 'AUTH_RESEND_VERIFICATION_SENT', result.message, null);
+    return buildApiResponse(req, 'AUTH_RESEND_VERIFICATION_SENT', result.message, null);
   }
 
   @Public()
@@ -255,7 +256,7 @@ export class AuthController {
   async cleanTokens(@Req() req: Request) {
     this.assertMaintenanceAccess(req);
     const result = await this.authService.cleanExpiredTokens();
-    return this.buildResponse(req, 'AUTH_CLEAN_TOKENS_SUCCESS', 'Cleaned expired tokens', result);
+    return buildApiResponse(req, 'AUTH_CLEAN_TOKENS_SUCCESS', 'Cleaned expired tokens', result);
   }
 
   private respondWithTokens(
@@ -265,7 +266,7 @@ export class AuthController {
     code: string,
   ) {
     this.setRefreshCookie(res, tokens.refreshToken);
-    return this.buildResponse(req, code, 'Authentication successful', {
+    return buildApiResponse(req, code, 'Authentication successful', {
       user: tokens.user,
       accessToken: tokens.accessToken,
       accessTokenExpiresAt: tokens.accessTokenExpiresAt,
@@ -282,22 +283,6 @@ export class AuthController {
     } catch {
       return;
     }
-  }
-
-  private buildResponse<TData>(
-    req: Request,
-    code: string,
-    message: string,
-    data: TData,
-  ) {
-    return {
-      success: true,
-      code,
-      message,
-      timestamp: new Date().toISOString(),
-      path: req.originalUrl ?? req.url,
-      data,
-    };
   }
 
   private readRefreshCookie(req: Request) {

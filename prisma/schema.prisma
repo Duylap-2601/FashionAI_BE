@@ -77,20 +77,31 @@ model User {
   stylistResults           StylistResult[]
   orders                   Order[]
   dailyUsages              DailyUsage[]
+  chatSessions             ChatSession[]
 
   @@map("users")
 }
 
 model Measurement {
-  id        String   @id @default(uuid()) @db.Uuid
-  userId    String   @unique @map("user_id") @db.Uuid
-  height    Decimal? @db.Decimal(5, 1)
-  weight    Decimal? @db.Decimal(5, 1)
-  chest     Decimal? @db.Decimal(5, 1)
-  waist     Decimal? @db.Decimal(5, 1)
-  hip       Decimal? @db.Decimal(5, 1)
-  shoulder  Decimal? @db.Decimal(5, 1)
-  updatedAt DateTime @updatedAt @map("updated_at")
+  id           String   @id @default(uuid()) @db.Uuid
+  userId       String   @unique @map("user_id") @db.Uuid
+  height       Decimal? @db.Decimal(5, 1)
+  weight       Decimal? @db.Decimal(5, 1)
+  chest        Decimal? @db.Decimal(5, 1)
+  waist        Decimal? @db.Decimal(5, 1)
+  hip          Decimal? @db.Decimal(5, 1)
+  shoulder     Decimal? @db.Decimal(5, 1)
+  neck         Decimal? @db.Decimal(5, 1)
+  sleeveLength Decimal? @db.Decimal(5, 1) @map("sleeve_length")
+  wrist        Decimal? @db.Decimal(5, 1)
+  thigh        Decimal? @db.Decimal(5, 1)
+  knee         Decimal? @db.Decimal(5, 1)
+  calf         Decimal? @db.Decimal(5, 1)
+  inseam       Decimal? @db.Decimal(5, 1)
+  outseam      Decimal? @db.Decimal(5, 1)
+  shirtLength  Decimal? @db.Decimal(5, 1) @map("shirt_length")
+  underbust    Decimal? @db.Decimal(5, 1)
+  updatedAt    DateTime @updatedAt @map("updated_at")
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
@@ -240,6 +251,7 @@ model StylistResult {
   userId             String   @map("user_id") @db.Uuid
   productId          String?  @map("product_id") @db.Uuid
   humanImageUrl      String   @map("human_image_url")
+  humanImageHash     String?  @map("human_image_hash")
   garmentDescription String?  @map("garment_description")
   occasion           String?
   stylePreference    String?  @map("style_preference")
@@ -250,6 +262,8 @@ model StylistResult {
   analysisResult     Json     @map("analysis_result")
   inputContext       Json?    @map("input_context")
   rawProviderResponse Json?   @map("raw_provider_response")
+  cacheKey           String?  @map("cache_key")
+  expiresAt          DateTime? @map("expires_at")
   createdAt          DateTime @default(now()) @map("created_at")
 
   user    User     @relation(fields: [userId], references: [id], onDelete: Cascade)
@@ -257,6 +271,9 @@ model StylistResult {
 
   @@index([userId])
   @@index([productId])
+  @@index([humanImageHash])
+  @@index([cacheKey])
+  @@index([expiresAt])
   @@map("stylist_results")
 }
 
@@ -307,7 +324,7 @@ model OrderItem {
 model Payment {
   id            String   @id @default(uuid()) @db.Uuid
   orderId       String   @map("order_id") @db.Uuid
-  provider      String   @default("PAYOS")
+  provider      String   @default("SEPAY")
   transactionId String?  @map("transaction_id")
   paymentData   Json?    @map("payment_data")
   createdAt     DateTime @default(now()) @map("created_at")
@@ -331,4 +348,35 @@ model DailyUsage {
 
   @@unique([userId, action, date])
   @@map("daily_usages")
+}
+
+model ChatSession {
+  id        String   @id @default(uuid()) @db.Uuid
+  userId    String   @map("user_id") @db.Uuid
+  title     String?
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  user     User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  messages ChatMessage[]
+
+  @@index([userId])
+  @@map("chat_sessions")
+}
+
+model ChatMessage {
+  id        String   @id @default(uuid()) @db.Uuid
+  sessionId String   @map("session_id") @db.Uuid
+  role      String   // "user" | "assistant" | "system"
+  content   String   @db.Text
+  tokensIn  Int?     @map("tokens_in")
+  tokensOut Int?     @map("tokens_out")
+  model     String?
+  createdAt DateTime @default(now()) @map("created_at")
+
+  session ChatSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@index([sessionId])
+  @@index([createdAt])
+  @@map("chat_messages")
 }

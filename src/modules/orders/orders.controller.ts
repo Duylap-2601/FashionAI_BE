@@ -19,6 +19,7 @@ import { Roles } from '../../common/decorators/roles.decorator';
 import { RolesGuard } from '../../common/guards/roles.guard';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { AuthenticatedUser } from '../auth/interfaces/authenticated-user.interface';
+import { buildApiResponse } from '../../common/utils/api-response.util';
 import { CreateOrderDto } from './dto/create-order.dto';
 import { UpdateOrderStatusDto } from './dto/update-order-status.dto';
 import { OrdersService } from './orders.service';
@@ -39,14 +40,14 @@ export class OrdersController {
     @Body() dto: CreateOrderDto,
   ) {
     const data = await this.ordersService.create(user.id, dto);
-    return this.buildResponse(req, 'ORDER_CREATE_SUCCESS', 'Tạo đơn hàng thành công', data);
+    return buildApiResponse(req, 'ORDER_CREATE_SUCCESS', 'Tạo đơn hàng thành công', data);
   }
 
   @Get()
   @ApiOperation({ summary: 'Danh sách đơn hàng của tôi' })
   async findAll(@Req() req: Request, @CurrentUser() user: AuthenticatedUser) {
     const data = await this.ordersService.findAll(user.id);
-    return this.buildResponse(req, 'ORDERS_FETCH_SUCCESS', 'Lấy danh sách đơn hàng thành công', data);
+    return buildApiResponse(req, 'ORDERS_FETCH_SUCCESS', 'Lấy danh sách đơn hàng thành công', data);
   }
 
   @Get('all')
@@ -63,15 +64,13 @@ export class OrdersController {
       Number(page) || 1,
       Number(limit) || 20,
     );
-    return {
-      success: true,
-      code: 'ADMIN_ORDERS_FETCH_SUCCESS',
-      message: 'Lấy danh sách đơn hàng thành công',
-      timestamp: new Date().toISOString(),
-      path: req.originalUrl ?? req.url,
-      data: data.items,
-      meta: data.meta,
-    };
+    return buildApiResponse(
+      req,
+      'ADMIN_ORDERS_FETCH_SUCCESS',
+      'Lấy danh sách đơn hàng thành công',
+      data.items,
+      data.meta,
+    );
   }
 
   @Get(':id')
@@ -82,7 +81,7 @@ export class OrdersController {
     @Param('id') id: string,
   ) {
     const data = await this.ordersService.findOne(user.id, id);
-    return this.buildResponse(req, 'ORDER_FETCH_SUCCESS', 'Lấy chi tiết đơn hàng thành công', data);
+    return buildApiResponse(req, 'ORDER_FETCH_SUCCESS', 'Lấy chi tiết đơn hàng thành công', data);
   }
 
   @Patch(':id/cancel')
@@ -93,7 +92,7 @@ export class OrdersController {
     @Param('id') id: string,
   ) {
     const data = await this.ordersService.cancel(user.id, id);
-    return this.buildResponse(req, 'ORDER_CANCEL_SUCCESS', 'Hủy đơn hàng thành công', data);
+    return buildApiResponse(req, 'ORDER_CANCEL_SUCCESS', 'Hủy đơn hàng thành công', data);
   }
 
   @Patch(':id/status')
@@ -107,22 +106,6 @@ export class OrdersController {
     @Body() dto: UpdateOrderStatusDto,
   ) {
     const data = await this.ordersService.updateStatus(id, dto.status);
-    return this.buildResponse(req, 'ORDER_STATUS_UPDATED', 'Cập nhật trạng thái đơn hàng thành công', data);
-  }
-
-  private buildResponse<TData>(
-    req: Request,
-    code: string,
-    message: string,
-    data: TData,
-  ) {
-    return {
-      success: true,
-      code,
-      message,
-      timestamp: new Date().toISOString(),
-      path: req.originalUrl ?? req.url,
-      data,
-    };
+    return buildApiResponse(req, 'ORDER_STATUS_UPDATED', 'Cập nhật trạng thái đơn hàng thành công', data);
   }
 }

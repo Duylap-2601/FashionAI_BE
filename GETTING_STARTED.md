@@ -12,7 +12,7 @@ Tài liệu này dùng để chạy backend trên máy local cho development và
   - fal.ai cho Virtual Try-On thật
   - Google Gemini cho AI Stylist
   - Cloudinary cho lưu ảnh
-  - PayOS hoặc MoMo sandbox cho thanh toán
+  - SePay sandbox cho thanh toán
 
 Backend vẫn có thể chạy local với `AI_TRYON_PROVIDER=mock` khi chưa có fal.ai key.
 
@@ -136,19 +136,10 @@ CLOUDINARY_UPLOAD_FOLDER=fashionai
 Payment:
 
 ```env
-PAYMENT_DEFAULT_PROVIDER=SEPAY
-PAYMENT_ALLOW_MOCK_FALLBACK=false
-PAYOS_CLIENT_ID=""
-PAYOS_API_KEY=""
-PAYOS_CHECKSUM_KEY=""
-MOMO_PARTNER_CODE="your_momo_partner_code"
-MOMO_ACCESS_KEY="your_momo_access_key"
-MOMO_SECRET_KEY="your_momo_secret_key"
-MOMO_VERIFY_SIGNATURE=false
-
 SEPAY_MERCHANT_ID="your_sepay_merchant_id"
 SEPAY_SECRET_KEY="your_sepay_checkout_secret_key"
 SEPAY_IPN_SECRET="your_sepay_ipn_secret_key"
+SEPAY_WEBHOOK_SECRET="your_sepay_webhook_secret_key"
 SEPAY_CHECKOUT_URL=https://pay-sandbox.sepay.vn/v1/checkout/init
 SEPAY_SUCCESS_URL=http://localhost:3000/orders/success
 SEPAY_ERROR_URL=http://localhost:3000/checkout/error
@@ -297,31 +288,7 @@ Backend hiện xử lý webhook ngân hàng theo các rule:
 - Kiểm tra `transferAmount` phải đúng bằng `order.amount` trước khi mark `PAID`.
 - Trả đúng body `{"success": true}` để SePay không retry.
 
-## 10. Cấu Hình MoMo Sandbox
-
-Để gọi MoMo thật ở sandbox, backend cần các biến sau:
-
-```env
-PAYMENT_DEFAULT_PROVIDER=MOMO
-PAYMENT_ALLOW_MOCK_FALLBACK=false
-MOMO_PARTNER_CODE="..."
-MOMO_ACCESS_KEY="..."
-MOMO_SECRET_KEY="..."
-MOMO_ENDPOINT=https://test-payment.momo.vn/v2/gateway/api/create
-MOMO_REDIRECT_URL=http://localhost:3000/orders/success
-MOMO_IPN_URL=https://your-public-api-url/api/payments/momo-ipn
-MOMO_VERIFY_SIGNATURE=false
-```
-
-Lưu ý quan trọng:
-
-- `MOMO_IPN_URL` không được là `localhost` nếu muốn MoMo gọi webhook về backend. Khi chạy local, dùng ngrok hoặc cloudflared để tạo public HTTPS URL trỏ tới `http://localhost:3001`.
-- `MOMO_REDIRECT_URL` là nơi trình duyệt người dùng quay về sau khi thanh toán, thường là frontend.
-- `MOMO_IPN_URL` là webhook server-to-server, phải trỏ tới backend.
-- `PAYMENT_ALLOW_MOCK_FALLBACK=false` giúp thấy lỗi cấu hình thật thay vì tự trả mock success.
-- Bật `MOMO_VERIFY_SIGNATURE=true` khi môi trường đã nhận IPN ổn định và có đúng secret.
-
-## 11. Tài Liệu Liên Quan
+## 10. Tài Liệu Liên Quan
 
 - [README.md](./README.md)
 - [SRS.md](./SRS.md)

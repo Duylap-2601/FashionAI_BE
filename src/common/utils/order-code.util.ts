@@ -5,8 +5,7 @@ export const ORDER_CODE_MAX_ATTEMPTS = 5;
 
 /**
  * Sinh orderCode 8 chữ số: 6 số cuối của timestamp + 2 số random.
- * Giữ độ dài ổn định để cổng thanh toán (PayOS yêu cầu số nguyên) luôn nhận được
- * cùng một định dạng.
+ * Giữ độ dài ổn định để cổng thanh toán luôn nhận được cùng một định dạng.
  */
 export function generateOrderCode(): number {
   const tail = String(Date.now()).slice(-6);

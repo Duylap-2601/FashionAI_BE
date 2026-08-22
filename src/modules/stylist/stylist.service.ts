@@ -12,6 +12,7 @@ import { PrismaService } from '../../database/prisma.service';
 import { StorageService } from '../storage/storage.service';
 import { QuotaService } from '../../common/services/quota.service';
 import { StylistRequestDto } from './dto/stylist-request.dto';
+import * as crypto from 'crypto';
 
 interface ProductContext {
   id: string;
@@ -52,6 +53,7 @@ export class StylistService {
   private readonly ai: GoogleGenAI;
   private readonly MODEL: string;
   private readonly hasApiKey: boolean;
+  private readonly CACHE_TTL_MS: number;
 
   constructor(
     private readonly config: ConfigService,
@@ -67,6 +69,43 @@ export class StylistService {
 
     this.ai = new GoogleGenAI({ apiKey: apiKey ?? '' });
     this.MODEL = this.config.get<string>('GEMINI_MODEL', 'gemini-2.0-flash');
+    this.CACHE_TTL_MS =
+      parseInt(this.config.get<string>('STYLIST_CACHE_TTL_DAYS') ?? '30', 10) *
+      24 *
+      60 *
+      60 *
+      1000;
+  }
+
+  private computeHash(buffer: Buffer): string {
+    return crypto.createHash('sha256').update(buffer).digest('hex');
+  }
+
+  private buildCacheKey(
+    userId: string,
+    humanImageHash: string,
+    productId: string | undefined,
+    garmentDescription: string | null,
+    occasion: string | null,
+    stylePreference: string | null,
+    budget: string | null,
+    genderPreference: string | null,
+  ): string {
+    const parts = [
+      userId,
+      humanImageHash,
+      productId ?? 'none',
+      garmentDescription ?? 'none',
+      occasion ?? 'none',
+      stylePreference ?? 'none',
+      budget ?? 'none',
+      genderPreference ?? 'none',
+    ];
+    return crypto.createHash('sha256').update(parts.join('|')).digest('hex');
+  }
+
+  private buildCacheExpiry(): Date {
+    return new Date(Date.now() + this.CACHE_TTL_MS);
   }
 
   async analyzeAndAdvise(
@@ -89,6 +128,52 @@ export class StylistService {
       throw new BadRequestException(
         'Vui lòng chọn sản phẩm từ catalog (productId) hoặc nhập mô tả trang phục (garmentDescription).',
       );
+    }
+
+    // Compute hash of human image for cache key
+    const humanImageHash = this.computeHash(humanImage.buffer);
+
+    // Build cache key from all input parameters that affect the result
+    const cacheKey = this.buildCacheKey(
+      userId,
+      humanImageHash,
+      dto.productId,
+      dto.garmentDescription?.trim() || null,
+      dto.occasion?.trim() || null,
+      dto.stylePreference?.trim() || null,
+      dto.budget?.trim() || null,
+      dto.genderPreference?.trim() || null,
+    );
+
+    // Check cache first
+    const cachedResult = await this.prisma.stylistResult.findFirst({
+      where: {
+        userId,
+        cacheKey,
+        OR: [{ expiresAt: null }, { expiresAt: { gt: new Date() } }],
+      },
+      orderBy: { createdAt: 'desc' },
+      include: { product: true },
+    });
+
+    if (cachedResult) {
+      this.logger.log(`[Cache Hit] Trả về kết quả Stylist cũ cho user ${userId}`);
+      return {
+        id: cachedResult.id,
+        humanImageUrl: cachedResult.humanImageUrl,
+        product: cachedResult.product,
+        garmentDescription: cachedResult.garmentDescription,
+        occasion: cachedResult.occasion,
+        stylePreference: cachedResult.stylePreference,
+        budget: cachedResult.budget,
+        genderPreference: cachedResult.genderPreference,
+        recommendedSize: cachedResult.recommendedSize,
+        productCompatibilityScore: (cachedResult.analysisResult as any)?.productCompatibilityScore ?? null,
+        analysisResult: cachedResult.analysisResult as any,
+        model: cachedResult.model ?? this.MODEL,
+        createdAt: cachedResult.createdAt,
+        isCached: true,
+      };
     }
 
     this.logger.log(
@@ -118,6 +203,7 @@ export class StylistService {
           userId,
           productId: product?.id ?? null,
           humanImageUrl,
+          humanImageHash,
           garmentDescription: dto.garmentDescription?.trim() || null,
           occasion: dto.occasion?.trim() || null,
           stylePreference: dto.stylePreference?.trim() || null,
@@ -137,6 +223,8 @@ export class StylistService {
             hasMeasurements: Boolean(measurements),
           },
           rawProviderResponse: { text: rawResponse },
+          cacheKey,
+          expiresAt: this.buildCacheExpiry(),
         },
         include: { product: true },
       });
@@ -157,6 +245,7 @@ export class StylistService {
         analysisResult: parsedResult,
         model: this.MODEL,
         createdAt: record.createdAt,
+        isCached: false,
       };
     } catch (error: unknown) {
       return this.handleError(error);

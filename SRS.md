@@ -198,7 +198,7 @@ Current status: implemented for subscription/tier upgrade.
 
 Remaining:
 
-- Verify MoMo IPN signature.
+- Verify SePay IPN/webhook HMAC signature (implemented).
 - Separate production behavior from mock/fallback behavior.
 - Add product purchase order flow if required.
 
@@ -338,8 +338,8 @@ Stylist:
 Payments:
 
 - `POST /api/payments/checkout`
-- `POST /api/payments/webhook`
-- `POST /api/payments/momo-ipn`
+- `POST /api/payments/sepay-ipn`
+- `POST /api/payments/sepay-webhook`
 - `GET /api/payments/orders`
 - `GET /api/payments/mock-success`
 

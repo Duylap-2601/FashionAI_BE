@@ -27,6 +27,7 @@ import { FileValidationPipe } from '../../common/pipes/file-validation.pipe';
 import { CreateProductDto } from './dto/create-product.dto';
 import { QueryProductDto } from './dto/query-product.dto';
 import { ProductsService } from './products.service';
+import { buildApiResponse } from '../../common/utils/api-response.util';
 
 @ApiTags('Products')
 @Controller('products')
@@ -38,15 +39,13 @@ export class ProductsController {
   @ApiOperation({ summary: 'Danh sách sản phẩm quần áo (có tìm kiếm, lọc & phân trang)' })
   async findAll(@Req() req: Request, @Query() query: QueryProductDto) {
     const result = await this.productsService.findAll(query);
-    return {
-      success: true,
-      code: 'PRODUCTS_FETCH_SUCCESS',
-      message: 'Lấy danh sách sản phẩm thành công',
-      timestamp: new Date().toISOString(),
-      path: req.originalUrl ?? req.url,
-      data: result.items,
-      meta: result.meta,
-    };
+    return buildApiResponse(
+      req,
+      'PRODUCTS_FETCH_SUCCESS',
+      'Lấy danh sách sản phẩm thành công',
+      result.items,
+      result.meta,
+    );
   }
 
   @Public()
@@ -54,14 +53,7 @@ export class ProductsController {
   @ApiOperation({ summary: 'Chi tiết sản phẩm theo ID' })
   async findOne(@Req() req: Request, @Param('id') id: string) {
     const data = await this.productsService.findOne(id);
-    return {
-      success: true,
-      code: 'PRODUCT_FETCH_SUCCESS',
-      message: 'Lấy thông tin sản phẩm thành công',
-      timestamp: new Date().toISOString(),
-      path: req.originalUrl ?? req.url,
-      data,
-    };
+    return buildApiResponse(req, 'PRODUCT_FETCH_SUCCESS', 'Lấy thông tin sản phẩm thành công', data);
   }
 
   @Post()
@@ -107,14 +99,7 @@ export class ProductsController {
     }
 
     const data = await this.productsService.create(dto, image);
-    return {
-      success: true,
-      code: 'PRODUCT_CREATE_SUCCESS',
-      message: 'Tạo mới sản phẩm thành công',
-      timestamp: new Date().toISOString(),
-      path: req.originalUrl ?? req.url,
-      data,
-    };
+    return buildApiResponse(req, 'PRODUCT_CREATE_SUCCESS', 'Tạo mới sản phẩm thành công', data);
   }
 
   @Post(':id/images')
@@ -162,14 +147,12 @@ export class ProductsController {
       this.parseBoolean(isMain),
     );
 
-    return {
-      success: true,
-      code: 'PRODUCT_IMAGE_UPLOAD_SUCCESS',
-      message: 'Upload ảnh sản phẩm thành công',
-      timestamp: new Date().toISOString(),
-      path: req.originalUrl ?? req.url,
+    return buildApiResponse(
+      req,
+      'PRODUCT_IMAGE_UPLOAD_SUCCESS',
+      'Upload ảnh sản phẩm thành công',
       data,
-    };
+    );
   }
 
   @Put(':id')
@@ -183,14 +166,7 @@ export class ProductsController {
     @Body() dto: Partial<CreateProductDto>,
   ) {
     const data = await this.productsService.update(id, dto);
-    return {
-      success: true,
-      code: 'PRODUCT_UPDATE_SUCCESS',
-      message: 'Cập nhật sản phẩm thành công',
-      timestamp: new Date().toISOString(),
-      path: req.originalUrl ?? req.url,
-      data,
-    };
+    return buildApiResponse(req, 'PRODUCT_UPDATE_SUCCESS', 'Cập nhật sản phẩm thành công', data);
   }
 
   @Delete(':id')
@@ -200,14 +176,7 @@ export class ProductsController {
   @ApiOperation({ summary: 'Xóa sản phẩm (Admin Only)' })
   async remove(@Req() req: Request, @Param('id') id: string) {
     await this.productsService.remove(id);
-    return {
-      success: true,
-      code: 'PRODUCT_DELETE_SUCCESS',
-      message: 'Xóa sản phẩm thành công',
-      timestamp: new Date().toISOString(),
-      path: req.originalUrl ?? req.url,
-      data: null,
-    };
+    return buildApiResponse(req, 'PRODUCT_DELETE_SUCCESS', 'Xóa sản phẩm thành công', null);
   }
 
   private parseBoolean(value: string | boolean | undefined) {

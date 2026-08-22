@@ -25,6 +25,7 @@ import { FileValidationPipe } from '../../common/pipes/file-validation.pipe';
 import { StylistService } from './stylist.service';
 import { StylistRequestDto } from './dto/stylist-request.dto';
 import { StylistResponseDto } from './dto/stylist-response.dto';
+import { buildApiResponse } from '../../common/utils/api-response.util';
 
 @ApiTags('AI Stylist')
 @Controller('stylist')
@@ -74,14 +75,12 @@ export class StylistController {
 
     const result = await this.stylistService.analyzeAndAdvise(user.id, humanImage, dto);
 
-    return {
-      success: true,
-      code: 'STYLIST_ANALYZE_SUCCESS',
-      message: 'Phân tích và tư vấn thời trang AI thành công',
-      timestamp: new Date().toISOString(),
-      path: req.originalUrl ?? req.url,
-      data: result,
-    };
+    return buildApiResponse(
+      req,
+      'STYLIST_ANALYZE_SUCCESS',
+      'Phân tích và tư vấn thời trang AI thành công',
+      result,
+    );
   }
 
   @Get('history')
@@ -93,15 +92,13 @@ export class StylistController {
     @Query('limit') limit?: number,
   ) {
     const result = await this.stylistService.getUserHistory(user.id, page ? Number(page) : 1, limit ? Number(limit) : 20);
-    return {
-      success: true,
-      code: 'STYLIST_HISTORY_SUCCESS',
-      message: 'Lấy lịch sử tư vấn thành công',
-      timestamp: new Date().toISOString(),
-      path: req.originalUrl ?? req.url,
-      data: result.items,
-      meta: result.meta,
-    };
+    return buildApiResponse(
+      req,
+      'STYLIST_HISTORY_SUCCESS',
+      'Lấy lịch sử tư vấn thành công',
+      result.items,
+      result.meta,
+    );
   }
 
   @Get('history/:id')
@@ -112,14 +109,7 @@ export class StylistController {
     @Param('id') id: string,
   ) {
     const data = await this.stylistService.getHistoryItem(user.id, id);
-    return {
-      success: true,
-      code: 'STYLIST_ITEM_SUCCESS',
-      message: 'Lấy chi tiết tư vấn thành công',
-      timestamp: new Date().toISOString(),
-      path: req.originalUrl ?? req.url,
-      data,
-    };
+    return buildApiResponse(req, 'STYLIST_ITEM_SUCCESS', 'Lấy chi tiết tư vấn thành công', data);
   }
 
   @Delete('history/:id')
@@ -130,13 +120,6 @@ export class StylistController {
     @Param('id') id: string,
   ) {
     await this.stylistService.deleteHistoryItem(user.id, id);
-    return {
-      success: true,
-      code: 'STYLIST_DELETE_SUCCESS',
-      message: 'Xóa lịch sử tư vấn thành công',
-      timestamp: new Date().toISOString(),
-      path: req.originalUrl ?? req.url,
-      data: null,
-    };
+    return buildApiResponse(req, 'STYLIST_DELETE_SUCCESS', 'Xóa lịch sử tư vấn thành công', null);
   }
 }

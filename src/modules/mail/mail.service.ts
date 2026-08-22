@@ -1,7 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { OrderStatus } from '@prisma/client';
-import * as nodemailer from 'nodemailer';
+import * as brevo from '@getbrevo/brevo';
 
 export interface OrderStatusUpdateData {
   orderId: string;
@@ -65,23 +65,25 @@ export interface OrderConfirmationData {
 @Injectable()
 export class MailService {
   private readonly logger = new Logger(MailService.name);
-  private transporter?: nodemailer.Transporter;
+  private readonly client: brevo.BrevoClient;
+  private readonly senderEmail: string;
+  private readonly senderName: string;
 
   constructor(private readonly configService: ConfigService) {
-    const host = this.configService.get<string>('MAIL_HOST');
-    const port = this.configService.get<number>('MAIL_PORT', 587);
-    const user = this.configService.get<string>('MAIL_USER');
-    const pass = this.configService.get<string>('MAIL_PASSWORD');
+    const apiKey = this.configService.get<string>('BREVO_API_KEY');
+    const from = this.configService.get<string>('MAIL_FROM', '"FashionAI" <noreply@fashionai.com>');
 
-    if (host && user && pass) {
-      this.transporter = nodemailer.createTransport({
-        host,
-        port,
-        secure: port === 465,
-        auth: { user, pass },
-      });
+    // Parse "Name <email@domain.com>" format
+    const match = from.match(/^"?([^"<]+)"?\s*<(.+)>$/);
+    this.senderName = match ? match[1].trim() : 'FashionAI';
+    this.senderEmail = match ? match[2].trim() : 'noreply@fashionai.com';
+
+    if (apiKey) {
+      this.client = new brevo.BrevoClient({ auth: { apiKey: () => apiKey } } as any);
+      this.logger.log('Brevo email service initialized');
     } else {
-      this.logger.warn('Nodemailer configuration missing. E-mails will be logged to console in dev mode.');
+      this.logger.warn('BREVO_API_KEY not configured. E-mails will be logged to console in dev mode.');
+      this.client = null as any;
     }
   }
 
@@ -229,18 +231,23 @@ export class MailService {
   }
 
   private async sendMail(to: string, subject: string, html: string): Promise<void> {
-    const from = this.configService.get<string>('MAIL_FROM', '"FashionAI" <noreply@fashionai.com>');
-
-    if (this.transporter) {
-      try {
-        await this.transporter.sendMail({ from, to, subject, html });
-        this.logger.log(`Email successfully sent to ${to} (${subject})`);
-      } catch (err: any) {
-        this.logger.error(`Failed to send email to ${to}: ${err.message}`, err.stack);
-      }
-    } else {
+    if (!this.client) {
       this.logger.log(`[DEV MAIL] To: ${to} | Subject: ${subject}`);
       this.logger.log(`[DEV MAIL HTML]:\n${html}`);
+      return;
+    }
+
+    try {
+      const result = await this.client.transactionalEmails.sendTransacEmail({
+        sender: { email: this.senderEmail, name: this.senderName },
+        to: [{ email: to }],
+        subject,
+        htmlContent: html,
+      });
+      this.logger.log(`Email sent to ${to} (${subject}) | MessageId: ${result.messageId}`);
+    } catch (err: any) {
+      const details = err.response?.body || err.message;
+      this.logger.error(`Failed to send email to ${to}: ${JSON.stringify(details)}`, err.stack);
     }
   }
 }

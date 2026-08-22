@@ -17,6 +17,7 @@ import { AuthenticatedUser } from '../auth/interfaces/authenticated-user.interfa
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { CheckoutDto } from './dto/checkout.dto';
 import { PaymentsService } from './payments.service';
+import { buildApiResponse } from '../../common/utils/api-response.util';
 
 @ApiTags('Payments & Subscriptions')
 @Controller('payments')
@@ -39,22 +40,7 @@ export class PaymentsController {
     @Body() dto: CheckoutDto,
   ) {
     const data = await this.paymentsService.createCheckoutLink(user.id, dto);
-    return {
-      success: true,
-      code: 'PAYMENT_CHECKOUT_CREATED',
-      message: 'Tạo liên kết thanh toán thành công',
-      timestamp: new Date().toISOString(),
-      path: req.originalUrl ?? req.url,
-      data,
-    };
-  }
-
-  @Public()
-  @Post('webhook')
-  @HttpCode(HttpStatus.OK)
-  @ApiOperation({ summary: 'Nhận webhook thanh toán từ PayOS' })
-  async webhook(@Body() webhookData: any) {
-    return this.paymentsService.handleWebhook(webhookData);
+    return buildApiResponse(req, 'PAYMENT_CHECKOUT_CREATED', 'Tạo liên kết thanh toán thành công', data);
   }
 
   @Public()
@@ -69,20 +55,25 @@ export class PaymentsController {
     );
   }
 
+  @Public()
+  @Post('sepay-webhook')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Nhận webhook chuyển khoản ngân hàng từ SePay' })
+  async sepayWebhook(@Req() req: Request, @Body() payload: any) {
+    return this.paymentsService.handleSePayBankWebhook(
+      payload,
+      req.headers,
+      (req as Request & { rawBody?: Buffer }).rawBody,
+    );
+  }
+
   @Get('orders')
   @UseGuards(JwtAuthGuard)
   @ApiBearerAuth('access-token')
   @ApiOperation({ summary: 'Xem lịch sử đơn thanh toán của tôi' })
   async getMyOrders(@Req() req: Request, @CurrentUser() user: AuthenticatedUser) {
     const data = await this.paymentsService.getUserOrders(user.id);
-    return {
-      success: true,
-      code: 'USER_ORDERS_SUCCESS',
-      message: 'Lấy danh sách đơn hàng thành công',
-      timestamp: new Date().toISOString(),
-      path: req.originalUrl ?? req.url,
-      data,
-    };
+    return buildApiResponse(req, 'USER_ORDERS_SUCCESS', 'Lấy danh sách đơn hàng thành công', data);
   }
 
   @Public()
@@ -103,13 +94,6 @@ export class PaymentsController {
       };
     }
     const result = await this.paymentsService.mockSuccess(Number(orderCode));
-    return {
-      success: true,
-      code: 'MOCK_PAYMENT_SUCCESS',
-      message: 'Giả lập thanh toán thành công',
-      timestamp: new Date().toISOString(),
-      path: req.originalUrl ?? req.url,
-      data: result,
-    };
+    return buildApiResponse(req, 'MOCK_PAYMENT_SUCCESS', 'Giả lập thanh toán thành công', result);
   }
 }

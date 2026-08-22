@@ -9,6 +9,7 @@ import {
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { fal } from '@fal-ai/client';
+import { GoogleGenAI } from '@google/genai';
 import axios from 'axios';
 import * as crypto from 'crypto';
 import { GarmentCategory } from '@prisma/client';
@@ -24,6 +25,8 @@ export interface TryOnResultResponse {
   resultUrl: string;
   category: GarmentCategory;
   isCached: boolean;
+  cacheKey: string;
+  expiresAt: Date | null;
   createdAt: Date;
   product?: any;
 }
@@ -38,6 +41,10 @@ export class TryOnService {
 
   private readonly FASHN_MODEL: string;
   private readonly SAM2_MODEL: string;
+
+  private readonly ai: GoogleGenAI | null;
+  private readonly QUALITY_GATE_ENABLED: boolean;
+  private readonly QUALITY_GATE_MODEL: string;
 
   constructor(
     private readonly config: ConfigService,
@@ -60,13 +67,25 @@ export class TryOnService {
       60 *
       1000;
 
+    // Cổng kiểm tra chất lượng ảnh bằng Gemini trước khi gọi fal.ai (tốn phí).
+    // Chỉ bật khi có GEMINI_API_KEY và cờ TRYON_QUALITY_GATE_ENABLED=true.
+    const geminiKey = this.config.get<string>('GEMINI_API_KEY');
+    this.ai = geminiKey ? new GoogleGenAI({ apiKey: geminiKey }) : null;
+    this.QUALITY_GATE_ENABLED =
+      this.config.get<string>('TRYON_QUALITY_GATE_ENABLED') === 'true' &&
+      Boolean(geminiKey);
+    this.QUALITY_GATE_MODEL = this.config.get<string>('GEMINI_MODEL', 'gemini-2.0-flash');
+
     if (!falKey) {
       this.logger.warn('[fal.ai] FAL_KEY chưa được cấu hình!');
     } else {
       fal.config({ credentials: falKey });
     }
 
-    this.logger.log(`[fal.ai] Khởi tạo | model=${this.FASHN_MODEL} | SAM2=${this.SAM2_ENABLED}`);
+    this.logger.log(
+      `[fal.ai] Khởi tạo | model=${this.FASHN_MODEL} | SAM2=${this.SAM2_ENABLED} | ` +
+        `qualityGate=${this.QUALITY_GATE_ENABLED}`,
+    );
   }
 
   private mapCategory(garmentCategory: GarmentCategory): FashnCategory {
@@ -119,6 +138,92 @@ export class TryOnService {
 
   private computeHash(buffer: Buffer): string {
     return crypto.createHash('sha256').update(buffer).digest('hex');
+  }
+
+  /**
+   * Cổng chất lượng: hỏi Gemini xem ảnh người có dùng được cho Try-On không
+   * (rõ nét, đủ người, một người, không che khuất). Nếu ảnh hỏng thì ném 422
+   * ngay để không tốn chi phí fal.ai. Gemini lỗi/timeout → cho qua (fail-open)
+   * để sự cố phía Gemini không chặn tính năng chính.
+   */
+  private async assertHumanImageUsable(
+    humanImage: Express.Multer.File,
+  ): Promise<void> {
+    if (!this.ai) return;
+
+    const prompt = [
+      'Bạn là bộ lọc chất lượng ảnh cho hệ thống thử đồ ảo.',
+      'Kiểm tra ảnh người dùng và trả về DUY NHẤT một object JSON hợp lệ:',
+      '{ "usable": true|false, "reason": "lý do ngắn gọn bằng tiếng Việt" }',
+      'Ảnh KHÔNG dùng được nếu: mờ/nhoè, thiếu sáng nghiêm trọng, không thấy người,',
+      'có nhiều hơn một người, bị che khuất phần lớn cơ thể, hoặc chỉ có mặt/cận cảnh',
+      '(cần thấy tối thiểu nửa thân trên để thử đồ). Không thêm markdown hay giải thích.',
+    ].join('\n');
+
+    let text: string;
+    try {
+      const response = await this.withTimeout(
+        this.ai.models.generateContent({
+          model: this.QUALITY_GATE_MODEL,
+          contents: [
+            {
+              role: 'user',
+              parts: [
+                { text: prompt },
+                {
+                  inlineData: {
+                    mimeType: humanImage.mimetype,
+                    data: humanImage.buffer.toString('base64'),
+                  },
+                },
+              ],
+            },
+          ],
+        }),
+        'Quality gate timed out',
+      );
+      text = response.text?.trim() ?? '';
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'unknown';
+      this.logger.warn(`[QualityGate] Bỏ qua do lỗi Gemini: ${message}`);
+      return;
+    }
+
+    const verdict = this.parseQualityVerdict(text);
+    if (verdict && verdict.usable === false) {
+      this.logger.log(`[QualityGate] Từ chối ảnh: ${verdict.reason}`);
+      throw new HttpException(
+        {
+          statusCode: 422,
+          message:
+            verdict.reason ||
+            'Ảnh không đạt yêu cầu để thử đồ. Vui lòng chụp rõ nét, đủ sáng và thấy toàn thân.',
+          error: 'IMAGE_QUALITY_REJECTED',
+        },
+        HttpStatus.UNPROCESSABLE_ENTITY,
+      );
+    }
+  }
+
+  private parseQualityVerdict(
+    text: string,
+  ): { usable: boolean; reason: string } | null {
+    const first = text.indexOf('{');
+    const last = text.lastIndexOf('}');
+    if (first === -1 || last <= first) return null;
+    try {
+      const raw = JSON.parse(text.slice(first, last + 1)) as Record<
+        string,
+        unknown
+      >;
+      if (typeof raw.usable !== 'boolean') return null;
+      return {
+        usable: raw.usable,
+        reason: typeof raw.reason === 'string' ? raw.reason.trim() : '',
+      };
+    } catch {
+      return null;
+    }
   }
 
   /**
@@ -214,6 +319,8 @@ export class TryOnService {
           resultUrl: cachedResult.resultUrl,
           category: cachedResult.category,
           isCached: true,
+          cacheKey: cachedResult.cacheKey ?? cacheKey,
+          expiresAt: cachedResult.expiresAt,
           createdAt: cachedResult.createdAt,
           product: productEntity,
         };
@@ -234,6 +341,12 @@ export class TryOnService {
       // ── Step 1: Upload to fal.storage ────────────────────────────────────
       const category = this.mapCategory(garmentCategory);
       this.logger.log(`[fal.ai] Bắt đầu Try-On | category=${category}`);
+
+      // Chặn ảnh không dùng được TRƯỚC khi tốn phí fal.ai. Gate chạy sau cache
+      // (cache hit không cần kiểm tra lại) và trước khi trừ quota.
+      if (this.QUALITY_GATE_ENABLED) {
+        await this.assertHumanImageUsable(humanImage);
+      }
 
       const [humanUrl, garmentRawUrl] = await Promise.all([
         this.uploadToFalStorage(humanImage.buffer, humanImage.mimetype, 'humanImage'),
@@ -304,6 +417,8 @@ export class TryOnService {
         resultUrl: permanentResultUrl,
         category: garmentCategory,
         isCached: false,
+        cacheKey,
+        expiresAt: savedRecord.expiresAt,
         createdAt: savedRecord.createdAt,
         product: productEntity,
       };
@@ -417,6 +532,8 @@ export class TryOnService {
       resultUrl,
       category: garmentCategory,
       isCached: false,
+      cacheKey,
+      expiresAt: savedRecord.expiresAt,
       createdAt: savedRecord.createdAt,
       product: productEntity,
     };
@@ -491,6 +608,12 @@ export class TryOnService {
   }
 
   private handleError(error: unknown): never {
+    // Lỗi đã có mã HTTP rõ ràng (vd cổng chất lượng 422) thì giữ nguyên, không
+    // bọc thành 500.
+    if (error instanceof HttpException) {
+      throw error;
+    }
+
     const msg = error instanceof Error ? error.message : 'Lỗi không xác định';
     this.logger.error(`[fal.ai] Lỗi Try-On: ${msg}`);
 

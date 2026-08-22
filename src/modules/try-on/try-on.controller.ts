@@ -25,6 +25,7 @@ import { QuotaGuard, AiAction } from '../../common/guards/quota.guard';
 import { FileValidationPipe } from '../../common/pipes/file-validation.pipe';
 import { TryOnService } from './try-on.service';
 import { TryOnRequestDto } from './dto/try-on-request.dto';
+import { buildApiResponse } from '../../common/utils/api-response.util';
 
 @ApiTags('Virtual Try-On')
 @Controller('try-on')
@@ -94,14 +95,12 @@ export class TryOnController {
       category,
     );
 
-    return {
-      success: true,
-      code: 'TRY_ON_SUCCESS',
-      message: result.isCached ? 'Lấy kết quả thử đồ từ Cache' : 'Thử đồ AI thành công',
-      timestamp: new Date().toISOString(),
-      path: req.originalUrl ?? req.url,
-      data: result,
-    };
+    return buildApiResponse(
+      req,
+      'TRY_ON_SUCCESS',
+      result.isCached ? 'Lấy kết quả thử đồ từ Cache' : 'Thử đồ AI thành công',
+      result,
+    );
   }
 
   @Get('history')
@@ -113,15 +112,13 @@ export class TryOnController {
     @Query('limit') limit?: number,
   ) {
     const result = await this.tryOnService.getUserHistory(user.id, page ? Number(page) : 1, limit ? Number(limit) : 20);
-    return {
-      success: true,
-      code: 'TRY_ON_HISTORY_SUCCESS',
-      message: 'Lấy lịch sử thử đồ thành công',
-      timestamp: new Date().toISOString(),
-      path: req.originalUrl ?? req.url,
-      data: result.items,
-      meta: result.meta,
-    };
+    return buildApiResponse(
+      req,
+      'TRY_ON_HISTORY_SUCCESS',
+      'Lấy lịch sử thử đồ thành công',
+      result.items,
+      result.meta,
+    );
   }
 
   @Get('history/:id')
@@ -132,14 +129,7 @@ export class TryOnController {
     @Param('id') id: string,
   ) {
     const data = await this.tryOnService.getHistoryItem(user.id, id);
-    return {
-      success: true,
-      code: 'TRY_ON_ITEM_SUCCESS',
-      message: 'Lấy chi tiết lịch sử thành công',
-      timestamp: new Date().toISOString(),
-      path: req.originalUrl ?? req.url,
-      data,
-    };
+    return buildApiResponse(req, 'TRY_ON_ITEM_SUCCESS', 'Lấy chi tiết lịch sử thành công', data);
   }
 
   @Get('history/:id/download')
@@ -164,14 +154,12 @@ export class TryOnController {
     @CurrentUser() user: AuthenticatedUser,
   ) {
     const data = await this.tryOnService.deleteAllHistory(user.id);
-    return {
-      success: true,
-      code: 'TRY_ON_DELETE_ALL_SUCCESS',
-      message: `Đã xóa ${data.deleted} kết quả thử đồ`,
-      timestamp: new Date().toISOString(),
-      path: req.originalUrl ?? req.url,
+    return buildApiResponse(
+      req,
+      'TRY_ON_DELETE_ALL_SUCCESS',
+      `Đã xóa ${data.deleted} kết quả thử đồ`,
       data,
-    };
+    );
   }
 
   @Delete('history/:id')
@@ -182,13 +170,6 @@ export class TryOnController {
     @Param('id') id: string,
   ) {
     await this.tryOnService.deleteHistoryItem(user.id, id);
-    return {
-      success: true,
-      code: 'TRY_ON_DELETE_SUCCESS',
-      message: 'Xóa lịch sử thử đồ thành công',
-      timestamp: new Date().toISOString(),
-      path: req.originalUrl ?? req.url,
-      data: null,
-    };
+    return buildApiResponse(req, 'TRY_ON_DELETE_SUCCESS', 'Xóa lịch sử thử đồ thành công', null);
   }
 }

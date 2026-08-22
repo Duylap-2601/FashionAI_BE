@@ -85,7 +85,7 @@ describe('StylistController', () => {
     const result = await controller.getHistory(buildRequest('/api/stylist/history'), user);
 
     expect(result).toMatchObject({ success: true, data: [{ id: 'r1' }] });
-    expect(result.meta.totalPages).toBe(1);
+    expect((result.meta as { totalPages: number }).totalPages).toBe(1);
   });
 
   it('deleteHistoryItem should return success with null data', async () => {

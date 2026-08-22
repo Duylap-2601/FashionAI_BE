@@ -50,18 +50,33 @@ export class UsersService {
   }
 
   async getMeasurements(userId: string) {
-    return this.prisma.measurement.upsert({
+    const m = await this.prisma.measurement.upsert({
       where: { userId },
       create: { userId },
       update: {},
     });
+
+    // Return with FE-compatible aliases
+    return {
+      ...m,
+      bodyLength: m.shirtLength,
+      trouserLength: m.outseam,
+    };
   }
 
   async updateMeasurements(userId: string, dto: UpdateMeasurementsDto) {
+    // Handle FE aliases: bodyLength → shirtLength, trouserLength → outseam
+    const { bodyLength, trouserLength, ...rest } = dto as any;
+    const data = {
+      ...rest,
+      ...(bodyLength !== undefined && { shirtLength: bodyLength }),
+      ...(trouserLength !== undefined && { outseam: trouserLength }),
+    };
+
     return this.prisma.measurement.upsert({
       where: { userId },
-      create: { userId, ...dto },
-      update: dto,
+      create: { userId, ...data },
+      update: data,
     });
   }
 

@@ -8,10 +8,9 @@ import {
 import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../../database/prisma.service';
 import { UserTier, OrderStatus, Order, Prisma } from '@prisma/client';
-import PayOS from '@payos/node';
 import * as crypto from 'crypto';
 import { createWithUniqueOrderCode } from '../../common/utils/order-code.util';
-import { CheckoutDto, PaymentProvider } from './dto/checkout.dto';
+import { CheckoutDto } from './dto/checkout.dto';
 import { MailService } from '../mail/mail.service';
 
 const TIER_PRICES: Record<UserTier, number> = {
@@ -31,24 +30,12 @@ interface CheckoutLinkResult {
 @Injectable()
 export class PaymentsService {
   private readonly logger = new Logger(PaymentsService.name);
-  private payos: PayOS | null = null;
 
   constructor(
     private readonly configService: ConfigService,
     private readonly prisma: PrismaService,
     private readonly mailService: MailService,
-  ) {
-    const clientId = this.configService.get<string>('PAYOS_CLIENT_ID');
-    const apiKey = this.configService.get<string>('PAYOS_API_KEY');
-    const checksumKey = this.configService.get<string>('PAYOS_CHECKSUM_KEY');
-
-    if (clientId && apiKey && checksumKey) {
-      this.payos = new PayOS(clientId, apiKey, checksumKey);
-      this.logger.log('PayOS service successfully initialized');
-    } else {
-      this.logger.warn('PayOS credentials missing in .env. Payment link generation will run in sandbox mock mode.');
-    }
-  }
+  ) {}
 
   /**
    * Tạo liên kết thanh toán cho một trong hai loại đơn:
@@ -56,20 +43,16 @@ export class PaymentsService {
    * - Đơn sản phẩm: truyền `orderId` của Order đã tạo qua `POST /orders`.
    */
   async createCheckoutLink(userId: string, dto: CheckoutDto) {
-    const provider = dto.provider ?? 'SEPAY';
     const order = dto.orderId
       ? await this.resolveProductOrder(userId, dto.orderId)
       : await this.createSubscriptionOrder(userId, dto.targetTier!);
 
-    const { checkoutUrl, extra } = await this.requestProviderCheckout(
-      order,
-      provider,
-    );
+    const { checkoutUrl, extra } = await this.createSePayCheckoutLink(order);
 
     await this.prisma.order.update({
       where: { id: order.id },
       data: {
-        paymentProvider: provider,
+        paymentProvider: 'SEPAY',
         checkoutUrl,
         checkoutExpiresAt: new Date(Date.now() + CHECKOUT_TTL_MS),
       },
@@ -81,7 +64,7 @@ export class PaymentsService {
       amount: Number(order.amount),
       targetTier: order.targetTier,
       kind: order.targetTier ? 'SUBSCRIPTION' : 'PRODUCT',
-      provider,
+      provider: 'SEPAY',
       checkoutUrl,
       ...extra,
     };
@@ -147,19 +130,6 @@ export class PaymentsService {
         },
       }),
     );
-  }
-
-  private requestProviderCheckout(
-    order: Order,
-    provider: PaymentProvider,
-  ): Promise<CheckoutLinkResult> {
-    switch (provider) {
-      case 'PAYOS':
-        return this.createPayOSCheckoutLink(order);
-      case 'SEPAY':
-      default:
-        return this.createSePayCheckoutLink(order);
-    }
   }
 
   private buildOrderDescription(order: Order) {
@@ -228,40 +198,6 @@ export class PaymentsService {
     };
   }
 
-  private async createPayOSCheckoutLink(
-    order: Order,
-  ): Promise<CheckoutLinkResult> {
-    const returnUrl = this.configService.get<string>('PAYOS_RETURN_URL', 'http://localhost:3000/orders/success');
-    const cancelUrl = this.configService.get<string>('PAYOS_CANCEL_URL', 'http://localhost:3000/checkout');
-
-    if (!this.payos) {
-      return { checkoutUrl: this.buildMockCheckoutUrl(order.orderCode) };
-    }
-
-    try {
-      const paymentLinkRes = await this.payos.createPaymentLink({
-        orderCode: order.orderCode,
-        amount: Number(order.amount),
-        // PayOS giới hạn description ở 25 ký tự.
-        description: this.buildOrderDescription(order).slice(0, 25),
-        returnUrl,
-        cancelUrl,
-      });
-      return { checkoutUrl: paymentLinkRes.checkoutUrl };
-    } catch (err: any) {
-      this.logger.error(`PayOS create payment link failed: ${err.message}`);
-      throw new BadRequestException(`Không thể tạo liên kết thanh toán PayOS: ${err.message}`);
-    }
-  }
-
-  private buildMockCheckoutUrl(orderCode: number) {
-    const baseUrl = this.configService.get<string>(
-      'PAYMENT_MOCK_BASE_URL',
-      'http://localhost:3000/api',
-    );
-    return `${baseUrl}/payments/mock-success?orderCode=${orderCode}`;
-  }
-
   async handleSePayIPN(
     ipnData: any,
     headers: Record<string, any>,
@@ -304,7 +240,7 @@ export class PaymentsService {
     return { success: true };
   }
 
-  private async handleSePayBankWebhook(
+  async handleSePayBankWebhook(
     payload: any,
     headers: Record<string, any>,
     rawBody?: Buffer,
@@ -502,33 +438,6 @@ export class PaymentsService {
     ]);
   }
 
-  async handleWebhook(webhookData: any) {
-    this.logger.log(`PayOS Webhook received: ${JSON.stringify(webhookData)}`);
-
-    let data = webhookData;
-    if (this.payos && webhookData?.data) {
-      try {
-        data = this.payos.verifyPaymentWebhookData(webhookData);
-      } catch (err: any) {
-        this.logger.warn(`PayOS webhook checksum verification failed: ${err.message}`);
-        throw new BadRequestException('PayOS webhook signature is invalid');
-      }
-    }
-
-    const orderCode = data?.orderCode ?? data?.data?.orderCode;
-    if (!orderCode) {
-      throw new BadRequestException('Thiếu thông tin orderCode trong webhook');
-    }
-
-    const paidAmount = data?.amount ?? data?.data?.amount;
-
-    return this.processOrderSuccess(
-      Number(orderCode),
-      'PAYOS',
-      data,
-      paidAmount !== undefined ? Number(paidAmount) : undefined,
-    );
-  }
 
   /**
    * @param paidAmount Số tiền cổng thanh toán báo đã nhận. Truyền vào để chặn

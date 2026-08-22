@@ -15,6 +15,7 @@ import { AuthenticatedUser } from '../auth/interfaces/authenticated-user.interfa
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { AvatarService } from './avatar.service';
 import { GenerateAvatarDto } from './dto/generate-avatar.dto';
+import { buildApiResponse } from '../../common/utils/api-response.util';
 
 @ApiTags('Avatar 3D')
 @ApiBearerAuth('access-token')
@@ -36,30 +37,24 @@ export class AvatarController {
     @Body() dto: GenerateAvatarDto,
   ) {
     const result = await this.avatarService.generate(user.id, dto);
-    return {
-      success: true,
-      code: result.isCached ? 'AVATAR_CACHE_HIT' : 'AVATAR_GENERATED',
-      message: result.isCached
-        ? 'Lấy avatar từ cache'
-        : 'Tạo avatar 3D thành công',
-      timestamp: new Date().toISOString(),
-      path: req.originalUrl ?? req.url,
-      data: result,
-    };
+    return buildApiResponse(
+      req,
+      result.isCached ? 'AVATAR_CACHE_HIT' : 'AVATAR_GENERATED',
+      result.isCached ? 'Lấy avatar từ cache' : 'Tạo avatar 3D thành công',
+      result,
+    );
   }
 
   @Get('me')
   @ApiOperation({ summary: 'Lấy avatar 3D mới nhất của user hiện tại' })
   async getLatest(@Req() req: Request, @CurrentUser() user: AuthenticatedUser) {
     const data = await this.avatarService.getLatest(user.id);
-    return {
-      success: true,
-      code: 'AVATAR_FETCH_SUCCESS',
-      message: data ? 'Lấy avatar thành công' : 'Chưa có avatar nào',
-      timestamp: new Date().toISOString(),
-      path: req.originalUrl ?? req.url,
+    return buildApiResponse(
+      req,
+      'AVATAR_FETCH_SUCCESS',
+      data ? 'Lấy avatar thành công' : 'Chưa có avatar nào',
       data,
-    };
+    );
   }
 
   @Get('presets/nearest')
@@ -81,14 +76,7 @@ export class AvatarController {
       gender,
       this.toNumbers({ height, weight, chest, waist, hip, shoulder }),
     );
-    return {
-      success: true,
-      code: 'AVATAR_PRESET_NEAREST',
-      message: 'Lấy preset gần nhất thành công',
-      timestamp: new Date().toISOString(),
-      path: req.originalUrl ?? req.url,
-      data,
-    };
+    return buildApiResponse(req, 'AVATAR_PRESET_NEAREST', 'Lấy preset gần nhất thành công', data);
   }
 
   @Get('presets')
@@ -98,14 +86,7 @@ export class AvatarController {
     @Query('gender') gender: string,
   ) {
     const data = await this.avatarService.getPresets(gender);
-    return {
-      success: true,
-      code: 'AVATAR_PRESET_LIST',
-      message: 'Lấy danh sách preset thành công',
-      timestamp: new Date().toISOString(),
-      path: req.originalUrl ?? req.url,
-      data,
-    };
+    return buildApiResponse(req, 'AVATAR_PRESET_LIST', 'Lấy danh sách preset thành công', data);
   }
 
   @Get(':id')
@@ -116,14 +97,7 @@ export class AvatarController {
     @Param('id') id: string,
   ) {
     const data = await this.avatarService.getById(user.id, id);
-    return {
-      success: true,
-      code: 'AVATAR_FETCH_SUCCESS',
-      message: 'Lấy avatar thành công',
-      timestamp: new Date().toISOString(),
-      path: req.originalUrl ?? req.url,
-      data,
-    };
+    return buildApiResponse(req, 'AVATAR_FETCH_SUCCESS', 'Lấy avatar thành công', data);
   }
 
   private toNumbers(input: Record<string, string>): {
