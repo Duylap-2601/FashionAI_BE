@@ -43,6 +43,16 @@ JWT_REFRESH_SECRET="change_me_refresh_secret"
 
 AI_TRYON_PROVIDER=mock
 GEMINI_API_KEY=""
+
+# Groq Chatbot (NEW)
+GROQ_API_KEY=""
+GROQ_MODEL="openai/gpt-oss-120b"
+GROQ_TEMPERATURE=0.7
+GROQ_MAX_TOKENS=2048
+
+# Brevo Mail (NEW)
+BREVO_API_KEY=""
+MAIL_FROM="FashionAI <noreply@yourdomain.com>"
 ```
 
 Nếu dùng Docker Compose trong repo, kiểm tra lại user/password/database trong `docker-compose.yml` và đồng bộ với `.env`.
@@ -86,10 +96,11 @@ npm.cmd run test:unit
 npm.cmd run lint:check
 ```
 
-Trạng thái gần nhất:
+Trạng thái gần nhất (2026-08-22):
 
-- Build: pass.
-- Unit test: 4 suites, 28 tests pass.
+- Build: **pass**.
+- Unit test: **4 suites, 28 tests pass**.
+- Lint: **72 warnings** (explicit `any`), 0 errors.
 
 ## 7. Chạy Bằng Docker
 
@@ -124,6 +135,20 @@ GEMINI_API_KEY="your_gemini_api_key"
 GEMINI_MODEL="gemini-2.0-flash"
 ```
 
+Chatbot Groq (NEW):
+
+```env
+GROQ_API_KEY="your_groq_api_key"
+GROQ_MODEL="openai/gpt-oss-120b"
+GROQ_TEMPERATURE=0.7
+GROQ_MAX_TOKENS=2048
+```
+
+Available Groq models:
+- `openai/gpt-oss-120b` — Best quality (default)
+- `qwen/qwen3.6-27b` — Alternative
+- `openai/gpt-oss-20b` — Fast/cheap
+
 Storage:
 
 ```env
@@ -131,6 +156,13 @@ CLOUDINARY_CLOUD_NAME="your_cloud_name"
 CLOUDINARY_API_KEY="your_cloudinary_api_key"
 CLOUDINARY_API_SECRET="your_cloudinary_api_secret"
 CLOUDINARY_UPLOAD_FOLDER=fashionai
+```
+
+Mail (Brevo):
+
+```env
+BREVO_API_KEY="your_brevo_api_key"
+MAIL_FROM="FashionAI <noreply@yourdomain.com>"
 ```
 
 Payment:
