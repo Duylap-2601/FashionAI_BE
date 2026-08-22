@@ -1,5 +1,5 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { IsString, IsOptional, IsUUID, MaxLength, ValidateIf, IsNotEmpty } from 'class-validator';
+import { IsString, IsOptional, IsUUID, MaxLength, IsNotEmpty } from 'class-validator';
 
 export class ChatRequestDto {
   @ApiPropertyOptional({ example: 'uuid-session-id', description: 'ID phiên chat (null = tạo mới)' })

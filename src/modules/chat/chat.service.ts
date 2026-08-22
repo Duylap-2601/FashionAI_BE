@@ -10,19 +10,7 @@ import OpenAI from 'openai';
 import { PrismaService } from '../../database/prisma.service';
 import { QuotaService } from '../../common/services/quota.service';
 import { ChatRequestDto } from './dto/chat-request.dto';
-import { CHAT_SYSTEM_PROMPT, CHAT_WELCOME_MESSAGE } from './prompts/system-prompt';
-
-interface ChatCompletionChunk {
-  choices: Array<{
-    delta: { content?: string; role?: string };
-    finish_reason: string | null;
-  }>;
-  usage?: {
-    prompt_tokens: number;
-    completion_tokens: number;
-    total_tokens: number;
-  };
-}
+import { CHAT_SYSTEM_PROMPT } from './prompts/system-prompt';
 
 @Injectable()
 export class ChatService {
