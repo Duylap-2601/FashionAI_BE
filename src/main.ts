@@ -77,7 +77,9 @@ async function bootstrap() {
   }
 
   const port = process.env.PORT ?? 3000;
-  await app.listen(port);
+  // Bind 0.0.0.0 thay vì để Node tự chọn: PaaS (Render, Fly, ...) chỉ route được
+  // traffic tới process nghe trên mọi interface.
+  await app.listen(port, '0.0.0.0');
 
   logger.log(`Server running at: http://localhost:${port}/${apiPrefix}`);
   if (swaggerEnabled) {

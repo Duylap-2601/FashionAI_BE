@@ -6,6 +6,10 @@ datasource db {
 
 generator client {
   provider = "prisma-client-js"
+  // Alpine không có binary `openssl` nên Prisma tự đoán sai thành openssl-1.1.x và
+  // sinh engine link tới libssl.so.1.1 (không tồn tại trong image). Khai báo tay
+  // để engine luôn khớp libssl.so.3.
+  binaryTargets = ["native", "linux-musl-openssl-3.0.x"]
 }
 
 enum UserTier {

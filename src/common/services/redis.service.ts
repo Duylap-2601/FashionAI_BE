@@ -2,6 +2,8 @@ import { Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/commo
 import { ConfigService } from '@nestjs/config';
 import Redis from 'ioredis';
 
+const MAX_CONNECT_RETRIES = 3;
+
 @Injectable()
 export class RedisService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(RedisService.name);
@@ -22,6 +24,10 @@ export class RedisService implements OnModuleInit, OnModuleDestroy {
         lazyConnect: true,
         maxRetriesPerRequest: 1,
         enableOfflineQueue: false,
+        // Khi không có Redis, service đã có fallback in-memory. Không chặn lại thì
+        // ioredis reconnect vô hạn và log warning mỗi ~2s, chôn vùi log thật.
+        retryStrategy: (times: number) =>
+          times > MAX_CONNECT_RETRIES ? null : Math.min(times * 200, 2000),
       } as const;
 
       this.client = redisUrl

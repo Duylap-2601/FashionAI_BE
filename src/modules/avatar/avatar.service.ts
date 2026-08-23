@@ -68,7 +68,9 @@ export class AvatarService {
     this.blenderPath = this.config.get<string>('BLENDER_PATH')?.trim() || 'blender';
     this.scriptPath =
       this.config.get<string>('AVATAR_SCRIPT_PATH')?.trim() ||
-      path.join(process.cwd(), 'src', 'modules', 'avatar', 'blender', 'generate_avatar.py');
+      // Dựa vào __dirname chứ không phải cwd: script được nest-cli copy sang
+      // dist/modules/avatar/blender, nên đường dẫn theo cwd/src sẽ trượt khi chạy build.
+      path.join(__dirname, 'blender', 'generate_avatar.py');
     this.storageDir =
       this.config.get<string>('AVATAR_STORAGE_DIR')?.trim() || 'storage/avatars';
     this.publicBaseUrl =
