@@ -14,7 +14,7 @@ async function bootstrap() {
   const swaggerEnabled = parseBoolean(process.env.SWAGGER_ENABLED, true);
 
   app.use(cookieParser());
-  app.setGlobalPrefix(apiPrefix);
+  app.setGlobalPrefix(apiPrefix, { exclude: ['/'] });
 
   const corsCredentials = parseBoolean(process.env.CORS_CREDENTIALS, true);
   const isProduction = process.env.NODE_ENV === 'production';
