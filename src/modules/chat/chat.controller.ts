@@ -4,6 +4,7 @@ import {
   Get,
   Delete,
   HttpCode,
+  HttpException,
   HttpStatus,
   Body,
   Param,
@@ -48,13 +49,20 @@ export class ChatController {
     res.setHeader('Connection', 'keep-alive');
     res.flushHeaders();
 
-    const generator = this.chatService.streamChat(user.id, dto);
-
-    for await (const chunk of generator) {
-      res.write(chunk);
+    try {
+      for await (const chunk of this.chatService.streamChat(user.id, dto)) {
+        res.write(chunk);
+      }
+    } catch (err: unknown) {
+      // Header SSE đã flush nên GlobalExceptionFilter không còn trả JSON được nữa
+      // (ERR_HTTP_HEADERS_SENT, request treo vô hạn). Báo lỗi qua chính stream.
+      // Chỉ chuyển tiếp message của HttpException để không lộ chi tiết nội bộ.
+      const message =
+        err instanceof HttpException ? err.message : 'Lỗi khi xử lý yêu cầu chat.';
+      res.write(`data: ${JSON.stringify({ type: 'error', data: message })}\n\n`);
+    } finally {
+      res.end();
     }
-
-    res.end();
   }
 
   @Get('sessions')

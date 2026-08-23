@@ -22,6 +22,9 @@ describe('SePay IPN (e2e)', () => {
 
   beforeEach(async () => {
     prisma = createPrismaMock();
+    // processOrderSuccess chốt trạng thái bằng updateMany({..., status: PENDING}),
+    // nên mock phải báo đúng 1 row được claim mới đi tiếp vào các bước ghi.
+    prisma.order.updateMany.mockResolvedValue({ count: 1 });
 
     const created = await createTestApp({
       prisma,
@@ -117,8 +120,22 @@ describe('SePay IPN (e2e)', () => {
     );
   });
 
-  it('từ chối khi số tiền không khớp đơn hàng', async () => {
-    prisma.order.findUnique.mockResolvedValue(pendingProductOrder);
+  it('không trừ tồn kho lần hai khi webhook khác đã chốt đơn', async () => {
+    prisma.order.findUnique.mockResolvedValue({
+      ...pendingProductOrder,
+      items: [{ productId: 'product-1', quantity: 2 }],
+    });
+    // IPN và bank webhook về gần như đồng thời: cả hai đều đọc thấy PENDING, nhưng
+    // chỉ câu UPDATE có điều kiện của webhook đến trước khớp được row.
+    prisma.order.updateMany.mockResolvedValue({ count: 0 });
+
+    await post(orderPaidPayload()).expect(200);
+
+    expect(prisma.product.update).not.toHaveBeenCalled();
+    expect(prisma.payment.create).not.toHaveBeenCalled();
+  });
+
+  it('từ chối khi số tiền không khớp đơn hàng', async () => {    prisma.order.findUnique.mockResolvedValue(pendingProductOrder);
 
     const res = await post(orderPaidPayload(1000)).expect(400);
 

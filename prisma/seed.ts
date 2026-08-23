@@ -1,13 +1,40 @@
+import 'dotenv/config';
 import { PrismaClient, Role, UserTier, GarmentCategory, ProductStatus } from '@prisma/client';
 import * as bcrypt from 'bcrypt';
 
 const prisma = new PrismaClient();
 
+/**
+ * Mật khẩu seed phải đến từ biến môi trường. Hardcode trong repo nghĩa là bất kỳ ai
+ * đọc được source cũng đăng nhập được vào tài khoản admin của môi trường đã seed.
+ */
+function requiredPassword(key: string): string {
+  const value = process.env[key]?.trim();
+  if (!value) {
+    throw new Error(
+      `${key} là bắt buộc để seed. Ví dụ: ${key}='<mật khẩu mạnh>' npm run prisma:seed`,
+    );
+  }
+  if (value.length < 12) {
+    throw new Error(`${key} phải dài tối thiểu 12 ký tự.`);
+  }
+  return value;
+}
+
+function assertSeedAllowed() {
+  if (process.env.NODE_ENV === 'production' && process.env.ALLOW_PRODUCTION_SEED !== 'true') {
+    throw new Error(
+      'Từ chối seed khi NODE_ENV=production. Nếu thực sự cần, chạy lại với ALLOW_PRODUCTION_SEED=true.',
+    );
+  }
+}
+
 async function main() {
+  assertSeedAllowed();
   console.log('🌱 Starting database seeding...');
 
   // Create Admin User
-  const adminPasswordHash = await bcrypt.hash('Admin@123456', 12);
+  const adminPasswordHash = await bcrypt.hash(requiredPassword('SEED_ADMIN_PASSWORD'), 12);
   const admin = await prisma.user.upsert({
     where: { email: 'admin@fashionai.com' },
     update: {},
@@ -24,7 +51,7 @@ async function main() {
   console.log(`✅ Admin user created: ${admin.email}`);
 
   // Create Demo Member User
-  const userPasswordHash = await bcrypt.hash('User@123456', 12);
+  const userPasswordHash = await bcrypt.hash(requiredPassword('SEED_DEMO_PASSWORD'), 12);
   const demoUser = await prisma.user.upsert({
     where: { email: 'demo@fashionai.com' },
     update: {},

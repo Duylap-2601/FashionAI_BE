@@ -40,6 +40,8 @@ COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/dist ./dist
 COPY --from=builder /app/package.json ./package.json
 COPY --from=builder /app/prisma ./prisma
+COPY docker-entrypoint.sh ./docker-entrypoint.sh
+RUN chmod +x ./docker-entrypoint.sh
 
 # Writable dir for the local avatar-storage fallback, owned by the non-root user.
 RUN mkdir -p storage && chown -R node:node storage
@@ -50,4 +52,6 @@ USER node
 EXPOSE 3000
 
 ENTRYPOINT ["/sbin/tini", "--"]
-CMD ["node", "dist/main.js"]
+# Free tier Render không có Pre-Deploy Command, nên apply migration ngay khi
+# container khởi động (xem docker-entrypoint.sh) thay vì một bước deploy riêng.
+CMD ["./docker-entrypoint.sh"]

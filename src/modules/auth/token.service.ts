@@ -8,15 +8,22 @@ import { RedisService } from '../../common/services/redis.service';
 import { TOKEN_TYPES } from './constants';
 import { GeneratedToken } from './interfaces/token.interface';
 import { AccessTokenPayload, RefreshTokenPayload } from './types/jwt-payload.type';
+import { requireConfig } from '../../common/utils/require-config.util';
 
 @Injectable()
 export class TokenService {
+  private readonly accessSecret: string;
+  private readonly refreshSecret: string;
+
   constructor(
     private readonly jwt: JwtService,
     private readonly config: ConfigService,
     private readonly prisma: PrismaService,
     private readonly redisService: RedisService,
-  ) {}
+  ) {
+    this.accessSecret = requireConfig(config, 'JWT_ACCESS_SECRET');
+    this.refreshSecret = requireConfig(config, 'JWT_REFRESH_SECRET');
+  }
 
   async generateAccessToken(user: {
     id: string;
@@ -35,7 +42,7 @@ export class TokenService {
       type: TOKEN_TYPES.access,
     };
     const token = await this.jwt.signAsync(payload, {
-      secret: this.config.get<string>('JWT_ACCESS_SECRET') ?? 'dev_access_secret',
+      secret: this.accessSecret,
       expiresIn: expiresIn as any,
     });
 
@@ -51,7 +58,7 @@ export class TokenService {
       type: TOKEN_TYPES.refresh,
     };
     const token = await this.jwt.signAsync(payload, {
-      secret: this.config.get<string>('JWT_REFRESH_SECRET') ?? 'dev_refresh_secret',
+      secret: this.refreshSecret,
       expiresIn: expiresIn as any,
     });
     const expiresAt = this.expiryFromNow(expiresIn);
@@ -70,7 +77,7 @@ export class TokenService {
   async verifyAccessToken(token: string): Promise<AccessTokenPayload> {
     try {
       const payload = await this.jwt.verifyAsync<AccessTokenPayload>(token, {
-        secret: this.config.get<string>('JWT_ACCESS_SECRET') ?? 'dev_access_secret',
+        secret: this.accessSecret,
       });
       if (payload.type !== TOKEN_TYPES.access || !payload.jti || !payload.sub) {
         throw new UnauthorizedException('Access token không hợp lệ');
@@ -89,7 +96,7 @@ export class TokenService {
     let payload: RefreshTokenPayload;
     try {
       payload = await this.jwt.verifyAsync<RefreshTokenPayload>(token, {
-        secret: this.config.get<string>('JWT_REFRESH_SECRET') ?? 'dev_refresh_secret',
+        secret: this.refreshSecret,
       });
     } catch {
       throw new UnauthorizedException('Refresh token không hợp lệ hoặc đã hết hạn');

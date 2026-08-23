@@ -1,0 +1,4 @@
+# Shell script chạy trong image Alpine: bắt buộc LF. Nếu bị checkout thành CRLF
+# (core.autocrlf=true trên Windows) thì /bin/sh báo "not found" rất khó lần ra.
+*.sh text eol=lf
+Dockerfile text eol=lf

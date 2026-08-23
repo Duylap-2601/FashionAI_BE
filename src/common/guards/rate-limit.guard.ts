@@ -78,10 +78,10 @@ export class RateLimitGuard implements CanActivate {
   }
 
   private getClientIp(req: Request) {
-    const forwardedFor = req.headers['x-forwarded-for'];
-    if (typeof forwardedFor === 'string' && forwardedFor.trim()) {
-      return forwardedFor.split(',')[0].trim();
-    }
+    // Không tự parse X-Forwarded-For: header đó client đặt được, nên phần tử đầu
+    // tiên có thể là giá trị bịa — đổi mỗi request là vô hiệu hoá rate limit.
+    // Express đã tính sẵn req.ip theo số hop tin cậy khai báo ở `trust proxy`
+    // (xem main.ts), tức chỉ tin phần do proxy của mình thêm vào.
     return req.ip || req.socket.remoteAddress || 'unknown';
   }
 

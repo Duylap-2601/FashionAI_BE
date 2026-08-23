@@ -485,48 +485,58 @@ export class PaymentsService {
 
     const isSubscription = Boolean(order.targetTier);
 
-    const transactionSteps: Prisma.PrismaPromise<any>[] = [
-      this.prisma.order.update({
-        where: { id: order.id },
-        data: {
-          status: OrderStatus.PAID,
-          // Link đã dùng xong, không cho tái sử dụng.
-          checkoutUrl: null,
-          checkoutExpiresAt: null,
-        },
-      }),
-      this.prisma.payment.create({
-        data: {
-          orderId: order.id,
-          provider,
-          transactionId: String(paymentData?.transId ?? paymentData?.reference ?? Date.now()),
-          paymentData,
-        },
-      }),
-    ];
-
-    if (order.targetTier) {
-      transactionSteps.push(
-        this.prisma.user.update({
-          where: { id: order.userId },
-          data: { tier: order.targetTier },
-        }),
-      );
-    } else {
-      // Đơn sản phẩm: trừ tồn kho khi đã xác nhận thanh toán. Trừ tại đây (không
-      // phải lúc tạo đơn PENDING) để đơn bỏ dở không giữ chỗ hàng vô thời hạn.
-      for (const item of order.items ?? []) {
-        transactionSteps.push(
-          this.prisma.product.update({
-            where: { id: item.productId },
-            data: { stock: { decrement: item.quantity } },
-          }),
-        );
-      }
-    }
-
     try {
-      await this.prisma.$transaction(transactionSteps);
+      const claimed = await this.prisma.$transaction(async (tx) => {
+        // Chốt trạng thái bằng chính câu UPDATE có điều kiện status=PENDING. IPN và
+        // bank webhook ghi vào hai `provider` khác nhau nên unique index
+        // (provider, transactionId) không chặn được chúng; nếu chỉ dựa vào lần đọc
+        // ở trên thì cả hai đều thấy PENDING và trừ tồn kho hai lần cho một đơn.
+        const claim = await tx.order.updateMany({
+          where: { id: order.id, status: OrderStatus.PENDING },
+          data: {
+            status: OrderStatus.PAID,
+            // Link đã dùng xong, không cho tái sử dụng.
+            checkoutUrl: null,
+            checkoutExpiresAt: null,
+          },
+        });
+
+        if (claim.count === 0) return false;
+
+        await tx.payment.create({
+          data: {
+            orderId: order.id,
+            provider,
+            transactionId: String(paymentData?.transId ?? paymentData?.reference ?? Date.now()),
+            paymentData,
+          },
+        });
+
+        if (order.targetTier) {
+          await tx.user.update({
+            where: { id: order.userId },
+            data: { tier: order.targetTier },
+          });
+        } else {
+          // Đơn sản phẩm: trừ tồn kho khi đã xác nhận thanh toán. Trừ tại đây (không
+          // phải lúc tạo đơn PENDING) để đơn bỏ dở không giữ chỗ hàng vô thời hạn.
+          for (const item of order.items ?? []) {
+            await tx.product.update({
+              where: { id: item.productId },
+              data: { stock: { decrement: item.quantity } },
+            });
+          }
+        }
+
+        return true;
+      });
+
+      if (!claimed) {
+        this.logger.log(
+          `Đơn hàng #${orderCode} đã được ghi nhận bởi webhook khác | provider=${provider}`,
+        );
+        return { message: 'Order already processed' };
+      }
     } catch (err: any) {
       if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002') {
         this.logger.log(

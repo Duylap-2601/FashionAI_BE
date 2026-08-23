@@ -40,5 +40,10 @@ coverage/
 # Temporary files
 *.tmp
 *.temp
+# File .glb sinh ra khi thu nghiem avatar - la artifact build, khong phai source.
+tmp/
+
+# Local avatar storage fallback (disk ephemeral, khong bao gio commit)
+storage/
 
 .env

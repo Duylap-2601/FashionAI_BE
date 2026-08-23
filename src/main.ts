@@ -18,6 +18,13 @@ async function bootstrap() {
 
   const corsCredentials = parseBoolean(process.env.CORS_CREDENTIALS, true);
   const isProduction = process.env.NODE_ENV === 'production';
+
+  // Render đặt reverse proxy trước app. Khai báo số hop tin cậy để Express tự suy
+  // ra req.ip từ phần X-Forwarded-For do proxy của mình thêm vào, thay vì tin phần
+  // tử đầu tiên (client đặt được -> bypass rate limit). 0 = chạy trực tiếp, local.
+  const trustProxyHops = Number(process.env.TRUST_PROXY_HOPS ?? (isProduction ? 1 : 0));
+  app.getHttpAdapter().getInstance().set('trust proxy', trustProxyHops);
+
   app.enableCors({
     origin: parseCorsOrigins(
       process.env.CORS_ORIGINS ?? process.env.CORS_ORIGIN,
@@ -119,7 +126,10 @@ function parseCorsOrigins(
   }
   return value
     .split(',')
-    .map((origin) => origin.trim())
+    // Header `Origin` của browser không bao giờ có dấu / cuối, mà package `cors`
+    // so khớp bằng chuỗi tuyệt đối. Đặt CORS_ORIGINS=https://foo.app/ sẽ âm thầm
+    // chặn hết request từ chính domain đó, nên chuẩn hoá tại đây.
+    .map((origin) => origin.trim().replace(/\/+$/, ''))
     .filter(Boolean);
 }
 

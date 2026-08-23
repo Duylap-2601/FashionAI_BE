@@ -102,9 +102,15 @@ export class AvatarService {
       const cached = await this.prisma.avatar.findUnique({
         where: { userId_cacheKey: { userId, cacheKey } },
       });
-      if (cached) {
+      if (cached && this.isCachedFileStillThere(userId, cacheKey, cached.glbUrl)) {
         this.logger.log(`[Avatar] Cache hit cho user ${userId}`);
         return this.toResult(cached, true);
+      }
+      if (cached) {
+        this.logger.warn(
+          `[Avatar] File cache không còn trên disk, sinh lại | user=${userId} | url=${cached.glbUrl}`,
+        );
+        await this.prisma.avatar.delete({ where: { id: cached.id } });
       }
 
       const generated = await this.runBlender(userId, dto, cacheKey);
@@ -311,6 +317,17 @@ export class AvatarService {
     fs.writeFileSync(finalPath, buffer);
     this.logger.log(`[Avatar] Lưu local: ${finalPath} (${buffer.length} bytes)`);
     return `${this.publicBaseUrl}/${fileName}/file`;
+  }
+
+  /**
+   * Cache hit chỉ đáng tin khi file còn tồn tại thật. URL fallback local trỏ vào
+   * disk của container, mà disk trên Render là ephemeral: sau mỗi restart file mất
+   * nhưng row trong DB vẫn còn, nên cache sẽ trả về URL chết vĩnh viễn.
+   * URL Cloudinary thì không chịu ảnh hưởng nên luôn coi là hợp lệ.
+   */
+  private isCachedFileStillThere(userId: string, cacheKey: string, glbUrl: string): boolean {
+    if (!glbUrl.endsWith('/file')) return true;
+    return fs.existsSync(this.getGlbFilePath(`avatar_${userId}_${cacheKey}`));
   }
 
   // ── Presets (grid GLB sinh offline, FE dùng morph targets) ────────────────
