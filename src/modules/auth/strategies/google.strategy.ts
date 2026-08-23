@@ -2,7 +2,8 @@ import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { PassportStrategy } from '@nestjs/passport';
 import { Strategy, VerifyCallback } from 'passport-google-oauth20';
-import { CookieStateStore } from './cookie-state.store';
+import { SignedStateStore } from './signed-state.store';
+import { requireConfig } from '../../../common/utils/require-config.util';
 
 @Injectable()
 export class GoogleStrategy extends PassportStrategy(Strategy, 'google') {
@@ -33,13 +34,16 @@ export class GoogleStrategy extends PassportStrategy(Strategy, 'google') {
         configService.get<string>('GOOGLE_CALLBACK_URL') ||
         'http://localhost:3001/api/auth/google/callback',
       scope: ['email', 'profile'],
-      // Chống CSRF trên vòng OAuth. Dùng store cookie thay vì session vì API này
-      // stateless (xem CookieStateStore).
-      store: new CookieStateStore({
+      // Chống CSRF trên vòng OAuth mà không cần session hay cookie: state tự
+      // mang chữ ký HMAC nên verify được ngay ở bước callback (xem
+      // SignedStateStore). Cookie state cũ phụ thuộc Set-Cookie sống sót qua
+      // redirect, điều không đảm bảo khi FE mở luồng login không phải bằng
+      // điều hướng top-level.
+      store: new SignedStateStore({
+        secret: requireConfig(configService, 'JWT_ACCESS_SECRET'),
         ttlSeconds: Number(
           configService.get<string>('GOOGLE_OAUTH_STATE_TTL') ?? '600',
         ),
-        secure: isProduction,
       }),
     } as never);
   }
