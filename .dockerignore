@@ -1,0 +1,47 @@
+# Dependencies & build output (rebuilt inside the image)
+node_modules
+dist
+build
+
+# Secrets & local env (NEVER ship these in an image)
+.env
+.env.*
+!.env.example
+
+# Git & CI
+.git
+.gitignore
+.github
+
+# Docker files (not needed inside the build context)
+Dockerfile
+.dockerignore
+docker-compose.yml
+
+# IDE / editor / tooling
+.claude
+.vscode
+.idea
+*.swp
+*.swo
+
+# Docs & planning (not needed at runtime)
+*.md
+docs
+
+# Tests & scratch scripts
+test
+test-*.ts
+test-*.mjs
+coverage
+.nyc_output
+
+# Local runtime artifacts
+tmp
+storage
+*.log
+npm-debug.log*
+
+# OS junk
+.DS_Store
+Thumbs.db
