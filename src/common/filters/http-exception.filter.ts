@@ -43,10 +43,19 @@ export class GlobalExceptionFilter implements ExceptionFilter {
       message = exception.message;
     }
 
-    this.logger.error(
-      `[${request.method}] ${request.url} → ${status} (${code}): ${JSON.stringify(message)}`,
-      exception instanceof Error ? exception.stack : undefined,
-    );
+    const logLine = `[${request.method}] ${request.url} → ${status} (${code}): ${JSON.stringify(message)}`;
+
+    if (status >= HttpStatus.INTERNAL_SERVER_ERROR) {
+      this.logger.error(
+        logLine,
+        exception instanceof Error ? exception.stack : undefined,
+      );
+    } else {
+      // 4xx là lỗi phía client (token hết hạn, validate sai...). Stack trace của
+      // chúng chỉ trỏ vào internals của passport/nest nên làm ngập log mà không
+      // thêm thông tin gì để lần ra lỗi.
+      this.logger.warn(logLine);
+    }
 
     response.status(status).json({
       success: false,
