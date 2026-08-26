@@ -135,7 +135,7 @@ export class ProductsService {
   async update(id: string, dto: Partial<CreateProductDto>) {
     await this.findOne(id);
     // Loại bỏ fields từ FilesInterceptor trước khi pass vào Prisma
-    const { images, image, isMainIndex, ...updateData } = dto;
+    const { images: _images, image: _image, isMainIndex: _isMainIndex, ...updateData } = dto;
     return this.prisma.product.update({
       where: { id },
       data: updateData,
