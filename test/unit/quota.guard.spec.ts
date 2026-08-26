@@ -1,7 +1,5 @@
 import { ExecutionContext, HttpException } from '@nestjs/common';
-import { Reflector } from '@nestjs/core';
 import { QuotaGuard } from '../../src/common/guards/quota.guard';
-import { QuotaService } from '../../src/common/services/quota.service';
 
 describe('QuotaGuard', () => {
   let guard: QuotaGuard;
