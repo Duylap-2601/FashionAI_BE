@@ -89,4 +89,11 @@ export class CreateProductDto {
   @IsEnum(ProductStatus)
   @IsOptional()
   status?: ProductStatus;
+
+  // Files từ FilesInterceptor; không validate bằng class-validator, chỉ mark để skip forbidNonWhitelisted
+  @IsOptional()
+  images?: unknown;
+
+  @IsOptional()
+  isMainIndex?: unknown;
 }
