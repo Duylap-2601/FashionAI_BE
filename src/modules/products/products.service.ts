@@ -163,6 +163,55 @@ export class ProductsService {
     }
   }
 
+  async removeImage(productId: string, imageId: string) {
+    await this.findOne(productId);
+
+    const image = await this.prisma.productImage.findFirst({
+      where: { id: imageId, productId },
+    });
+    if (!image) {
+      throw new NotFoundException('Không tìm thấy ảnh trong sản phẩm này');
+    }
+
+    const totalImages = await this.prisma.productImage.count({
+      where: { productId },
+    });
+    if (totalImages <= 1) {
+      throw new BadRequestException(
+        'Sản phẩm phải có ít nhất 1 ảnh. Hãy upload ảnh khác trước khi xóa ảnh này.',
+      );
+    }
+
+    return this.prisma.$transaction(async (tx) => {
+      await tx.productImage.delete({ where: { id: imageId } });
+
+      // Ảnh vừa xóa là ảnh chính -> promote ảnh còn lại mới nhất lên làm chính,
+      // đồng thời đồng bộ garmentUrl (dùng cho Try-On/Stylist) vì field này không
+      // tự derive từ bảng images.
+      if (image.isMain) {
+        const nextMain = await tx.productImage.findFirst({
+          where: { productId },
+          orderBy: { createdAt: 'desc' },
+        });
+        if (nextMain) {
+          await tx.productImage.update({
+            where: { id: nextMain.id },
+            data: { isMain: true },
+          });
+          await tx.product.update({
+            where: { id: productId },
+            data: { garmentUrl: nextMain.imageUrl },
+          });
+        }
+      }
+
+      return tx.product.findUnique({
+        where: { id: productId },
+        include: { images: true },
+      });
+    });
+  }
+
   async uploadProductImages(
     productId: string,
     files: Express.Multer.File[],

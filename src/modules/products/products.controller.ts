@@ -166,6 +166,20 @@ export class ProductsController {
     );
   }
 
+  @Delete(':id/images/:imageId')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(Role.ADMIN)
+  @ApiBearerAuth('access-token')
+  @ApiOperation({ summary: 'Xóa một ảnh trong sản phẩm (Admin Only)' })
+  async removeImage(
+    @Req() req: Request,
+    @Param('id') id: string,
+    @Param('imageId') imageId: string,
+  ) {
+    const data = await this.productsService.removeImage(id, imageId);
+    return buildApiResponse(req, 'PRODUCT_IMAGE_DELETE_SUCCESS', 'Xóa ảnh sản phẩm thành công', data);
+  }
+
   @Put(':id')
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(Role.ADMIN)
