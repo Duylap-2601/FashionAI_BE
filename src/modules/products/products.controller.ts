@@ -15,7 +15,7 @@ import {
   UseInterceptors,
   UseGuards,
 } from '@nestjs/common';
-import { FilesInterceptor } from '@nestjs/platform-express';
+import { AnyFilesInterceptor } from '@nestjs/platform-express';
 import { ApiBearerAuth, ApiBody, ApiConsumes, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { Request } from 'express';
 import { Role } from '@prisma/client';
@@ -86,13 +86,20 @@ export class ProductsController {
       },
     },
   })
-  @UseInterceptors(FilesInterceptor('images', 10))
+  @UseInterceptors(AnyFilesInterceptor())
   async create(
     @Req() req: Request,
     @Body() dto: CreateProductDto,
-    @UploadedFiles() images?: Express.Multer.File[],
+    @UploadedFiles() files?: Express.Multer.File[],
   ) {
-    if (images && images.length > 0) {
+    // FE có thể gửi field "images" (số nhiều, đúng chuẩn) hoặc "image" (số ít, do
+    // nhầm) — AnyFilesInterceptor nhận mọi fieldname nên chấp nhận cả hai, tránh
+    // MulterError "Unexpected field" khi FE gửi sai tên field.
+    const images = (files ?? []).filter(
+      (f) => f.fieldname === 'images' || f.fieldname === 'image',
+    );
+
+    if (images.length > 0) {
       const filePipe = new FileValidationPipe({ maxSize: 10 * 1024 * 1024 });
       for (const image of images) {
         filePipe.transform(image);
@@ -128,13 +135,17 @@ export class ProductsController {
       },
     },
   })
-  @UseInterceptors(FilesInterceptor('images', 10))
+  @UseInterceptors(AnyFilesInterceptor())
   async uploadImages(
     @Req() req: Request,
     @Param('id') id: string,
-    @UploadedFiles() images: Express.Multer.File[],
+    @UploadedFiles() files: Express.Multer.File[],
     @Body('isMainIndex') isMainIndex?: string | number,
   ) {
+    const images = (files ?? []).filter(
+      (f) => f.fieldname === 'images' || f.fieldname === 'image',
+    );
+
     if (!images || images.length === 0) {
       throw new BadRequestException('Vui lòng upload ít nhất 1 ảnh sản phẩm');
     }

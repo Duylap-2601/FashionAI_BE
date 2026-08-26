@@ -145,9 +145,22 @@ export class ProductsService {
 
   async remove(id: string) {
     await this.findOne(id);
-    return this.prisma.product.delete({
-      where: { id },
-    });
+    try {
+      return await this.prisma.product.delete({
+        where: { id },
+      });
+    } catch (err) {
+      // FK RESTRICT: sản phẩm đã có đơn hàng tham chiếu (order_items) thì không xóa được.
+      if (
+        err instanceof Prisma.PrismaClientKnownRequestError &&
+        err.code === 'P2003'
+      ) {
+        throw new BadRequestException(
+          'Không thể xóa sản phẩm vì đã có đơn hàng liên quan. Hãy chuyển trạng thái sản phẩm sang ARCHIVED thay vì xóa.',
+        );
+      }
+      throw err;
+    }
   }
 
   async uploadProductImages(
