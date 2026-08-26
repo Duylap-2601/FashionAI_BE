@@ -3,12 +3,13 @@ import { ConfigService } from '@nestjs/config';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { PrismaService } from '../../database/prisma.service';
 import { AuthService } from '../auth/auth.service';
+import { SubscriptionService } from '../payments/subscription.service';
 import { OrderStatus } from '@prisma/client';
 
 /**
- * Dọn dẹp định kỳ những bảng chỉ phình ra theo thời gian: token đã hết hạn và
- * cache kết quả thử đồ quá TTL. Trước đây chỉ có endpoint gọi tay
- * (`POST /auth/clean-tokens`), nghĩa là trên môi trường thật không ai dọn.
+ * Dọn dẹp định kỳ những bảng chỉ phình ra theo thời gian: token đã hết hạn,
+ * cache kết quả thử đồ quá TTL, subscription hết hạn, và đơn hàng PENDING
+ * chưa thanh toán quá 24h.
  */
 @Injectable()
 export class MaintenanceService {
@@ -19,9 +20,8 @@ export class MaintenanceService {
     private readonly config: ConfigService,
     private readonly prisma: PrismaService,
     private readonly authService: AuthService,
+    private readonly subscriptionService: SubscriptionService,
   ) {
-    // Nhiều instance cùng chạy cron sẽ lặp việc vô ích; cho phép tắt bằng env để
-    // chỉ một worker đảm nhiệm.
     this.enabled = this.config.get<string>('MAINTENANCE_CRON_ENABLED') !== 'false';
     if (!this.enabled) {
       this.logger.log('Maintenance cron đã bị tắt qua MAINTENANCE_CRON_ENABLED=false');
@@ -38,11 +38,13 @@ export class MaintenanceService {
         where: { expiresAt: { lt: new Date() } },
       });
 
+      const subscriptionResult = await this.subscriptionService.expireSubscriptions();
+
       // Expire PENDING orders that haven't been paid after 24h
       const expiredOrders = await this.prisma.order.updateMany({
         where: {
           status: OrderStatus.PENDING,
-          targetTier: null, // Chỉ hết hạn đơn sản phẩm, không áp dụng cho nâng cấp gói
+          targetTier: null,
           createdAt: { lt: new Date(Date.now() - 24 * 60 * 60 * 1000) },
         },
         data: {
@@ -55,10 +57,10 @@ export class MaintenanceService {
       this.logger.log(
         `Dọn dẹp định kỳ hoàn tất | refreshTokens=${tokens.deletedRefreshTokens} ` +
           `resetTokens=${tokens.deletedResetTokens} verifyTokens=${tokens.deletedVerifyTokens} ` +
-          `tryOnCache=${tryOnCache.count} expiredOrders=${expiredOrders.count}`,
+          `tryOnCache=${tryOnCache.count} expiredSubscriptions=${subscriptionResult.expiredSubscriptions} ` +
+          `downgradedUsers=${subscriptionResult.downgradedUsers} expiredOrders=${expiredOrders.count}`,
       );
     } catch (err) {
-      // Cron thất bại không được làm sập process.
       const message = err instanceof Error ? err.message : 'unknown';
       this.logger.error(`Dọn dẹp định kỳ thất bại: ${message}`);
     }

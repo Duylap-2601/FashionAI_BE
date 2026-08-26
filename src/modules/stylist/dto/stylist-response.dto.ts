@@ -13,8 +13,12 @@ export class StylistResponseDto {
   @ApiProperty({ example: 'Slim-fit sẽ tôn dáng người chữ V của bạn' })
   fitRecommendation!: string;
 
-  @ApiPropertyOptional({ example: 'L', description: 'Cỡ áo phù hợp dựa trên số đo người dùng (nếu có)' })
-  recommendedSize?: string;
+  @ApiPropertyOptional({
+    example: 'Nên may ôm nhẹ ở eo, chừa rộng phần vai để thoải mái',
+    description:
+      'Gợi ý phom/độ ôm khi đặt may theo số đo cơ thể (không dùng size chữ S/M/L)',
+  })
+  fitAdvice?: string;
 
   @ApiPropertyOptional({
     example: 85,

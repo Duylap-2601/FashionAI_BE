@@ -6,6 +6,7 @@ export interface AuthenticatedUser {
   name: string | null;
   avatarUrl: string | null;
   tier: UserTier;
+  tierExpiresAt: Date | null;
   role: Role;
   isVerified: boolean;
   jti: string;

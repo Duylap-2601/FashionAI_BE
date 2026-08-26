@@ -20,11 +20,6 @@ export class QueryProductDto {
   color?: string;
 
   @ApiProperty({ required: false })
-  @IsString()
-  @IsOptional()
-  size?: string;
-
-  @ApiProperty({ required: false })
   @Type(() => Number)
   @IsNumber()
   @Min(0)

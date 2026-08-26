@@ -4,9 +4,9 @@ export type AiActionName = 'TRY_ON' | 'STYLIST' | 'CHATBOT';
 
 export const AI_ACTION_LIMITS: Record<AiActionName, Record<UserTier, number>> = {
   TRY_ON: {
-    FREE: 3,
-    MEMBER: 10,
-    VIP: Infinity,
+    FREE: 0,
+    MEMBER: 5,
+    VIP: 10,
   },
   STYLIST: {
     FREE: 3,

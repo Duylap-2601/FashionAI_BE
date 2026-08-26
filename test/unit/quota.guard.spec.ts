@@ -1,147 +1,83 @@
 import { ExecutionContext, HttpException } from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
 import { QuotaGuard } from '../../src/common/guards/quota.guard';
-import { RedisService } from '../../src/common/services/redis.service';
-import { PrismaService } from '../../src/database/prisma.service';
+import { QuotaService } from '../../src/common/services/quota.service';
 
 describe('QuotaGuard', () => {
   let guard: QuotaGuard;
-  let reflector: Reflector;
-  let redisService: RedisService;
-  let prismaService: PrismaService;
 
   const mockReflector = {
     getAllAndOverride: jest.fn(),
   };
 
-  const mockRedisService = {
-    get: jest.fn(),
-    set: jest.fn(),
-    incr: jest.fn(),
-  };
-
-  const mockPrismaService = {
-    dailyUsage: {
-      findUnique: jest.fn(),
-    },
+  const mockQuotaService = {
+    assertQuota: jest.fn(),
   };
 
   beforeEach(() => {
-    reflector = mockReflector as any;
-    redisService = mockRedisService as any;
-    prismaService = mockPrismaService as any;
-    guard = new QuotaGuard(reflector, redisService, prismaService);
+    jest.clearAllMocks();
+    guard = new QuotaGuard(mockReflector as any, mockQuotaService as any);
   });
+
+  function contextWithUser(user: any): ExecutionContext {
+    return {
+      getHandler: () => {},
+      getClass: () => {},
+      switchToHttp: () => ({ getRequest: () => ({ user }) }),
+    } as ExecutionContext;
+  }
 
   it('should be defined', () => {
     expect(guard).toBeDefined();
   });
 
-  it('should throw Unauthorized when no user is attached to request', async () => {
+  it('ném Unauthorized khi request không có user', async () => {
     mockReflector.getAllAndOverride.mockReturnValue('TRY_ON');
-    const mockContext = {
-      getHandler: () => {},
-      getClass: () => {},
-      switchToHttp: () => ({
-        getRequest: () => ({ user: null }),
-      }),
-    } as ExecutionContext;
-
-    await expect(guard.canActivate(mockContext)).rejects.toThrow(HttpException);
+    await expect(guard.canActivate(contextWithUser(null))).rejects.toThrow(
+      HttpException,
+    );
+    expect(mockQuotaService.assertQuota).not.toHaveBeenCalled();
   });
 
-  it('should allow VIP user without quota limits', async () => {
-    mockReflector.getAllAndOverride.mockReturnValue('TRY_ON');
-    const mockContext = {
-      getHandler: () => {},
-      getClass: () => {},
-      switchToHttp: () => ({
-        getRequest: () => ({ user: { id: 'vip-1', tier: 'VIP' } }),
-      }),
-    } as ExecutionContext;
-
-    const result = await guard.canActivate(mockContext);
-    expect(result).toBe(true);
-  });
-
-  it('should block FREE user when daily limit of 3 is reached', async () => {
-    mockReflector.getAllAndOverride.mockReturnValue('TRY_ON');
-    mockRedisService.get.mockResolvedValue('3');
-
-    const mockContext = {
-      getHandler: () => {},
-      getClass: () => {},
-      switchToHttp: () => ({
-        getRequest: () => ({ user: { id: 'free-1', tier: 'FREE' } }),
-      }),
-    } as ExecutionContext;
-
-    await expect(guard.canActivate(mockContext)).rejects.toThrow(HttpException);
-  });
-
-  it('should allow FREE user to use STYLIST action within its limit of 3', async () => {
-    mockReflector.getAllAndOverride.mockReturnValue('STYLIST');
-    mockRedisService.get.mockResolvedValue('2');
-
-    const mockContext = {
-      getHandler: () => {},
-      getClass: () => {},
-      switchToHttp: () => ({
-        getRequest: () => ({ user: { id: 'free-2', tier: 'FREE' } }),
-      }),
-    } as ExecutionContext;
-
-    const result = await guard.canActivate(mockContext);
-    expect(result).toBe(true);
-  });
-
-  it('should block FREE user when STYLIST daily limit of 3 is reached', async () => {
-    mockReflector.getAllAndOverride.mockReturnValue('STYLIST');
-    mockRedisService.get.mockResolvedValue('3');
-
-    const mockContext = {
-      getHandler: () => {},
-      getClass: () => {},
-      switchToHttp: () => ({
-        getRequest: () => ({ user: { id: 'free-3', tier: 'FREE' } }),
-      }),
-    } as ExecutionContext;
-
-    await expect(guard.canActivate(mockContext)).rejects.toThrow(HttpException);
-  });
-
-  it('should allow FREE user to use CHATBOT action within its limit of 50', async () => {
+  it('ủy quyền kiểm tra hạn mức cho QuotaService với action + tier đúng', async () => {
     mockReflector.getAllAndOverride.mockReturnValue('CHATBOT');
-    mockRedisService.get.mockResolvedValue('10');
+    mockQuotaService.assertQuota.mockResolvedValue(undefined);
 
-    const mockContext = {
-      getHandler: () => {},
-      getClass: () => {},
-      switchToHttp: () => ({
-        getRequest: () => ({ user: { id: 'free-4', tier: 'FREE' } }),
-      }),
-    } as ExecutionContext;
+    const result = await guard.canActivate(
+      contextWithUser({ id: 'u1', tier: 'MEMBER' }),
+    );
 
-    const result = await guard.canActivate(mockContext);
     expect(result).toBe(true);
+    expect(mockQuotaService.assertQuota).toHaveBeenCalledWith(
+      'u1',
+      'MEMBER',
+      'CHATBOT',
+      undefined,
+    );
   });
 
-  it('should not consume quota itself when allowing the request', async () => {
+  it('mặc định action = TRY_ON khi handler không gắn @AiAction', async () => {
+    mockReflector.getAllAndOverride.mockReturnValue(undefined);
+    mockQuotaService.assertQuota.mockResolvedValue(undefined);
+
+    await guard.canActivate(contextWithUser({ id: 'u2', tier: 'FREE' }));
+
+    expect(mockQuotaService.assertQuota).toHaveBeenCalledWith(
+      'u2',
+      'FREE',
+      'TRY_ON',
+      undefined,
+    );
+  });
+
+  it('cho lỗi hết hạn mức từ service nổi lên nguyên trạng', async () => {
     mockReflector.getAllAndOverride.mockReturnValue('STYLIST');
-    mockRedisService.get.mockResolvedValue('1');
+    mockQuotaService.assertQuota.mockRejectedValue(
+      new HttpException({ code: 'QUOTA_EXCEEDED' }, 429),
+    );
 
-    const request = { user: { id: 'free-5', tier: 'FREE' } };
-    const mockContext = {
-      getHandler: () => {},
-      getClass: () => {},
-      switchToHttp: () => ({ getRequest: () => request }),
-    } as ExecutionContext;
-
-    const result = await guard.canActivate(mockContext);
-
-    // Guard chỉ kiểm tra hạn mức; việc tăng counter do service làm sau khi
-    // provider trả kết quả, nên cache hit / lỗi provider không bị tính lượt.
-    expect(result).toBe(true);
-    expect(mockRedisService.incr).not.toHaveBeenCalled();
+    await expect(
+      guard.canActivate(contextWithUser({ id: 'u3', tier: 'FREE' })),
+    ).rejects.toThrow(HttpException);
   });
 });

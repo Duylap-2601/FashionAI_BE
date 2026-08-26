@@ -12,6 +12,16 @@ import { QuotaService } from '../../common/services/quota.service';
 import { ChatRequestDto } from './dto/chat-request.dto';
 import { CHAT_SYSTEM_PROMPT } from './prompts/system-prompt';
 
+/**
+ * Sự kiện stream thuần dữ liệu, không gắn với transport. Controller SSE format
+ * thành `data: ...\n\n`, ChatGateway emit thành socket event tương ứng. Nhờ vậy
+ * cùng một luồng stream phục vụ được cả SSE (legacy) lẫn WebSocket.
+ */
+export type ChatStreamEvent =
+  | { type: 'token'; data: string }
+  | { type: 'done'; data: { sessionId: string } }
+  | { type: 'error'; data: string };
+
 @Injectable()
 export class ChatService {
   private readonly logger = new Logger(ChatService.name);
@@ -42,7 +52,10 @@ export class ChatService {
     this.logger.log(`Groq chat client initialized | model=${this.model}`);
   }
 
-  async *streamChat(userId: string, dto: ChatRequestDto): AsyncGenerator<string, void, unknown> {
+  async *streamChat(
+    userId: string,
+    dto: ChatRequestDto,
+  ): AsyncGenerator<ChatStreamEvent, void, unknown> {
     // Check API key
     if (!this.config.get<string>('GROQ_API_KEY')) {
       throw new HttpException(
@@ -106,7 +119,7 @@ export class ChatService {
         const content = choice?.delta?.content ?? '';
         if (content) {
           fullResponse += content;
-          yield `data: ${JSON.stringify({ type: 'token', data: content })}\n\n`;
+          yield { type: 'token', data: content };
         }
         if (choice?.finish_reason) {
           if (chunk.usage) {
@@ -118,8 +131,8 @@ export class ChatService {
       }
     } catch (error: any) {
       this.logger.error(`Groq streaming error: ${error.message}`);
-      yield `data: ${JSON.stringify({ type: 'error', data: 'Lỗi khi gọi AI. Vui lòng thử lại.' })}\n\n`;
-      return; // End generator, don't throw (headers already sent via SSE)
+      yield { type: 'error', data: 'Lỗi khi gọi AI. Vui lòng thử lại.' };
+      return; // Kết thúc generator, không throw (SSE header có thể đã gửi)
     }
 
     // Save assistant message
@@ -146,7 +159,7 @@ export class ChatService {
     await this.quotaService.consumeQuota(userId, 'CHATBOT');
 
     // Send done event
-    yield `data: ${JSON.stringify({ type: 'done', data: { sessionId: session.id } })}\n\n`;
+    yield { type: 'done', data: { sessionId: session.id } };
   }
 
   async getSessions(userId: string, page = 1, limit = 20) {

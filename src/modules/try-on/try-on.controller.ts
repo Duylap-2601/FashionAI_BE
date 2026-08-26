@@ -8,14 +8,13 @@ import {
   UseInterceptors,
   UploadedFiles,
   BadRequestException,
-  Body,
   UseGuards,
   Req,
   Param,
   Query,
 } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiResponse, ApiConsumes, ApiBody, ApiBearerAuth } from '@nestjs/swagger';
-import { FileFieldsInterceptor } from '@nestjs/platform-express';
+import { AnyFilesInterceptor } from '@nestjs/platform-express';
 import { Request } from 'express';
 import { GarmentCategory } from '@prisma/client';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
@@ -23,8 +22,7 @@ import { AuthenticatedUser } from '../auth/interfaces/authenticated-user.interfa
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { QuotaGuard, AiAction } from '../../common/guards/quota.guard';
 import { FileValidationPipe } from '../../common/pipes/file-validation.pipe';
-import { TryOnService } from './try-on.service';
-import { TryOnRequestDto } from './dto/try-on-request.dto';
+import { TryOnService, TryOnGarmentInput } from './try-on.service';
 import { buildApiResponse } from '../../common/utils/api-response.util';
 
 @ApiTags('Virtual Try-On')
@@ -49,51 +47,56 @@ export class TryOnController {
       required: ['humanImage'],
       properties: {
         humanImage: { type: 'string', format: 'binary', description: 'Ảnh người dùng (toàn thân)' },
-        garmentImage: { type: 'string', format: 'binary', description: 'Ảnh trang phục (nếu không dùng productId)' },
-        productId: { type: 'string', description: 'ID sản phẩm từ catalog (nếu không tải garmentImage)' },
+        // Combo (Phase 3): gửi mảng garments[N][image]/[category]/[productId]. Tối đa 2 món
+        // (1 UPPER + 1 LOWER) hoặc 1 FULL_BODY. Mỗi món tính 1 lượt quota.
+        'garments[0][image]': { type: 'string', format: 'binary', description: 'Ảnh món 1 (nếu không dùng productId)' },
+        'garments[0][category]': { type: 'string', enum: ['UPPER', 'LOWER', 'FULL_BODY'], description: 'Phân loại món 1' },
+        'garments[0][productId]': { type: 'string', description: 'ID sản phẩm cho món 1 (thay cho ảnh)' },
+        'garments[1][image]': { type: 'string', format: 'binary', description: 'Ảnh món 2' },
+        'garments[1][category]': { type: 'string', enum: ['UPPER', 'LOWER', 'FULL_BODY'], description: 'Phân loại món 2' },
+        'garments[1][productId]': { type: 'string', description: 'ID sản phẩm cho món 2' },
+        // Legacy 1 món: vẫn hỗ trợ để tương thích ngược.
+        garmentImage: { type: 'string', format: 'binary', description: '[Legacy] Ảnh trang phục đơn' },
+        productId: { type: 'string', description: '[Legacy] ID sản phẩm đơn' },
         garmentCategory: {
           type: 'string',
           enum: ['UPPER', 'LOWER', 'FULL_BODY'],
           default: 'UPPER',
-          description: 'Phân loại trang phục',
+          description: '[Legacy] Phân loại trang phục đơn',
         },
       },
     },
   })
   @ApiResponse({ status: 200, description: 'Trả về thông tin kết quả thử đồ và resultUrl.' })
   @ApiResponse({ status: 429, description: 'Đã hết lượt Quota trong ngày hoặc duplicate request.' })
-  @UseInterceptors(
-    FileFieldsInterceptor([
-      { name: 'humanImage', maxCount: 1 },
-      { name: 'garmentImage', maxCount: 1 },
-    ]),
-  )
+  @UseInterceptors(AnyFilesInterceptor())
   async tryOn(
     @Req() req: Request,
     @CurrentUser() user: AuthenticatedUser,
-    @UploadedFiles() files: { humanImage?: Express.Multer.File[]; garmentImage?: Express.Multer.File[] },
-    @Body() dto: TryOnRequestDto,
+    @UploadedFiles() files: Express.Multer.File[],
   ) {
     const filePipe = new FileValidationPipe({ maxSize: 10 * 1024 * 1024 });
+    const fileList = files ?? [];
+    const body = (req.body ?? {}) as Record<string, unknown>;
 
-    if (!files.humanImage?.[0]) {
+    const humanImage = fileList.find((f) => f.fieldname === 'humanImage');
+    if (!humanImage) {
       throw new BadRequestException('Vui lòng tải lên ảnh người (humanImage)');
     }
-    filePipe.transform(files.humanImage[0]);
+    filePipe.transform(humanImage);
 
-    if (files.garmentImage?.[0]) {
-      filePipe.transform(files.garmentImage[0]);
+    const garments = this.parseGarments(body, fileList);
+    if (garments.length === 0) {
+      throw new BadRequestException('Vui lòng cung cấp ít nhất một món (garmentImage/productId hoặc garments[])');
+    }
+    for (const g of garments) {
+      if (g.image) filePipe.transform(g.image);
     }
 
-    const category = dto.garmentCategory ?? GarmentCategory.UPPER;
-
-    const result = await this.tryOnService.generateTryOn(
-      user.id,
-      files.humanImage[0],
-      files.garmentImage?.[0],
-      dto.productId,
-      category,
-    );
+    const result = await this.tryOnService.generateTryOn(user.id, humanImage, garments, {
+      tier: user.tier,
+      tierExpiresAt: user.tierExpiresAt,
+    });
 
     return buildApiResponse(
       req,
@@ -101,6 +104,70 @@ export class TryOnController {
       result.isCached ? 'Lấy kết quả thử đồ từ Cache' : 'Thử đồ AI thành công',
       result,
     );
+  }
+
+  // Đọc garments từ multipart: ưu tiên shape mảng garments[N][...], nếu không có thì
+  // rơi về shape đơn cũ (garmentImage/garmentCategory/productId) và bọc thành 1 phần tử.
+  private parseGarments(body: Record<string, unknown>, files: Express.Multer.File[]): TryOnGarmentInput[] {
+    const indexed = new Map<number, TryOnGarmentInput>();
+    const bracket = /^garments\[(\d+)\]\[(image|category|productId)\]$/;
+
+    const ensure = (idx: number): TryOnGarmentInput => {
+      let g = indexed.get(idx);
+      if (!g) {
+        g = {};
+        indexed.set(idx, g);
+      }
+      return g;
+    };
+
+    for (const file of files) {
+      const m = bracket.exec(file.fieldname);
+      if (m && m[2] === 'image') {
+        ensure(Number(m[1])).image = file;
+      }
+    }
+
+    // multer (append-field) đã gộp garments[N][category] thành body.garments = [{...}],
+    // nên đọc category/productId từ mảng lồng này thay vì từ key phẳng.
+    const bodyGarments = body.garments;
+    if (bodyGarments && typeof bodyGarments === 'object') {
+      for (const [idxKey, item] of Object.entries(bodyGarments as Record<string, unknown>)) {
+        const idx = Number(idxKey);
+        if (!Number.isInteger(idx) || !item || typeof item !== 'object') continue;
+        const entry = item as Record<string, unknown>;
+        const g = ensure(idx);
+        if (entry.category != null) g.category = this.toGarmentCategory(entry.category);
+        if (entry.productId != null) g.productId = String(entry.productId);
+      }
+    }
+
+    if (indexed.size > 0) {
+      return [...indexed.entries()].sort(([a], [b]) => a - b).map(([, g]) => g);
+    }
+
+    // Legacy: 1 món.
+    const legacyImage = files.find((f) => f.fieldname === 'garmentImage');
+    const legacyProductId = body.productId ? String(body.productId) : undefined;
+    if (!legacyImage && !legacyProductId) {
+      return [];
+    }
+    return [
+      {
+        image: legacyImage,
+        productId: legacyProductId,
+        category: this.toGarmentCategory(body.garmentCategory) ?? GarmentCategory.UPPER,
+      },
+    ];
+  }
+
+  private toGarmentCategory(value: unknown): GarmentCategory | undefined {
+    if (typeof value !== 'string') return undefined;
+    const upper = value.toUpperCase();
+    if (upper in GarmentCategory) {
+      return GarmentCategory[upper as keyof typeof GarmentCategory];
+    }
+    throw new BadRequestException(`garmentCategory không hợp lệ: ${value}`);
   }
 
   @Get('history')

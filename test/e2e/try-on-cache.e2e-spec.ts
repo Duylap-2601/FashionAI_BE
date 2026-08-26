@@ -179,6 +179,44 @@ describe('Try-On cache scoping (e2e)', () => {
       .expect(400);
   });
 
+  it('combo 2 món (UPPER + LOWER) trừ 2 lượt quota và lưu cả 2 món', async () => {
+    await bootstrap('user-a');
+
+    prisma.tryOnResult.findFirst.mockResolvedValue(null);
+    prisma.tryOnResult.create.mockResolvedValue({
+      id: 'combo-1',
+      createdAt: new Date(),
+    });
+
+    const res = await request(app.getHttpServer())
+      .post('/api/try-on')
+      .attach('humanImage', PNG_1X1, { filename: 'h.png', contentType: 'image/png' })
+      .attach('garments[0][image]', PNG_1X1, { filename: 'top.png', contentType: 'image/png' })
+      .field('garments[0][category]', GarmentCategory.UPPER)
+      .attach('garments[1][image]', PNG_1X1, { filename: 'bottom.png', contentType: 'image/png' })
+      .field('garments[1][category]', GarmentCategory.LOWER)
+      .expect(200);
+
+    expect(res.body.data.isCached).toBe(false);
+    expect(res.body.data.id).toBe('combo-1');
+
+    // Combo tính theo số món: 2 món → trừ 2 lượt.
+    expect(redis.incrBy).toHaveBeenCalledWith(
+      expect.stringContaining('quota:try_on:user-a:'),
+      2,
+      expect.any(Number),
+    );
+
+    // Bản ghi lưu đủ 2 món và category cuối là LOWER (thứ tự chain: áo trước, quần sau).
+    const createArg = prisma.tryOnResult.create.mock.calls[0][0];
+    expect(createArg.data.category).toBe(GarmentCategory.LOWER);
+    expect(createArg.data.garments).toHaveLength(2);
+    expect(createArg.data.garments.map((g: any) => g.category)).toEqual([
+      GarmentCategory.UPPER,
+      GarmentCategory.LOWER,
+    ]);
+  });
+
   it('DELETE /try-on/history/all xóa toàn bộ lịch sử của user', async () => {
     await bootstrap('user-a');
 

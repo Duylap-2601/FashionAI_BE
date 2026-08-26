@@ -25,11 +25,6 @@ export class CreateOrderItemDto {
   @Max(1000, { message: 'Số lượng mỗi sản phẩm tối đa là 1000' })
   quantity!: number;
 
-  @ApiProperty({ description: 'Size đã chọn', required: false, example: 'M' })
-  @IsString()
-  @IsOptional()
-  size?: string;
-
   @ApiProperty({ description: 'Màu đã chọn', required: false, example: 'Black' })
   @IsString()
   @IsOptional()

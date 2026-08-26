@@ -12,17 +12,24 @@ export class ProductsService {
     private readonly storageService: StorageService,
   ) {}
 
-  async create(dto: CreateProductDto, image?: Express.Multer.File) {
-    const garmentUrl = image
-      ? await this.storageService.uploadImage(
+  async create(dto: CreateProductDto, images?: Express.Multer.File[]) {
+    let garmentUrl = dto.garmentUrl;
+    const uploadedImages: string[] = [];
+
+    if (images && images.length > 0) {
+      for (const image of images) {
+        const imageUrl = await this.storageService.uploadImage(
           image.buffer,
           'product-images',
-          `product_${Date.now()}`,
-        )
-      : dto.garmentUrl;
+          `product_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+        );
+        uploadedImages.push(imageUrl);
+      }
+      garmentUrl = uploadedImages[0];
+    }
 
     if (!garmentUrl) {
-      throw new BadRequestException('Vui lòng upload ảnh sản phẩm hoặc truyền garmentUrl');
+      throw new BadRequestException('Vui lòng upload ít nhất 1 ảnh sản phẩm hoặc truyền garmentUrl');
     }
 
     const createData: Prisma.ProductCreateInput = {
@@ -30,7 +37,6 @@ export class ProductsService {
       description: dto.description,
       category: dto.category,
       color: dto.color,
-      size: dto.size,
       price: dto.price,
       originalPrice: dto.originalPrice,
       stock: dto.stock ?? 0,
@@ -38,15 +44,15 @@ export class ProductsService {
       garmentUrl,
       status: dto.status ?? ProductStatus.ACTIVE,
       images: {
-        create: [{ imageUrl: garmentUrl, isMain: true }],
+        create: uploadedImages.map((imageUrl, index) => ({
+          imageUrl,
+          isMain: index === 0,
+        })),
       },
     };
 
     if (dto.colors !== undefined) {
       createData.colors = dto.colors;
-    }
-    if (dto.sizes !== undefined) {
-      createData.sizes = dto.sizes;
     }
 
     return this.prisma.product.create({
@@ -60,7 +66,6 @@ export class ProductsService {
       search,
       category,
       color,
-      size,
       minPrice,
       maxPrice,
       status = ProductStatus.ACTIVE,
@@ -72,7 +77,6 @@ export class ProductsService {
       ...(status ? { status } : {}),
       ...(category ? { category } : {}),
       ...(color ? { color: { contains: color, mode: 'insensitive' } } : {}),
-      ...(size ? { size: { equals: size, mode: 'insensitive' } } : {}),
       ...(minPrice !== undefined || maxPrice !== undefined
         ? {
             price: {
@@ -144,43 +148,59 @@ export class ProductsService {
     });
   }
 
-  async uploadProductImage(
+  async uploadProductImages(
     productId: string,
-    file: Express.Multer.File,
-    isMain = false,
+    files: Express.Multer.File[],
+    mainIndex = 0,
   ) {
     await this.findOne(productId);
 
-    const imageUrl = await this.storageService.uploadImage(
-      file.buffer,
-      'product-images',
-      `product_${productId}_${Date.now()}`,
-    );
+    if (files.length === 0) {
+      throw new BadRequestException('Danh sách ảnh không được rỗng');
+    }
+
+    if (mainIndex < 0 || mainIndex >= files.length) {
+      throw new BadRequestException(`Chỉ số ảnh chính không hợp lệ (0-${files.length - 1})`);
+    }
+
+    const imageUrls: string[] = [];
+    for (const file of files) {
+      const imageUrl = await this.storageService.uploadImage(
+        file.buffer,
+        'product-images',
+        `product_${productId}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+      );
+      imageUrls.push(imageUrl);
+    }
 
     return this.prisma.$transaction(async (tx) => {
-      if (isMain) {
+      if (imageUrls[mainIndex]) {
         await tx.productImage.updateMany({
           where: { productId },
           data: { isMain: false },
         });
       }
 
-      const image = await tx.productImage.create({
-        data: {
-          productId,
-          imageUrl,
-          isMain,
-        },
-      });
+      const createdImages = [];
+      for (let i = 0; i < imageUrls.length; i++) {
+        const image = await tx.productImage.create({
+          data: {
+            productId,
+            imageUrl: imageUrls[i],
+            isMain: i === mainIndex,
+          },
+        });
+        createdImages.push(image);
+      }
 
-      if (isMain) {
+      if (imageUrls[mainIndex]) {
         await tx.product.update({
           where: { id: productId },
-          data: { garmentUrl: imageUrl },
+          data: { garmentUrl: imageUrls[mainIndex] },
         });
       }
 
-      return image;
+      return createdImages;
     });
   }
 }

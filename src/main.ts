@@ -4,6 +4,8 @@ import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 import cookieParser from 'cookie-parser';
 import { AppModule } from './app.module';
 import { GlobalExceptionFilter } from './common/filters/http-exception.filter';
+import { parseCorsOrigins } from './common/utils/cors-origins.util';
+import { RedisIoAdapter } from './common/redis/redis-io.adapter';
 
 async function bootstrap() {
   const logger = new Logger('Bootstrap');
@@ -84,6 +86,20 @@ async function bootstrap() {
   }
 
   const port = process.env.PORT ?? 3000;
+
+  // Gắn WebSocket adapter TRƯỚC listen. Có REDIS_URL thì bật Redis adapter để
+  // fan-out event qua mọi instance; không có thì dùng adapter mặc định
+  // (in-memory) cho dev 1 instance.
+  const redisUrl = process.env.REDIS_URL;
+  if (redisUrl) {
+    const redisIoAdapter = new RedisIoAdapter(app);
+    await redisIoAdapter.connectToRedis(redisUrl);
+    app.useWebSocketAdapter(redisIoAdapter);
+    logger.log('WebSocket: Redis adapter enabled (multi-instance fan-out)');
+  } else {
+    logger.log('WebSocket: default in-memory adapter (single instance)');
+  }
+
   // Bind 0.0.0.0 thay vì để Node tự chọn: PaaS (Render, Fly, ...) chỉ route được
   // traffic tới process nghe trên mọi interface.
   await app.listen(port, '0.0.0.0');
@@ -99,38 +115,6 @@ async function bootstrap() {
 function parseBoolean(value: string | undefined, fallback: boolean) {
   if (value === undefined) return fallback;
   return value.toLowerCase() === 'true';
-}
-
-function parseCorsOrigins(
-  value: string | undefined,
-  credentials: boolean,
-  isProduction: boolean,
-  logger: Logger,
-) {
-  const explicit = value && value.trim() !== '*';
-
-  if (isProduction && !explicit) {
-    // Production không được mở CORS cho '*' hay ngầm rơi về localhost. Bắt buộc
-    // khai báo CORS_ORIGINS để tránh vô tình để lộ API cho mọi domain.
-    logger.warn(
-      'CORS_ORIGINS chưa được cấu hình ở production. Chỉ cho phép localhost tạm thời — ' +
-        'hãy đặt CORS_ORIGINS=<domain FE> để khóa đúng domain.',
-    );
-    return ['http://localhost:3000', 'http://127.0.0.1:3000'];
-  }
-
-  if (!explicit) {
-    return credentials
-      ? ['http://localhost:3000', 'http://127.0.0.1:3000']
-      : '*';
-  }
-  return value
-    .split(',')
-    // Header `Origin` của browser không bao giờ có dấu / cuối, mà package `cors`
-    // so khớp bằng chuỗi tuyệt đối. Đặt CORS_ORIGINS=https://foo.app/ sẽ âm thầm
-    // chặn hết request từ chính domain đó, nên chuẩn hoá tại đây.
-    .map((origin) => origin.trim().replace(/\/+$/, ''))
-    .filter(Boolean);
 }
 
 bootstrap();

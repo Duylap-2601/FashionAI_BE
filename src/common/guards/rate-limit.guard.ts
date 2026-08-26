@@ -23,6 +23,11 @@ export class RateLimitGuard implements CanActivate {
   ) {}
 
   async canActivate(context: ExecutionContext): Promise<boolean> {
+    // Guard này đăng ký ở APP_GUARD nên chạy cho cả WebSocket event. Trong WS
+    // context switchToHttp().getRequest() trả undefined -> getRule() nổ khi đọc
+    // req.originalUrl. WS có cơ chế throttle riêng trong gateway.
+    if (context.getType() !== 'http') return true;
+
     const req = context.switchToHttp().getRequest<Request>();
     const rule = this.getRule(req);
 

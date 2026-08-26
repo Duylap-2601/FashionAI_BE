@@ -20,7 +20,6 @@ interface ProductContext {
   description?: string | null;
   category: string;
   color?: string | null;
-  size?: string | null;
   price?: number | null;
   imageUrl?: string | null;
 }
@@ -39,7 +38,7 @@ export interface ParsedStylistResult {
   skinTone: string;
   personalColor: string;
   fitRecommendation: string;
-  recommendedSize?: string | null;
+  fitAdvice?: string | null;
   productCompatibilityScore?: number | null;
   colorSuggestions: string[];
   outfitCombinations: string[];
@@ -167,7 +166,7 @@ export class StylistService {
         stylePreference: cachedResult.stylePreference,
         budget: cachedResult.budget,
         genderPreference: cachedResult.genderPreference,
-        recommendedSize: cachedResult.recommendedSize,
+        fitAdvice: cachedResult.fitAdvice,
         productCompatibilityScore: (cachedResult.analysisResult as any)?.productCompatibilityScore ?? null,
         analysisResult: cachedResult.analysisResult as any,
         model: cachedResult.model ?? this.MODEL,
@@ -209,7 +208,7 @@ export class StylistService {
           stylePreference: dto.stylePreference?.trim() || null,
           genderPreference: dto.genderPreference?.trim() || null,
           budget: dto.budget?.trim() || null,
-          recommendedSize: parsedResult.recommendedSize || null,
+          fitAdvice: parsedResult.fitAdvice || null,
           model: this.MODEL,
           analysisResult: parsedResult as any,
           inputContext: {
@@ -240,7 +239,7 @@ export class StylistService {
         stylePreference: dto.stylePreference,
         budget: dto.budget,
         genderPreference: dto.genderPreference,
-        recommendedSize: parsedResult.recommendedSize ?? null,
+        fitAdvice: parsedResult.fitAdvice ?? null,
         productCompatibilityScore: parsedResult.productCompatibilityScore ?? null,
         analysisResult: parsedResult,
         model: this.MODEL,
@@ -272,7 +271,6 @@ export class StylistService {
       description: product.description,
       category: this.mapCategoryLabel(product.category),
       color: product.color,
-      size: product.size,
       price: Number(product.price),
       imageUrl: mainImage,
     };
@@ -322,7 +320,6 @@ export class StylistService {
         `- Tên: ${product.name}`,
         `- Phân loại: ${product.category}`,
         product.color ? `- Màu sắc: ${product.color}` : null,
-        product.size ? `- Size khả dụng: ${product.size}` : null,
         product.price != null ? `- Giá: ${product.price.toLocaleString('vi-VN')} VNĐ` : null,
         product.description ? `- Mô tả: ${product.description}` : null,
       );
@@ -382,7 +379,7 @@ export class StylistService {
       '  "skinTone": "Nhận xét sắc độ da bằng tiếng Việt",',
       '  "personalColor": "Nhóm màu cá nhân phù hợp bằng tiếng Việt",',
       '  "fitRecommendation": "Gợi ý phom dáng/cách ôm sát bằng tiếng Việt"',
-      product ? '  ,"recommendedSize": "Cỡ áo/size gợi ý (VD: M, L, XL) hoặc null nếu không đủ dữ liệu"' : null,
+      product ? '  ,"fitAdvice": "Gợi ý phom/độ ôm khi đặt may theo số đo (VD: nên may ôm nhẹ ở eo, chừa rộng vai) hoặc null nếu không đủ dữ liệu. TUYỆT ĐỐI KHÔNG dùng size chữ như S/M/L/XL vì sản phẩm may theo số đo."' : null,
       product
         ? '  ,"productCompatibilityScore": 85'
         : '  ,"productCompatibilityScore": null',
@@ -573,10 +570,10 @@ export class StylistService {
       score = Number.isFinite(parsedScore) ? Math.max(0, Math.min(100, Math.round(parsedScore))) : null;
     }
 
-    const recommendedSizeRaw = raw.recommendedSize;
-    const recommendedSize =
-      typeof recommendedSizeRaw === 'string' && recommendedSizeRaw.trim()
-        ? recommendedSizeRaw.trim()
+    const fitAdviceRaw = raw.fitAdvice;
+    const fitAdvice =
+      typeof fitAdviceRaw === 'string' && fitAdviceRaw.trim()
+        ? fitAdviceRaw.trim()
         : null;
 
     return {
@@ -584,7 +581,7 @@ export class StylistService {
       skinTone: requireString('skinTone'),
       personalColor: requireString('personalColor'),
       fitRecommendation: requireString('fitRecommendation'),
-      recommendedSize,
+      fitAdvice,
       productCompatibilityScore: score,
       colorSuggestions: toArray('colorSuggestions'),
       outfitCombinations: toArray('outfitCombinations'),

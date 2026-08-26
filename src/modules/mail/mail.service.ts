@@ -41,7 +41,6 @@ const ORDER_STATUS_MAIL_META: Partial<Record<OrderStatus, OrderStatusMailMeta>> 
 export interface OrderConfirmationItem {
   name: string;
   quantity: number;
-  size?: string | null;
   color?: string | null;
   price: number;
 }
@@ -136,7 +135,7 @@ export class MailService {
 
     const itemRows = order.items
       .map((item) => {
-        const variant = [item.size, item.color].filter(Boolean).join(' / ');
+        const variant = [item.color].filter(Boolean).join(' / ');
         return `
           <tr>
             <td style="padding: 8px; border-bottom: 1px solid #eee;">

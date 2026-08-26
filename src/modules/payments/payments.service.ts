@@ -12,6 +12,8 @@ import * as crypto from 'crypto';
 import { createWithUniqueOrderCode } from '../../common/utils/order-code.util';
 import { CheckoutDto } from './dto/checkout.dto';
 import { MailService } from '../mail/mail.service';
+import { NotificationService } from '../notification/notification.service';
+import { SubscriptionService } from './subscription.service';
 
 const TIER_PRICES: Record<UserTier, number> = {
   FREE: 0,
@@ -35,6 +37,8 @@ export class PaymentsService {
     private readonly configService: ConfigService,
     private readonly prisma: PrismaService,
     private readonly mailService: MailService,
+    private readonly notificationService: NotificationService,
+    private readonly subscriptionService: SubscriptionService,
   ) {}
 
   /**
@@ -113,10 +117,6 @@ export class PaymentsService {
     const user = await this.prisma.user.findUnique({ where: { id: userId } });
     if (!user) {
       throw new NotFoundException('Không tìm thấy người dùng');
-    }
-
-    if (user.tier === targetTier) {
-      throw new BadRequestException(`Bạn đang ở gói ${targetTier} rồi.`);
     }
 
     return createWithUniqueOrderCode((orderCode) =>
@@ -513,10 +513,11 @@ export class PaymentsService {
         });
 
         if (order.targetTier) {
-          await tx.user.update({
-            where: { id: order.userId },
-            data: { tier: order.targetTier },
-          });
+          await this.subscriptionService.createOrExtendSubscription(
+            order.userId,
+            order.targetTier,
+            order.id,
+          );
         } else {
           // Đơn sản phẩm: trừ tồn kho khi đã xác nhận thanh toán. Trừ tại đây (không
           // phải lúc tạo đơn PENDING) để đơn bỏ dở không giữ chỗ hàng vô thời hạn.
@@ -547,10 +548,30 @@ export class PaymentsService {
       throw err;
     }
 
+    // Notification realtime cho cả đơn nâng cấp gói lẫn đơn sản phẩm. Đặt SAU khi
+    // đã claim PAID thành công (không rơi vào nhánh already-processed), và tách
+    // riêng khỏi updateStatus() vì webhook ghi PAID trực tiếp, không đi qua đó.
+    // Lỗi realtime không được làm fail webhook (tiền đã vào, đã ghi PAID).
+    this.notificationService
+      .create({
+        userId: order.userId,
+        type: 'PAYMENT',
+        title: isSubscription
+          ? 'Nâng cấp tài khoản thành công'
+          : `Thanh toán đơn hàng #${order.orderCode} thành công`,
+        message: isSubscription
+          ? `Tài khoản của bạn đã được nâng cấp lên gói ${order.targetTier}.`
+          : 'Chúng tôi đã nhận được thanh toán của bạn và đang xử lý đơn hàng.',
+        data: {
+          orderId: order.id,
+          orderCode: order.orderCode,
+          status: OrderStatus.PAID,
+          ...(isSubscription ? { targetTier: order.targetTier } : {}),
+        },
+      })
+      .catch(() => undefined);
+
     if (isSubscription) {
-      this.logger.log(
-        `Đã nâng cấp thành công User ${order.userId} lên gói ${order.targetTier} qua ${provider}`,
-      );
       return { message: 'Payment processed and user tier updated successfully' };
     }
 
@@ -593,7 +614,6 @@ export class PaymentsService {
       items: order.items.map((item) => ({
         name: item.product.name,
         quantity: item.quantity,
-        size: item.size,
         color: item.color,
         price: Number(item.price),
       })),

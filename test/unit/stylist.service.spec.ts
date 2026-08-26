@@ -31,7 +31,7 @@ describe('StylistService', () => {
     skinTone: 'Da sáng, tông lạnh',
     personalColor: 'Winter - hợp màu lạnh',
     fitRecommendation: 'Slim-fit sẽ tôn dáng',
-    recommendedSize: 'L',
+    fitAdvice: 'Nên may ôm nhẹ ở eo',
     productCompatibilityScore: 87,
     colorSuggestions: ['Navy Blue', 'Charcoal', 'Đen'],
     outfitCombinations: ['Outfit 1', 'Outfit 2'],
@@ -124,11 +124,11 @@ describe('StylistService', () => {
         data: expect.objectContaining({
           userId: 'user-1',
           garmentDescription: 'Vest navy blue',
-          recommendedSize: 'L',
+          fitAdvice: 'Nên may ôm nhẹ ở eo',
           model: 'gemini-2.0-flash',
           analysisResult: expect.objectContaining({
             productCompatibilityScore: 87,
-            recommendedSize: 'L',
+            fitAdvice: 'Nên may ôm nhẹ ở eo',
           }),
           inputContext: expect.objectContaining({
             stylePreference: 'Lịch lãm',
@@ -141,7 +141,7 @@ describe('StylistService', () => {
     );
     expect(quota.consumeQuota).toHaveBeenCalledWith('user-1', 'STYLIST');
     expect(result.analysisResult.verdict).toBe('Rất phù hợp!');
-    expect(result.recommendedSize).toBe('L');
+    expect(result.fitAdvice).toBe('Nên may ôm nhẹ ở eo');
   });
 
   it('should include product context and fetch product when productId is provided', async () => {
@@ -154,7 +154,6 @@ describe('StylistService', () => {
       description: 'Sơ mi trắng premium',
       category: 'UPPER',
       color: 'Trắng',
-      size: 'M,L',
       price: 350000,
       garmentUrl: 'https://example.com/shirt.jpg',
       images: [],

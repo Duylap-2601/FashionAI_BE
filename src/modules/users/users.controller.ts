@@ -62,6 +62,23 @@ export class UsersController {
     );
   }
 
+  @Get('me/measurements/completeness')
+  @ApiOperation({
+    summary: 'Kiểm tra độ đầy đủ số đo để đặt may theo từng phân loại trang phục',
+  })
+  async getMeasurementCompleteness(
+    @Req() req: Request,
+    @CurrentUser() user: RequestUser,
+  ) {
+    const data = await this.usersService.getMeasurementCompleteness(user.id);
+    return buildApiResponse(
+      req,
+      'USER_MEASUREMENTS_COMPLETENESS_SUCCESS',
+      'Kiểm tra số đo cơ thể thành công',
+      data,
+    );
+  }
+
   @Put('me/measurements')
   @ApiOperation({ summary: 'Cập nhật số đo cơ thể' })
   async updateMeasurements(

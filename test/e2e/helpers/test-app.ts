@@ -46,6 +46,7 @@ export function createPrismaMock(overrides: PrismaMock = {}): PrismaMock {
     order: model(),
     orderItem: model(),
     payment: model(),
+    subscription: model(),
     dailyUsage: model(),
     // Prisma có hai dạng: $transaction([...promises]) và $transaction(async (tx) => ...).
     // Dạng callback phải được gọi thật với chính mock này làm `tx`, nếu không mọi
@@ -79,6 +80,11 @@ export function createRedisMock() {
     }),
     incr: jest.fn(async (key: string) => {
       const next = Number(store.get(key) ?? '0') + 1;
+      store.set(key, String(next));
+      return next;
+    }),
+    incrBy: jest.fn(async (key: string, amount: number) => {
+      const next = Number(store.get(key) ?? '0') + amount;
       store.set(key, String(next));
       return next;
     }),

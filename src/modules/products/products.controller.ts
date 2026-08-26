@@ -11,11 +11,11 @@ import {
   Put,
   Query,
   Req,
-  UploadedFile,
+  UploadedFiles,
   UseInterceptors,
   UseGuards,
 } from '@nestjs/common';
-import { FileInterceptor } from '@nestjs/platform-express';
+import { FilesInterceptor } from '@nestjs/platform-express';
 import { ApiBearerAuth, ApiBody, ApiConsumes, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { Request } from 'express';
 import { Role } from '@prisma/client';
@@ -61,7 +61,7 @@ export class ProductsController {
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(Role.ADMIN)
   @ApiBearerAuth('access-token')
-  @ApiOperation({ summary: 'Tạo mới sản phẩm kèm upload ảnh (Admin Only)' })
+  @ApiOperation({ summary: 'Tạo mới sản phẩm kèm upload nhiều ảnh (Admin Only)' })
   @ApiConsumes('multipart/form-data')
   @ApiBody({
     schema: {
@@ -72,33 +72,34 @@ export class ProductsController {
         description: { type: 'string' },
         category: { type: 'string', enum: ['UPPER', 'LOWER', 'FULL_BODY'] },
         color: { type: 'string', example: 'Trắng' },
-        size: { type: 'string', example: 'L' },
         price: { type: 'number', example: 350000 },
         status: { type: 'string', enum: ['DRAFT', 'ACTIVE', 'ARCHIVED'] },
         garmentUrl: {
           type: 'string',
           description: 'URL ảnh nếu không upload file image',
         },
-        image: {
-          type: 'string',
-          format: 'binary',
-          description: 'Ảnh sản phẩm/garment. Nếu có image thì backend tự upload và set garmentUrl.',
+        images: {
+          type: 'array',
+          items: { type: 'string', format: 'binary' },
+          description: 'Danh sách ảnh sản phẩm/garment (tối đa 10 ảnh). Ảnh đầu tiên làm ảnh chính.',
         },
       },
     },
   })
-  @UseInterceptors(FileInterceptor('image'))
+  @UseInterceptors(FilesInterceptor('images', 10))
   async create(
     @Req() req: Request,
     @Body() dto: CreateProductDto,
-    @UploadedFile() image?: Express.Multer.File,
+    @UploadedFiles() images?: Express.Multer.File[],
   ) {
-    if (image) {
+    if (images && images.length > 0) {
       const filePipe = new FileValidationPipe({ maxSize: 10 * 1024 * 1024 });
-      filePipe.transform(image);
+      for (const image of images) {
+        filePipe.transform(image);
+      }
     }
 
-    const data = await this.productsService.create(dto, image);
+    const data = await this.productsService.create(dto, images);
     return buildApiResponse(req, 'PRODUCT_CREATE_SUCCESS', 'Tạo mới sản phẩm thành công', data);
   }
 
@@ -107,49 +108,48 @@ export class ProductsController {
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(Role.ADMIN)
   @ApiBearerAuth('access-token')
-  @ApiOperation({ summary: 'Upload ảnh sản phẩm (Admin Only)' })
+  @ApiOperation({ summary: 'Upload nhiều ảnh sản phẩm (Admin Only)' })
   @ApiConsumes('multipart/form-data')
   @ApiBody({
     schema: {
       type: 'object',
-      required: ['image'],
+      required: ['images'],
       properties: {
-        image: {
-          type: 'string',
-          format: 'binary',
-          description: 'Ảnh sản phẩm hoặc ảnh garment dùng cho Try-On',
+        images: {
+          type: 'array',
+          items: { type: 'string', format: 'binary' },
+          description: 'Danh sách ảnh sản phẩm hoặc ảnh garment dùng cho Try-On (tối đa 10 ảnh)',
         },
-        isMain: {
-          type: 'boolean',
-          default: false,
-          description: 'Nếu true, ảnh này trở thành ảnh chính và cập nhật garmentUrl',
+        isMainIndex: {
+          type: 'integer',
+          default: 0,
+          description: 'Chỉ số ảnh trong mảng sẽ làm ảnh chính (0-based index). Chỉ áp dụng nếu mảng có ít nhất 1 ảnh.',
         },
       },
     },
   })
-  @UseInterceptors(FileInterceptor('image'))
-  async uploadImage(
+  @UseInterceptors(FilesInterceptor('images', 10))
+  async uploadImages(
     @Req() req: Request,
     @Param('id') id: string,
-    @UploadedFile() image: Express.Multer.File,
-    @Body('isMain') isMain?: string | boolean,
+    @UploadedFiles() images: Express.Multer.File[],
+    @Body('isMainIndex') isMainIndex?: string | number,
   ) {
-    if (!image) {
-      throw new BadRequestException('Vui lòng upload ảnh sản phẩm');
+    if (!images || images.length === 0) {
+      throw new BadRequestException('Vui lòng upload ít nhất 1 ảnh sản phẩm');
     }
 
     const filePipe = new FileValidationPipe({ maxSize: 10 * 1024 * 1024 });
-    filePipe.transform(image);
+    for (const image of images) {
+      filePipe.transform(image);
+    }
 
-    const data = await this.productsService.uploadProductImage(
-      id,
-      image,
-      this.parseBoolean(isMain),
-    );
+    const mainIndex = typeof isMainIndex === 'string' ? parseInt(isMainIndex, 10) : (isMainIndex ?? 0);
+    const data = await this.productsService.uploadProductImages(id, images, mainIndex);
 
     return buildApiResponse(
       req,
-      'PRODUCT_IMAGE_UPLOAD_SUCCESS',
+      'PRODUCT_IMAGES_UPLOAD_SUCCESS',
       'Upload ảnh sản phẩm thành công',
       data,
     );

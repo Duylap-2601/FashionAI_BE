@@ -4,7 +4,9 @@ import request from 'supertest';
 import { OrderStatus, UserTier } from '@prisma/client';
 import { PaymentsController } from '../../src/modules/payments/payments.controller';
 import { PaymentsService } from '../../src/modules/payments/payments.service';
+import { SubscriptionService } from '../../src/modules/payments/subscription.service';
 import { MailService } from '../../src/modules/mail/mail.service';
+import { NotificationService } from '../../src/modules/notification/notification.service';
 import { JwtAuthGuard } from '../../src/modules/auth/guards/jwt-auth.guard';
 import { RateLimitGuard } from '../../src/common/guards/rate-limit.guard';
 import {
@@ -40,7 +42,12 @@ describe('POST /api/payments/checkout (e2e)', () => {
       metadata: {
         imports: [ConfigModule.forRoot({ load: [() => SEPAY_ENV] })],
         controllers: [PaymentsController],
-        providers: [PaymentsService, MailService],
+        providers: [
+          PaymentsService,
+          SubscriptionService,
+          MailService,
+          { provide: NotificationService, useValue: { create: jest.fn().mockResolvedValue({}) } },
+        ],
       },
       configure: (builder) =>
         builder
@@ -170,18 +177,33 @@ describe('POST /api/payments/checkout (e2e)', () => {
       expect(prisma.order.create).toHaveBeenCalled();
     });
 
-    it('từ chối khi user đã ở gói đó', async () => {
+    it('cho phép gia hạn khi user đã ở gói đó', async () => {
       prisma.user.findUnique.mockResolvedValue({
         id: AUTH_USER.id,
         tier: UserTier.VIP,
       });
+      const created = {
+        id: 'order-renew',
+        orderCode: 11112222,
+        userId: AUTH_USER.id,
+        targetTier: UserTier.VIP,
+        amount: 299000,
+        status: OrderStatus.PENDING,
+      };
+      prisma.order.create.mockResolvedValue(created);
+      prisma.order.update.mockResolvedValue(created);
 
       const res = await request(app.getHttpServer())
         .post('/api/payments/checkout')
         .send({ targetTier: 'VIP' })
-        .expect(400);
+        .expect(200);
 
-      expect(res.body.message).toContain('đang ở gói VIP');
+      expect(res.body.data).toMatchObject({
+        kind: 'SUBSCRIPTION',
+        targetTier: 'VIP',
+        amount: 299000,
+      });
+      expect(prisma.order.create).toHaveBeenCalled();
     });
 
     it('từ chối gói FREE', async () => {

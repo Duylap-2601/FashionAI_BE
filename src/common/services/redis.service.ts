@@ -115,6 +115,25 @@ export class RedisService implements OnModuleInit, OnModuleDestroy {
     return val;
   }
 
+  async incrBy(key: string, amount: number, ttlSeconds?: number): Promise<number> {
+    if (this.isConnected && this.client) {
+      try {
+        const val = await this.client.incrby(key, amount);
+        if (val === amount && ttlSeconds) {
+          await this.client.expire(key, ttlSeconds);
+        }
+        return val;
+      } catch (e) {
+        this.logger.warn(`Redis incrby failed for key ${key}`);
+      }
+    }
+
+    const currentStr = await this.get(key);
+    const val = (currentStr ? parseInt(currentStr, 10) : 0) + amount;
+    await this.set(key, val.toString(), ttlSeconds);
+    return val;
+  }
+
   async acquireLock(lockKey: string, ttlSeconds = 30): Promise<boolean> {
     if (this.isConnected && this.client) {
       try {

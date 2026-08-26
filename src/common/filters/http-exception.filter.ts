@@ -13,6 +13,13 @@ export class GlobalExceptionFilter implements ExceptionFilter {
   private readonly logger = new Logger(GlobalExceptionFilter.name);
 
   catch(exception: unknown, host: ArgumentsHost) {
+    // Filter này chỉ format response HTTP. Lỗi trong WebSocket handler đi qua đây
+    // sẽ crash vì switchToHttp().getResponse() không có .status()/.json(). Gateway
+    // tự xử lý lỗi qua WsException nên rethrow để không nuốt mất.
+    if (host.getType() !== 'http') {
+      throw exception;
+    }
+
     const ctx = host.switchToHttp();
     const response = ctx.getResponse<Response>();
     const request = ctx.getRequest<Request>();

@@ -19,24 +19,32 @@ import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { AuthenticatedUser } from '../auth/interfaces/authenticated-user.interface';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { QuotaGuard, AiAction } from '../../common/guards/quota.guard';
+import { RedisService } from '../../common/services/redis.service';
 import { ChatService } from './chat.service';
 import { ChatRequestDto } from './dto/chat-request.dto';
 import { buildApiResponse } from '../../common/utils/api-response.util';
+
+const SSE_USAGE_TTL_SECONDS = 60 * 60 * 24 * 30; // 30 ngày
 
 @ApiTags('Chatbot')
 @Controller('chat')
 @UseGuards(JwtAuthGuard)
 @ApiBearerAuth('access-token')
 export class ChatController {
-  constructor(private readonly chatService: ChatService) {}
+  constructor(
+    private readonly chatService: ChatService,
+    private readonly redisService: RedisService,
+  ) {}
 
   @Post()
   @HttpCode(HttpStatus.OK)
   @UseGuards(QuotaGuard)
   @AiAction('CHATBOT')
   @ApiOperation({
-    summary: 'Stream chat với FashionAI Assistant (SSE)',
-    description: 'Trả về Server-Sent Events stream. Mỗi event: { type: "token" | "done" | "error", data: string }',
+    summary: 'Stream chat với FashionAI Assistant (SSE — legacy)',
+    description:
+      'Trả về Server-Sent Events stream. Mỗi event: { type: "token" | "done" | "error", data: ... }. ' +
+      'ĐANG DẦN THAY BẰNG WebSocket (namespace /chat, event chat:send). Route này giữ tạm cho tương thích.',
   })
   async chat(
     @Req() req: Request,
@@ -44,14 +52,21 @@ export class ChatController {
     @Body() dto: ChatRequestDto,
     @Res() res: Response,
   ) {
+    // Đếm lượt dùng SSE để biết khi nào FE đã chuyển hẳn sang WS -> xóa route này.
+    // Non-blocking: lỗi Redis không được cản trở chat.
+    const today = new Date().toISOString().split('T')[0];
+    this.redisService
+      .incr(`legacy:sse:chat:${today}`, SSE_USAGE_TTL_SECONDS)
+      .catch(() => undefined);
+
     res.setHeader('Content-Type', 'text/event-stream');
     res.setHeader('Cache-Control', 'no-cache');
     res.setHeader('Connection', 'keep-alive');
     res.flushHeaders();
 
     try {
-      for await (const chunk of this.chatService.streamChat(user.id, dto)) {
-        res.write(chunk);
+      for await (const event of this.chatService.streamChat(user.id, dto)) {
+        res.write(`data: ${JSON.stringify(event)}\n\n`);
       }
     } catch (err: unknown) {
       // Header SSE đã flush nên GlobalExceptionFilter không còn trả JSON được nữa

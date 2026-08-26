@@ -5,7 +5,9 @@ import request from 'supertest';
 import { OrderStatus, UserTier } from '@prisma/client';
 import { PaymentsController } from '../../src/modules/payments/payments.controller';
 import { PaymentsService } from '../../src/modules/payments/payments.service';
+import { SubscriptionService } from '../../src/modules/payments/subscription.service';
 import { MailService } from '../../src/modules/mail/mail.service';
+import { NotificationService } from '../../src/modules/notification/notification.service';
 import { JwtAuthGuard } from '../../src/modules/auth/guards/jwt-auth.guard';
 import { RateLimitGuard } from '../../src/common/guards/rate-limit.guard';
 import {
@@ -40,7 +42,12 @@ describe('SePay IPN (e2e)', () => {
           }),
         ],
         controllers: [PaymentsController],
-        providers: [PaymentsService, MailService],
+        providers: [
+          PaymentsService,
+          SubscriptionService,
+          MailService,
+          { provide: NotificationService, useValue: { create: jest.fn().mockResolvedValue({}) } },
+        ],
       },
       configure: (builder) =>
         builder
@@ -115,8 +122,19 @@ describe('SePay IPN (e2e)', () => {
 
     await post(orderPaidPayload(99000)).expect(200);
 
+    expect(prisma.subscription.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          userId: 'user-1',
+          tier: UserTier.MEMBER,
+          orderId: 'order-1',
+        }),
+      }),
+    );
     expect(prisma.user.update).toHaveBeenCalledWith(
-      expect.objectContaining({ data: { tier: UserTier.MEMBER } }),
+      expect.objectContaining({
+        data: expect.objectContaining({ tier: UserTier.MEMBER }),
+      }),
     );
   });
 

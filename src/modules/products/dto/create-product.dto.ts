@@ -48,11 +48,6 @@ export class CreateProductDto {
   @IsOptional()
   color?: string;
 
-  @ApiProperty({ description: 'Kích cỡ', example: 'L', required: false })
-  @IsString()
-  @IsOptional()
-  size?: string;
-
   @ApiProperty({ description: 'Giá tiền VND', example: 350000 })
   @IsNumber()
   @Min(0)
@@ -80,12 +75,6 @@ export class CreateProductDto {
   @Transform(parseJsonArray)
   @IsArray()
   colors?: Array<{ name: string; hex: string }>;
-
-  @ApiProperty({ description: 'Danh sách kích cỡ', required: false, type: 'array', items: { type: 'string' } })
-  @IsOptional()
-  @Transform(parseJsonArray)
-  @IsArray()
-  sizes?: string[];
 
   @ApiProperty({
     description: 'URL ảnh garment. Không bắt buộc nếu upload file image.',

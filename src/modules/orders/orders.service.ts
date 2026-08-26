@@ -6,8 +6,35 @@ import {
 import { OrderStatus, Prisma } from '@prisma/client';
 import { PrismaService } from '../../database/prisma.service';
 import { MailService } from '../mail/mail.service';
+import { NotificationService } from '../notification/notification.service';
 import { createWithUniqueOrderCode } from '../../common/utils/order-code.util';
 import { CreateOrderDto } from './dto/create-order.dto';
+import {
+  MEASUREMENT_LABELS,
+  MeasurementField,
+  getMissingMeasurements,
+} from '../../common/constants/measurement.constants';
+
+// Các trường số đo được chụp lại (snapshot) khi đặt đơn để thợ may theo. Đóng
+// băng tại thời điểm đặt: user sửa số đo sau này không ảnh hưởng đơn cũ.
+const MEASUREMENT_SNAPSHOT_FIELDS: MeasurementField[] = [
+  'height',
+  'weight',
+  'chest',
+  'waist',
+  'hip',
+  'shoulder',
+  'neck',
+  'sleeveLength',
+  'wrist',
+  'thigh',
+  'knee',
+  'calf',
+  'inseam',
+  'outseam',
+  'shirtLength',
+  'underbust',
+];
 
 /**
  * UUID chuẩn cho cột id; dùng để phân biệt tra cứu theo id (UUID) hay orderCode.
@@ -55,11 +82,24 @@ const STATUS_NOTIFY_EMAIL: OrderStatus[] = [
   OrderStatus.CANCELLED,
 ];
 
+// Mô tả trạng thái đơn bằng tiếng Việt cho notification realtime.
+const ORDER_STATUS_MESSAGE: Partial<Record<OrderStatus, string>> = {
+  [OrderStatus.PAID]: 'Đơn hàng đã được thanh toán.',
+  [OrderStatus.CONFIRMED]: 'Đơn hàng đã được xác nhận và đang chuẩn bị.',
+  [OrderStatus.SHIPPING]: 'Đơn hàng đang được giao đến bạn.',
+  [OrderStatus.DELIVERED]: 'Đơn hàng đã được giao thành công.',
+  [OrderStatus.CANCELLED]: 'Đơn hàng đã bị hủy.',
+  [OrderStatus.RETURNED]: 'Đơn hàng đã được hoàn trả.',
+  [OrderStatus.EXPIRED]: 'Đơn hàng đã hết hạn thanh toán.',
+  [OrderStatus.FAILED]: 'Đơn hàng thanh toán thất bại.',
+};
+
 @Injectable()
 export class OrdersService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly mailService: MailService,
+    private readonly notificationService: NotificationService,
   ) {}
 
   async create(userId: string, dto: CreateOrderDto) {
@@ -88,6 +128,32 @@ export class OrdersService {
         );
       }
     }
+
+    // Đặt may theo số đo: user phải điền đủ số đo cơ thể bắt buộc cho tất cả phân
+    // loại trang phục trong đơn thì mới đặt được. Chụp lại (snapshot) số đo lên
+    // từng OrderItem để đóng băng tại thời điểm đặt.
+    const measurement = await this.prisma.measurement.findUnique({
+      where: { userId },
+    });
+    const orderedCategories = new Set(products.map((p) => p.category));
+    const missingFields = getMissingMeasurements(
+      measurement as Partial<Record<MeasurementField, unknown>> | null,
+      orderedCategories,
+    );
+    if (missingFields.length > 0) {
+      throw new BadRequestException({
+        code: 'MEASUREMENTS_INCOMPLETE',
+        message:
+          'Vui lòng cập nhật đầy đủ số đo cơ thể trong hồ sơ trước khi đặt may.',
+        missingFields,
+        missing: missingFields.map((field) => ({
+          field,
+          label: MEASUREMENT_LABELS[field],
+        })),
+      });
+    }
+
+    const measurementSnapshot = this.buildMeasurementSnapshot(measurement);
 
     // Luôn dùng giá trong DB, KHÔNG tin item.price do client gửi lên, tránh gian
     // lận giá (client không thể tự đặt giá sản phẩm).
@@ -139,8 +205,9 @@ export class OrdersService {
               return {
                 productId: item.productId,
                 quantity: item.quantity,
-                size: item.size,
                 color: item.color,
+                measurementSnapshot:
+                  measurementSnapshot as Prisma.InputJsonValue,
                 // Chốt giá server tại thời điểm đặt hàng: đổi giá sản phẩm sau này
                 // không ảnh hưởng đơn cũ, và client không thể tự đặt giá.
                 price: product.price,
@@ -339,10 +406,37 @@ export class OrdersService {
         .catch(() => undefined);
     }
 
+    // Notification realtime; lỗi realtime không được làm fail luồng nghiệp vụ.
+    this.notificationService
+      .create({
+        userId: order.userId,
+        type: 'ORDER_STATUS',
+        title: `Cập nhật đơn hàng #${order.orderCode}`,
+        message: ORDER_STATUS_MESSAGE[status] ?? `Trạng thái đơn hàng: ${status}`,
+        data: { orderId: order.id, orderCode: order.orderCode, status },
+      })
+      .catch(() => undefined);
+
     return this.prisma.order.findUniqueOrThrow({
       where: { id: order.id },
       include: this.orderInclude(),
     });
+  }
+
+  // Chụp lại số đo cơ thể thành object number thuần để lưu JSON trên OrderItem.
+  // Chỉ giữ các trường có giá trị; Decimal được chuyển về number.
+  private buildMeasurementSnapshot(
+    measurement: Partial<Record<MeasurementField, unknown>> | null,
+  ): Record<string, number> {
+    const snapshot: Record<string, number> = {};
+    if (!measurement) return snapshot;
+    for (const field of MEASUREMENT_SNAPSHOT_FIELDS) {
+      const value = measurement[field];
+      if (value !== null && value !== undefined) {
+        snapshot[field] = Number(value);
+      }
+    }
+    return snapshot;
   }
 
   private orderInclude() {

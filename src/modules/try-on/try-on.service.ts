@@ -12,7 +12,7 @@ import { fal } from '@fal-ai/client';
 import { GoogleGenAI } from '@google/genai';
 import axios from 'axios';
 import * as crypto from 'crypto';
-import { GarmentCategory } from '@prisma/client';
+import { GarmentCategory, Prisma, UserTier } from '@prisma/client';
 import { PrismaService } from '../../database/prisma.service';
 import { StorageService } from '../storage/storage.service';
 import { QuotaService } from '../../common/services/quota.service';
@@ -20,10 +20,31 @@ import { RedisService } from '../../common/services/redis.service';
 
 type FashnCategory = 'tops' | 'bottoms' | 'one-pieces';
 
+export interface TryOnGarmentInput {
+  category?: GarmentCategory;
+  productId?: string;
+  image?: Express.Multer.File;
+}
+
+interface ResolvedGarment {
+  category: GarmentCategory;
+  productId: string | null;
+  buffer: Buffer;
+  mime: string;
+  hash: string;
+  product: any | null;
+}
+
+export interface TryOnQuotaContext {
+  tier?: UserTier;
+  tierExpiresAt?: Date | null;
+}
+
 export interface TryOnResultResponse {
   id: string;
   resultUrl: string;
   category: GarmentCategory;
+  garments?: Array<{ category: GarmentCategory; productId: string | null }>;
   isCached: boolean;
   cacheKey: string;
   expiresAt: Date | null;
@@ -38,6 +59,7 @@ export class TryOnService {
   private readonly SAM2_ENABLED: boolean;
   private readonly provider: 'fal' | 'mock';
   private readonly CACHE_TTL_MS: number;
+  private readonly MAX_GARMENTS = 2;
 
   private readonly FASHN_MODEL: string;
   private readonly SAM2_MODEL: string;
@@ -97,6 +119,142 @@ export class TryOnService {
       case GarmentCategory.UPPER:
       default:
         return 'tops';
+    }
+  }
+
+  private validateGarments(garments: TryOnGarmentInput[]): void {
+    if (!garments || garments.length === 0) {
+      throw new BadRequestException(
+        'Vui lòng truyền ít nhất 1 trang phục trong garments[]',
+      );
+    }
+
+    if (garments.length > this.MAX_GARMENTS) {
+      throw new BadRequestException(
+        `Tối đa ${this.MAX_GARMENTS} trang phục mỗi lần. Bạn truyền ${garments.length}.`,
+      );
+    }
+
+    const categories = garments
+      .map((g) => g.category ?? GarmentCategory.UPPER)
+      .filter((c) => c);
+    const uniqueCategories = new Set(categories);
+
+    if (categories.length !== uniqueCategories.size) {
+      throw new BadRequestException('Không thể chọn nhiều trang phục cùng phân loại');
+    }
+
+    if (
+      garments.length > 1 &&
+      categories.some((c) => c === GarmentCategory.FULL_BODY)
+    ) {
+      throw new BadRequestException(
+        'FULL_BODY (toàn thân) chỉ có thể đứng riêng, không kết hợp với trang phục khác',
+      );
+    }
+
+    for (let i = 0; i < garments.length; i++) {
+      const g = garments[i];
+      const hasImage = !!g.image;
+      const hasProductId = !!g.productId;
+
+      if (!hasImage && !hasProductId) {
+        throw new BadRequestException(
+          `Trang phục ${i + 1}: phải truyền hoặc image hoặc productId`,
+        );
+      }
+
+      if (hasImage && hasProductId) {
+        throw new BadRequestException(
+          `Trang phục ${i + 1}: chỉ chọn 1 trong image hoặc productId, không cả 2`,
+        );
+      }
+    }
+  }
+
+  private async resolveGarments(
+    garments: TryOnGarmentInput[],
+  ): Promise<ResolvedGarment[]> {
+    const resolved: ResolvedGarment[] = [];
+
+    for (let i = 0; i < garments.length; i++) {
+      const g = garments[i];
+      const category = g.category ?? GarmentCategory.UPPER;
+      let buffer: Buffer;
+      let mime = 'image/jpeg';
+      let productId: string | null = null;
+      let product = null;
+
+      if (g.productId) {
+        productId = g.productId;
+        product = await this.prisma.product.findUnique({
+          where: { id: productId },
+          include: { images: true },
+        });
+        if (!product) {
+          throw new NotFoundException(
+            `Sản phẩm ${i + 1} có ID ${productId} không tồn tại`,
+          );
+        }
+
+        if (this.provider === 'mock') {
+          buffer = Buffer.from(product.garmentUrl);
+        } else {
+          const imgRes = await axios.get<ArrayBuffer>(product.garmentUrl, {
+            responseType: 'arraybuffer',
+            timeout: 15000,
+          });
+          buffer = Buffer.from(imgRes.data);
+        }
+      } else if (g.image) {
+        buffer = g.image.buffer;
+        mime = g.image.mimetype;
+      } else {
+        throw new BadRequestException(
+          `Trang phục ${i + 1}: không tìm thấy image hoặc productId`,
+        );
+      }
+
+      const hash = this.computeHash(buffer);
+      resolved.push({
+        category,
+        productId,
+        buffer,
+        mime,
+        hash,
+        product,
+      });
+    }
+
+    return resolved;
+  }
+
+  private buildComboCacheKey(
+    userId: string,
+    humanHash: string,
+    garments: ResolvedGarment[],
+  ): string {
+    const garmentHashes = garments
+      .map((g) => g.hash)
+      .sort()
+      .join(':');
+    const categories = garments
+      .map((g) => g.category)
+      .sort()
+      .join(':');
+    return `${userId}:${humanHash}:${garmentHashes}:${categories}`;
+  }
+
+  private categoryOrder(category: GarmentCategory): number {
+    switch (category) {
+      case GarmentCategory.UPPER:
+        return 0;
+      case GarmentCategory.LOWER:
+        return 1;
+      case GarmentCategory.FULL_BODY:
+        return 2;
+      default:
+        return 3;
     }
   }
 
@@ -246,63 +404,48 @@ export class TryOnService {
   async generateTryOn(
     userId: string,
     humanImage: Express.Multer.File,
-    garmentImage?: Express.Multer.File,
-    productId?: string,
-    garmentCategory: GarmentCategory = GarmentCategory.UPPER,
+    garments: TryOnGarmentInput[],
+    quotaCtx: TryOnQuotaContext = {},
   ): Promise<TryOnResultResponse> {
-    let garmentBuffer: Buffer;
-    let garmentMime = 'image/jpeg';
-    let productEntity = null;
+    this.validateGarments(garments);
 
-    if (productId) {
-      productEntity = await this.prisma.product.findUnique({ where: { id: productId } });
-      if (!productEntity) {
-        throw new NotFoundException(`Không tìm thấy sản phẩm có ID ${productId}`);
-      }
-      garmentCategory = productEntity.category;
-      
-      if (this.provider === 'mock') {
-        garmentBuffer = Buffer.from(productEntity.garmentUrl);
-      } else {
-        const imgRes = await axios.get<ArrayBuffer>(productEntity.garmentUrl, {
-          responseType: 'arraybuffer',
-          timeout: 15000,
-        });
-        garmentBuffer = Buffer.from(imgRes.data);
-      }
-    } else if (garmentImage) {
-      garmentBuffer = garmentImage.buffer;
-      garmentMime = garmentImage.mimetype;
-    } else {
-      throw new BadRequestException('Vui lòng truyền productId hoặc tải lên ảnh trang phục (garmentImage)');
-    }
+    const resolved = await this.resolveGarments(garments);
+    // Chuỗi thứ tự: áo trên trước, rồi quần/váy, cuối là toàn thân.
+    resolved.sort(
+      (a, b) => this.categoryOrder(a.category) - this.categoryOrder(b.category),
+    );
 
     const humanHash = this.computeHash(humanImage.buffer);
-    const garmentHash = this.computeHash(garmentBuffer);
+    const isCombo = resolved.length > 1;
+    const cacheKey = isCombo
+      ? this.buildComboCacheKey(userId, humanHash, resolved)
+      : this.buildCacheKey(userId, humanHash, resolved[0].hash, resolved[0].category);
 
-    // Lock duplicate active request
-    const lockKey = `lock:tryon:${userId}:${humanHash}:${garmentHash}`;
+    const lockKey = `lock:tryon:${userId}:${humanHash}:${resolved
+      .map((g) => g.hash)
+      .join(':')}`;
     const acquired = await this.redisService.acquireLock(lockKey, 60);
     if (!acquired) {
       throw new HttpException(
         {
           success: false,
           code: 'DUPLICATE_REQUEST',
-          message: 'Yêu cầu thử đồ tương tự đang được xử lý. Vui lòng chờ trong giây lát.',
+          message:
+            'Yêu cầu thử đồ tương tự đang được xử lý. Vui lòng chờ trong giây lát.',
         },
         HttpStatus.TOO_MANY_REQUESTS,
       );
     }
 
-    const cacheKey = this.buildCacheKey(
-      userId,
-      humanHash,
-      garmentHash,
-      garmentCategory,
-    );
+    const primaryProduct = resolved[0].product;
+    const finalCategory = resolved[resolved.length - 1].category;
+    const garmentsMeta = resolved.map((g) => ({
+      category: g.category,
+      productId: g.productId,
+    }));
 
     try {
-      // ── Step 0: Check Cache ───────────────────────────────────────────────
+      // ── Step 0: Cache ──────────────────────────────────────────────────
       const cachedResult = await this.prisma.tryOnResult.findFirst({
         where: {
           userId,
@@ -318,109 +461,118 @@ export class TryOnService {
           id: cachedResult.id,
           resultUrl: cachedResult.resultUrl,
           category: cachedResult.category,
+          garments: (cachedResult.garments as any) ?? garmentsMeta,
           isCached: true,
           cacheKey: cachedResult.cacheKey ?? cacheKey,
           expiresAt: cachedResult.expiresAt,
           createdAt: cachedResult.createdAt,
-          product: productEntity,
+          product: primaryProduct,
         };
       }
+
+      // Trừ theo số món: kiểm tra đủ hạn mức TRƯỚC khi tốn phí provider.
+      await this.quotaService.assertQuota(
+        userId,
+        quotaCtx.tier,
+        'TRY_ON',
+        quotaCtx.tierExpiresAt,
+        resolved.length,
+      );
 
       if (this.provider === 'mock') {
         return this.generateMockTryOnResult(
           userId,
-          productId,
           humanHash,
-          garmentHash,
-          garmentCategory,
-          productEntity,
+          resolved,
           cacheKey,
+          garmentsMeta,
         );
       }
 
-      // ── Step 1: Upload to fal.storage ────────────────────────────────────
-      const category = this.mapCategory(garmentCategory);
-      this.logger.log(`[fal.ai] Bắt đầu Try-On | category=${category}`);
-
-      // Chặn ảnh không dùng được TRƯỚC khi tốn phí fal.ai. Gate chạy sau cache
-      // (cache hit không cần kiểm tra lại) và trước khi trừ quota.
       if (this.QUALITY_GATE_ENABLED) {
         await this.assertHumanImageUsable(humanImage);
       }
-
-      const [humanUrl, garmentRawUrl] = await Promise.all([
-        this.uploadToFalStorage(humanImage.buffer, humanImage.mimetype, 'humanImage'),
-        this.uploadToFalStorage(garmentBuffer, garmentMime, 'garmentImage'),
-      ]);
-
-      // ── Step 2: SAM2 Segment ─────────────────────────────────────────────
-      let garmentUrl = garmentRawUrl;
-      if (this.SAM2_ENABLED) {
-        garmentUrl = await this.segmentGarment(garmentRawUrl);
-      }
-
-      // ── Step 3: FASHN Virtual Try-On ─────────────────────────────────────
+      // ── Chuỗi FASHN: kết quả bước trước là model_image của bước sau ─────
       const mode = this.config.get<string>('FASHN_MODE', 'balanced');
-      const tryOnResult = await this.withTimeout(
-        fal.subscribe(this.FASHN_MODEL, {
-          input: {
-            model_image: humanUrl,
-            garment_image: garmentUrl,
-            category,
-            mode,
-            garment_photo_type: 'auto',
-          },
-        }),
-        'FASHN try-on timed out',
+      let modelUrl = await this.uploadToFalStorage(
+        humanImage.buffer,
+        humanImage.mimetype,
+        'humanImage',
       );
+      const providerMeta: any[] = [];
 
-      const rawResultUrl: string | undefined =
-        (tryOnResult.data as any)?.images?.[0]?.url ??
-        (tryOnResult.data as any)?.image?.url;
+      for (const g of resolved) {
+        let garmentUrl = await this.uploadToFalStorage(
+          g.buffer,
+          g.mime,
+          `garment_${g.category}`,
+        );
+        if (this.SAM2_ENABLED) {
+          garmentUrl = await this.segmentGarment(garmentUrl);
+        }
 
-      if (!rawResultUrl) {
-        throw new Error('Mô hình AI không trả về URL ảnh kết quả');
+        const step = await this.withTimeout(
+          fal.subscribe(this.FASHN_MODEL, {
+            input: {
+              model_image: modelUrl,
+              garment_image: garmentUrl,
+              category: this.mapCategory(g.category),
+              mode,
+              garment_photo_type: 'auto',
+            },
+          }),
+          'FASHN try-on timed out',
+        );
+
+        const stepUrl: string | undefined =
+          (step.data as any)?.images?.[0]?.url ?? (step.data as any)?.image?.url;
+        if (!stepUrl) {
+          throw new Error('Mô hình AI không trả về URL ảnh kết quả');
+        }
+        modelUrl = stepUrl;
+        providerMeta.push(step.data ?? {});
       }
-
-      // ── Step 4: Persist image to Cloudinary storage ─────────────────────
-      const imgRes = await axios.get<ArrayBuffer>(rawResultUrl, {
+      // ── Lưu ảnh cuối cùng vào storage ──────────────────────────────────
+      const imgRes = await axios.get<ArrayBuffer>(modelUrl, {
         responseType: 'arraybuffer',
         timeout: 30000,
       });
-      const resultBuffer = Buffer.from(imgRes.data);
       const permanentResultUrl = await this.storageService.uploadImage(
-        resultBuffer,
+        Buffer.from(imgRes.data),
         'try-on-results',
         `tryon_${userId}_${Date.now()}`,
       );
 
-      // Save history record
       const savedRecord = await this.prisma.tryOnResult.create({
         data: {
           userId,
-          productId: productId ?? null,
+          productId: resolved[0].productId,
           humanImageHash: humanHash,
-          garmentImageHash: garmentHash,
-          category: garmentCategory,
+          garmentImageHash: resolved.map((g) => g.hash).join(':'),
+          category: finalCategory,
+          garments: garmentsMeta as unknown as Prisma.InputJsonValue,
           resultUrl: permanentResultUrl,
           cacheKey,
           expiresAt: this.buildCacheExpiry(),
-          providerMetadata: (tryOnResult.data as any) ?? {},
+          providerMetadata: (isCombo
+            ? providerMeta
+            : providerMeta[0] ?? {}) as Prisma.InputJsonValue,
         },
       });
 
-      // Deduct User Quota upon successful creation
-      await this.quotaService.consumeQuota(userId, 'TRY_ON');
+      // Trừ quota theo số món sau khi tạo thành công.
+      await this.quotaService.consumeQuota(userId, 'TRY_ON', resolved.length);
 
       return {
         id: savedRecord.id,
         resultUrl: permanentResultUrl,
-        category: garmentCategory,
+        category: finalCategory,
+        garments: garmentsMeta,
         isCached: false,
         cacheKey,
         expiresAt: savedRecord.expiresAt,
         createdAt: savedRecord.createdAt,
-        product: productEntity,
+        product: primaryProduct,
       };
     } catch (error) {
       return this.handleError(error);
@@ -491,12 +643,10 @@ export class TryOnService {
 
   private async generateMockTryOnResult(
     userId: string,
-    productId: string | undefined,
     humanHash: string,
-    garmentHash: string,
-    garmentCategory: GarmentCategory,
-    productEntity: any,
+    garments: ResolvedGarment[],
     cacheKey: string,
+    garmentsMeta: Array<{ category: GarmentCategory; productId: string | null }>,
   ): Promise<TryOnResultResponse> {
     const configuredUrl = this.config.get<string>('MOCK_TRYON_RESULT_URL');
     const resultUrl =
@@ -507,13 +657,15 @@ export class TryOnService {
         `mock_tryon_${userId}_${Date.now()}`,
       ));
 
+    const finalCategory = garments[garments.length - 1].category;
     const savedRecord = await this.prisma.tryOnResult.create({
       data: {
         userId,
-        productId: productId ?? null,
+        productId: garments[0].productId,
         humanImageHash: humanHash,
-        garmentImageHash: garmentHash,
-        category: garmentCategory,
+        garmentImageHash: garments.map((g) => g.hash).join(':'),
+        category: finalCategory,
+        garments: garmentsMeta as unknown as Prisma.InputJsonValue,
         resultUrl,
         cacheKey,
         expiresAt: this.buildCacheExpiry(),
@@ -525,17 +677,18 @@ export class TryOnService {
       },
     });
 
-    await this.quotaService.consumeQuota(userId, 'TRY_ON');
+    await this.quotaService.consumeQuota(userId, 'TRY_ON', garments.length);
 
     return {
       id: savedRecord.id,
       resultUrl,
-      category: garmentCategory,
+      category: finalCategory,
+      garments: garmentsMeta,
       isCached: false,
       cacheKey,
       expiresAt: savedRecord.expiresAt,
       createdAt: savedRecord.createdAt,
-      product: productEntity,
+      product: garments[0].product,
     };
   }
 

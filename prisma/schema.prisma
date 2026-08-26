@@ -58,19 +58,27 @@ enum AiActionType {
   CHATBOT
 }
 
+enum NotificationType {
+  ORDER_STATUS
+  PAYMENT
+  PROMOTION
+  SYSTEM
+}
+
 model User {
-  id           String       @id @default(uuid()) @db.Uuid
-  email        String       @unique
-  passwordHash String?      @map("password_hash")
-  name         String?
-  avatarUrl    String?      @map("avatar_url")
-  provider     AuthProvider @default(LOCAL)
-  providerId   String?      @map("provider_id")
-  tier         UserTier     @default(FREE)
-  role         Role         @default(USER)
-  isVerified   Boolean      @default(false) @map("is_verified")
-  createdAt    DateTime     @default(now()) @map("created_at")
-  updatedAt    DateTime     @updatedAt @map("updated_at")
+  id              String       @id @default(uuid()) @db.Uuid
+  email           String       @unique
+  passwordHash    String?      @map("password_hash")
+  name            String?
+  avatarUrl       String?      @map("avatar_url")
+  provider        AuthProvider @default(LOCAL)
+  providerId      String?      @map("provider_id")
+  tier            UserTier     @default(FREE)
+  tierExpiresAt   DateTime?    @map("tier_expires_at")
+  role            Role         @default(USER)
+  isVerified      Boolean      @default(false) @map("is_verified")
+  createdAt       DateTime     @default(now()) @map("created_at")
+  updatedAt       DateTime     @updatedAt @map("updated_at")
 
   measurements             Measurement?
   avatars                  Avatar[]
@@ -82,6 +90,8 @@ model User {
   orders                   Order[]
   dailyUsages              DailyUsage[]
   chatSessions             ChatSession[]
+  notifications            Notification[]
+  subscriptions            Subscription[]
 
   @@map("users")
 }
@@ -195,7 +205,6 @@ model Product {
   description   String?         @db.Text
   category      GarmentCategory @default(UPPER)
   color         String?
-  size          String?
   price         Decimal         @db.Decimal(10, 2)
   originalPrice Decimal?        @db.Decimal(10, 2) @map("original_price")
   stock         Int             @default(0)
@@ -203,7 +212,6 @@ model Product {
   garmentUrl    String          @map("garment_url")
   status        ProductStatus   @default(ACTIVE)
   colors        Json?           // [{ name: string, hex: string }]
-  sizes         Json?           // ["S", "M", "L"]
   createdAt     DateTime        @default(now()) @map("created_at")
   updatedAt     DateTime        @updatedAt @map("updated_at")
 
@@ -234,6 +242,7 @@ model TryOnResult {
   humanImageHash   String          @map("human_image_hash")
   garmentImageHash String          @map("garment_image_hash")
   category         GarmentCategory @default(UPPER)
+  garments         Json?           @map("garments")
   resultUrl        String          @map("result_url")
   cacheKey         String?         @map("cache_key")
   expiresAt        DateTime?       @map("expires_at")
@@ -261,7 +270,7 @@ model StylistResult {
   stylePreference    String?  @map("style_preference")
   genderPreference   String?  @map("gender_preference")
   budget             String?  @map("budget")
-  recommendedSize    String?  @map("recommended_size")
+  fitAdvice          String?  @map("fit_advice")
   model              String?  @map("model")
   analysisResult     Json     @map("analysis_result")
   inputContext       Json?    @map("input_context")
@@ -299,9 +308,10 @@ model Order {
   createdAt     DateTime    @default(now()) @map("created_at")
   updatedAt     DateTime    @updatedAt @map("updated_at")
 
-  user     User      @relation(fields: [userId], references: [id], onDelete: Cascade)
-  payments Payment[]
-  items    OrderItem[]
+  user          User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  payments      Payment[]
+  items         OrderItem[]
+  subscriptions Subscription[]
 
   @@index([userId])
   @@map("orders")
@@ -312,8 +322,8 @@ model OrderItem {
   orderId   String   @map("order_id") @db.Uuid
   productId String   @map("product_id") @db.Uuid
   quantity  Int      @default(1)
-  size      String?
   color     String?
+  measurementSnapshot Json? @map("measurement_snapshot")
   price     Decimal  @db.Decimal(10, 2)
   createdAt DateTime @default(now()) @map("created_at")
 
@@ -383,4 +393,45 @@ model ChatMessage {
   @@index([sessionId])
   @@index([createdAt])
   @@map("chat_messages")
+}
+
+model Notification {
+  id        String           @id @default(uuid()) @db.Uuid
+  userId    String           @map("user_id") @db.Uuid
+  type      NotificationType
+  title     String
+  message   String           @db.Text
+  data      Json?
+  isRead    Boolean          @default(false) @map("is_read")
+  createdAt DateTime         @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, isRead])
+  @@index([userId, createdAt])
+  @@map("notifications")
+}
+
+enum SubscriptionStatus {
+  ACTIVE
+  EXPIRED
+  CANCELLED
+}
+
+model Subscription {
+  id        String               @id @default(uuid()) @db.Uuid
+  userId    String               @map("user_id") @db.Uuid
+  tier      UserTier
+  orderId   String               @map("order_id") @db.Uuid
+  status    SubscriptionStatus   @default(ACTIVE)
+  startsAt  DateTime             @map("starts_at")
+  expiresAt DateTime             @map("expires_at")
+  createdAt DateTime             @default(now()) @map("created_at")
+
+  user  User  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  order Order @relation(fields: [orderId], references: [id], onDelete: Restrict)
+
+  @@index([userId, expiresAt])
+  @@index([userId, status])
+  @@map("subscriptions")
 }
