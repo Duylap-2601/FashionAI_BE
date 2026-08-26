@@ -95,5 +95,8 @@ export class CreateProductDto {
   images?: unknown;
 
   @IsOptional()
+  image?: unknown;
+
+  @IsOptional()
   isMainIndex?: unknown;
 }
