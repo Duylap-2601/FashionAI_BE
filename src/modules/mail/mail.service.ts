@@ -241,7 +241,7 @@ export class MailService {
   }
 
   async sendRenewalReminderEmail(email: string, data: RenewalReminderData): Promise<void> {
-    const { name, tier, tierLabel, price, expiresAt, checkoutUrl, orderCode } = data;
+    const { name, tierLabel, price, expiresAt, checkoutUrl, orderCode } = data;
     const subject = `[FashionAI] Gói ${tierLabel} của bạn sắp hết hạn`;
 
     const html = `

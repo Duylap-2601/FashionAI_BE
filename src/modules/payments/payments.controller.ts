@@ -19,6 +19,7 @@ import { CheckoutDto } from './dto/checkout.dto';
 import { SubscriptionHistoryQueryDto } from './dto/subscription-history-query.dto';
 import { PaymentsService } from './payments.service';
 import { SubscriptionService } from './subscription.service';
+import { buildPlanList } from '../../common/constants/subscription-plans.constants';
 import { buildApiResponse } from '../../common/utils/api-response.util';
 
 @ApiTags('Payments & Subscriptions')
@@ -106,7 +107,6 @@ export class PaymentsController {
   @Public()
   @ApiOperation({ summary: 'Lấy danh sách gói và giá' })
   async getPlans(@Req() req: Request) {
-    const { buildPlanList } = require('../../common/constants/subscription-plans.constants');
     const plans = buildPlanList();
     return buildApiResponse(req, 'PLANS_LIST_SUCCESS', 'Lấy danh sách gói thành công', plans);
   }
