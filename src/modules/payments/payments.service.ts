@@ -4,6 +4,7 @@ import {
   BadRequestException,
   NotFoundException,
   ForbiddenException,
+  ConflictException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../../database/prisma.service';
@@ -14,12 +15,10 @@ import { CheckoutDto } from './dto/checkout.dto';
 import { MailService } from '../mail/mail.service';
 import { NotificationService } from '../notification/notification.service';
 import { SubscriptionService } from './subscription.service';
-
-const TIER_PRICES: Record<UserTier, number> = {
-  FREE: 0,
-  MEMBER: 99000,
-  VIP: 299000,
-};
+import {
+  TIER_PRICES,
+  RENEWAL_REMINDER_DAYS_BEFORE,
+} from '../../common/constants/subscription-plans.constants';
 
 /** Link thanh toán coi như hết hiệu lực sau 24h; tạo lại link mới khi user quay lại. */
 const CHECKOUT_TTL_MS = 24 * 60 * 60 * 1000;
@@ -111,12 +110,25 @@ export class PaymentsService {
 
   private async createSubscriptionOrder(userId: string, targetTier: UserTier) {
     if (targetTier === UserTier.FREE) {
-      throw new BadRequestException('Không thể tạo thanh toán cho gói FREE.');
+      throw new BadRequestException(
+        'Không thể tạo thanh toán cho gói FREE. Dùng /payments/subscriptions/cancel để không gia hạn.',
+      );
     }
 
     const user = await this.prisma.user.findUnique({ where: { id: userId } });
     if (!user) {
       throw new NotFoundException('Không tìm thấy người dùng');
+    }
+
+    // Check for existing SCHEDULED sub (prevents stacking)
+    const scheduledSub = await this.prisma.subscription.findFirst({
+      where: { userId, status: 'SCHEDULED' },
+    });
+
+    if (scheduledSub) {
+      throw new ConflictException(
+        `Bạn đã có gói ${scheduledSub.tier} được hẹn kích hoạt vào ${scheduledSub.startsAt.toLocaleDateString('vi-VN')}. Vui lòng huỷ trước khi đổi gói.`,
+      );
     }
 
     return createWithUniqueOrderCode((orderCode) =>
@@ -485,6 +497,8 @@ export class PaymentsService {
 
     const isSubscription = Boolean(order.targetTier);
 
+    let subscriptionMode: 'NEW' | 'RENEWAL' | 'UPGRADE' | 'DOWNGRADE' | undefined;
+
     try {
       const claimed = await this.prisma.$transaction(async (tx) => {
         // Chốt trạng thái bằng chính câu UPDATE có điều kiện status=PENDING. IPN và
@@ -501,7 +515,7 @@ export class PaymentsService {
           },
         });
 
-        if (claim.count === 0) return false;
+        if (claim.count === 0) return { success: false };
 
         await tx.payment.create({
           data: {
@@ -513,11 +527,13 @@ export class PaymentsService {
         });
 
         if (order.targetTier) {
-          await this.subscriptionService.createOrExtendSubscription(
+          const result = await this.subscriptionService.createOrExtendSubscription(
             order.userId,
             order.targetTier,
             order.id,
+            tx,
           );
+          subscriptionMode = result.mode;
         } else {
           // Đơn sản phẩm: trừ tồn kho khi đã xác nhận thanh toán. Trừ tại đây (không
           // phải lúc tạo đơn PENDING) để đơn bỏ dở không giữ chỗ hàng vô thời hạn.
@@ -529,10 +545,10 @@ export class PaymentsService {
           }
         }
 
-        return true;
+        return { success: true, subscriptionMode };
       });
 
-      if (!claimed) {
+      if (!claimed?.success) {
         this.logger.log(
           `Đơn hàng #${orderCode} đã được ghi nhận bởi webhook khác | provider=${provider}`,
         );
@@ -552,21 +568,37 @@ export class PaymentsService {
     // đã claim PAID thành công (không rơi vào nhánh already-processed), và tách
     // riêng khỏi updateStatus() vì webhook ghi PAID trực tiếp, không đi qua đó.
     // Lỗi realtime không được làm fail webhook (tiền đã vào, đã ghi PAID).
+    let subscriptionTitle = 'Nâng cấp tài khoản thành công';
+    let subscriptionMessage = `Tài khoản của bạn đã được nâng cấp lên gói ${order.targetTier}.`;
+
+    if (isSubscription) {
+      if (subscriptionMode === 'RENEWAL') {
+        subscriptionTitle = `Gia hạn gói ${order.targetTier} thành công`;
+        subscriptionMessage = `Gói ${order.targetTier} của bạn đã được gia hạn thành công.`;
+      } else if (subscriptionMode === 'UPGRADE') {
+        subscriptionTitle = `Đã nâng cấp lên gói ${order.targetTier}`;
+        subscriptionMessage = `Tài khoản của bạn đã được nâng cấp lên gói ${order.targetTier} và có hiệu lực ngay.`;
+      } else if (subscriptionMode === 'DOWNGRADE') {
+        subscriptionTitle = `Đã hẹn chuyển sang gói ${order.targetTier}`;
+        subscriptionMessage = `Yêu cầu chuyển gói của bạn đã được ghi nhận. Gói ${order.targetTier} sẽ được kích hoạt khi gói hiện tại kết thúc.`;
+      }
+    }
+
     this.notificationService
       .create({
         userId: order.userId,
         type: 'PAYMENT',
         title: isSubscription
-          ? 'Nâng cấp tài khoản thành công'
+          ? subscriptionTitle
           : `Thanh toán đơn hàng #${order.orderCode} thành công`,
         message: isSubscription
-          ? `Tài khoản của bạn đã được nâng cấp lên gói ${order.targetTier}.`
+          ? subscriptionMessage
           : 'Chúng tôi đã nhận được thanh toán của bạn và đang xử lý đơn hàng.',
         data: {
           orderId: order.id,
           orderCode: order.orderCode,
           status: OrderStatus.PAID,
-          ...(isSubscription ? { targetTier: order.targetTier } : {}),
+          ...(isSubscription ? { targetTier: order.targetTier, subscriptionMode } : {}),
         },
       })
       .catch(() => undefined);
@@ -643,5 +675,98 @@ export class PaymentsService {
       throw new ForbiddenException('Mock payment endpoint is disabled in production.');
     }
     return this.processOrderSuccess(orderCode, 'MOCK_SANDBOX', { mock: true });
+  }
+
+  async sendRenewalReminders() {
+    const subs = await this.subscriptionService.findSubscriptionsDueForRenewal(
+      RENEWAL_REMINDER_DAYS_BEFORE,
+    );
+
+    let remindersSent = 0;
+    let ordersCreated = 0;
+
+    for (const sub of subs) {
+      try {
+        // Create renewal order
+        const renewalOrder = await createWithUniqueOrderCode((orderCode) =>
+          this.prisma.order.create({
+            data: {
+              orderCode,
+              userId: sub.userId,
+              targetTier: sub.tier,
+              amount: TIER_PRICES[sub.tier],
+              status: OrderStatus.PENDING,
+            },
+          }),
+        );
+
+        // Generate checkout link
+        const { checkoutUrl } = await this.createSePayCheckoutLink(renewalOrder);
+
+        await this.prisma.order.update({
+          where: { id: renewalOrder.id },
+          data: {
+            paymentProvider: 'SEPAY',
+            checkoutUrl,
+            checkoutExpiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000),
+          },
+        });
+
+        ordersCreated++;
+
+        // Send notification
+        this.notificationService
+          .create({
+            userId: sub.userId,
+            type: 'PAYMENT',
+            title: `Gói ${sub.tier} sắp hết hạn`,
+            message: `Gói ${sub.tier} của bạn hết hạn vào ${sub.expiresAt.toLocaleDateString('vi-VN')}. Thanh toán ${TIER_PRICES[sub.tier].toLocaleString('vi-VN')}đ để tiếp tục sử dụng.`,
+            data: {
+              subscriptionId: sub.id,
+              orderId: renewalOrder.id,
+              orderCode: renewalOrder.orderCode,
+              checkoutUrl,
+              tier: sub.tier,
+              expiresAt: sub.expiresAt,
+              daysRemaining: Math.ceil(
+                (sub.expiresAt.getTime() - Date.now()) / (1000 * 60 * 60 * 24),
+              ),
+            },
+          })
+          .catch(() => undefined);
+
+        // Send email
+        await this.mailService
+          .sendRenewalReminderEmail(sub.user.email, {
+            name: sub.user.name || 'Khách hàng',
+            tier: sub.tier,
+            tierLabel: sub.tier,
+            price: TIER_PRICES[sub.tier],
+            expiresAt: sub.expiresAt,
+            daysRemaining: Math.ceil(
+              (sub.expiresAt.getTime() - Date.now()) / (1000 * 60 * 60 * 24),
+            ),
+            checkoutUrl,
+            orderCode: renewalOrder.orderCode,
+          })
+          .catch((err) => {
+            this.logger.warn(`Failed to send renewal reminder email for user ${sub.userId}: ${err.message}`);
+          });
+
+        // Mark reminder sent
+        await this.subscriptionService.markRenewalReminderSent(sub.id);
+        remindersSent++;
+      } catch (err) {
+        this.logger.error(
+          `Error processing renewal reminder for subscription ${sub.id}: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    }
+
+    this.logger.log(
+      `Renewal reminders sent: ${remindersSent}/${subs.length}, orders created: ${ordersCreated}`,
+    );
+
+    return { remindersSent, ordersCreated, totalProcessed: subs.length };
   }
 }

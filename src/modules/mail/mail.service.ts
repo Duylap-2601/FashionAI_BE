@@ -3,6 +3,17 @@ import { ConfigService } from '@nestjs/config';
 import { OrderStatus } from '@prisma/client';
 import * as brevo from '@getbrevo/brevo';
 
+export interface RenewalReminderData {
+  name: string;
+  tier: string;
+  tierLabel: string;
+  price: number;
+  expiresAt: Date;
+  daysRemaining: number;
+  checkoutUrl: string;
+  orderCode: number;
+}
+
 export interface OrderStatusUpdateData {
   orderId: string;
   orderCode: number;
@@ -224,6 +235,62 @@ export class MailService {
         </p>
         <p style="color:#888;">Hoặc truy cập: <a href="${detailLink}">${detailLink}</a></p>
       </div>
+    `;
+
+    await this.sendMail(email, subject, html);
+  }
+
+  async sendRenewalReminderEmail(email: string, data: RenewalReminderData): Promise<void> {
+    const { name, tier, tierLabel, price, expiresAt, checkoutUrl, orderCode } = data;
+    const subject = `[FashionAI] Gói ${tierLabel} của bạn sắp hết hạn`;
+
+    const html = `
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8">
+  <style>
+    body { font-family: Arial, sans-serif; color: #333; }
+    .container { max-width: 600px; margin: 0 auto; padding: 20px; }
+    .header { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 20px; text-align: center; border-radius: 8px 8px 0 0; }
+    .content { background: #f9f9f9; padding: 20px; border-radius: 0 0 8px 8px; }
+    .cta-button { display: inline-block; background: #667eea; color: white; padding: 12px 24px; text-decoration: none; border-radius: 4px; margin: 20px 0; }
+    .footer { text-align: center; color: #999; font-size: 12px; margin-top: 20px; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="header">
+      <h1>Gia hạn Gói ${tierLabel}</h1>
+    </div>
+    <div class="content">
+      <p>Xin chào ${name},</p>
+      <p>Gói <strong>${tierLabel}</strong> của bạn sắp hết hạn vào <strong>${expiresAt.toLocaleDateString('vi-VN')}</strong>.</p>
+      <p>Để tiếp tục sử dụng các tính năng premium của FashionAI, vui lòng gia hạn gói ngay.</p>
+
+      <div style="background: #fff3cd; padding: 12px; border-left: 4px solid #ffc107; margin: 15px 0; border-radius: 4px;">
+        <strong style="font-size: 18px;">Giá: ${price.toLocaleString('vi-VN')}đ</strong> cho 30 ngày
+      </div>
+
+      <p style="text-align: center;">
+        <a href="${checkoutUrl}" class="cta-button" style="font-size: 16px;">Gia Hạn Ngay</a>
+      </p>
+
+      <p style="color: #666; font-size: 12px;">
+        Nếu nút trên không hoạt động, vui lòng sao chép và dán đường link này vào trình duyệt:<br>
+        <span style="word-break: break-all; color: #0066cc;">${checkoutUrl}</span>
+      </p>
+
+      <p style="margin-top: 30px; color: #999; font-size: 12px;">
+        Mã đơn: #${orderCode}
+      </p>
+    </div>
+    <div class="footer">
+      <p>© 2026 FashionAI. Mọi quyền được bảo lưu.</p>
+    </div>
+  </div>
+</body>
+</html>
     `;
 
     await this.sendMail(email, subject, html);

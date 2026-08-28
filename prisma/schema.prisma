@@ -414,6 +414,7 @@ model Notification {
 
 enum SubscriptionStatus {
   ACTIVE
+  SCHEDULED
   EXPIRED
   CANCELLED
 }
@@ -424,8 +425,10 @@ model Subscription {
   tier      UserTier
   orderId   String               @map("order_id") @db.Uuid
   status    SubscriptionStatus   @default(ACTIVE)
+  autoRenew Boolean              @default(true) @map("auto_renew")
   startsAt  DateTime             @map("starts_at")
   expiresAt DateTime             @map("expires_at")
+  renewalReminderSentAt DateTime? @map("renewal_reminder_sent_at")
   createdAt DateTime             @default(now()) @map("created_at")
 
   user  User  @relation(fields: [userId], references: [id], onDelete: Cascade)
@@ -433,5 +436,7 @@ model Subscription {
 
   @@index([userId, expiresAt])
   @@index([userId, status])
+  @@index([status, expiresAt])
+  @@index([status, startsAt])
   @@map("subscriptions")
 }

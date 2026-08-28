@@ -4,6 +4,7 @@ import { Cron, CronExpression } from '@nestjs/schedule';
 import { PrismaService } from '../../database/prisma.service';
 import { AuthService } from '../auth/auth.service';
 import { SubscriptionService } from '../payments/subscription.service';
+import { PaymentsService } from '../payments/payments.service';
 import { OrderStatus } from '@prisma/client';
 
 /**
@@ -21,6 +22,7 @@ export class MaintenanceService {
     private readonly prisma: PrismaService,
     private readonly authService: AuthService,
     private readonly subscriptionService: SubscriptionService,
+    private readonly paymentsService: PaymentsService,
   ) {
     this.enabled = this.config.get<string>('MAINTENANCE_CRON_ENABLED') !== 'false';
     if (!this.enabled) {
@@ -57,12 +59,28 @@ export class MaintenanceService {
       this.logger.log(
         `Dọn dẹp định kỳ hoàn tất | refreshTokens=${tokens.deletedRefreshTokens} ` +
           `resetTokens=${tokens.deletedResetTokens} verifyTokens=${tokens.deletedVerifyTokens} ` +
-          `tryOnCache=${tryOnCache.count} expiredSubscriptions=${subscriptionResult.expiredSubscriptions} ` +
+          `tryOnCache=${tryOnCache.count} activatedSubscriptions=${subscriptionResult.activatedSubscriptions} ` +
+          `cancelledSubscriptions=${subscriptionResult.cancelledSubscriptions} expiredSubscriptions=${subscriptionResult.expiredSubscriptions} ` +
           `downgradedUsers=${subscriptionResult.downgradedUsers} expiredOrders=${expiredOrders.count}`,
       );
     } catch (err) {
       const message = err instanceof Error ? err.message : 'unknown';
       this.logger.error(`Dọn dẹp định kỳ thất bại: ${message}`);
+    }
+  }
+
+  @Cron(CronExpression.EVERY_DAY_AT_9AM, { name: 'subscription-renewal-reminders', timeZone: 'Asia/Ho_Chi_Minh' })
+  async sendRenewalReminders() {
+    if (!this.enabled) return;
+
+    try {
+      const result = await this.paymentsService.sendRenewalReminders();
+      this.logger.log(
+        `Renewal reminders sent | remindersSent=${result.remindersSent} ordersCreated=${result.ordersCreated} totalProcessed=${result.totalProcessed}`,
+      );
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'unknown';
+      this.logger.error(`Gửi nhắc gia hạn thất bại: ${message}`);
     }
   }
 }

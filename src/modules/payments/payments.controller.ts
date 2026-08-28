@@ -16,13 +16,18 @@ import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { AuthenticatedUser } from '../auth/interfaces/authenticated-user.interface';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { CheckoutDto } from './dto/checkout.dto';
+import { SubscriptionHistoryQueryDto } from './dto/subscription-history-query.dto';
 import { PaymentsService } from './payments.service';
+import { SubscriptionService } from './subscription.service';
 import { buildApiResponse } from '../../common/utils/api-response.util';
 
 @ApiTags('Payments & Subscriptions')
 @Controller('payments')
 export class PaymentsController {
-  constructor(private readonly paymentsService: PaymentsService) {}
+  constructor(
+    private readonly paymentsService: PaymentsService,
+    private readonly subscriptionService: SubscriptionService,
+  ) {}
 
   @Post('checkout')
   @HttpCode(HttpStatus.OK)
@@ -78,9 +83,9 @@ export class PaymentsController {
 
   @Public()
   @Get('mock-success')
-  @ApiOperation({ 
-    summary: 'Mock thanh toán thành công (chỉ development)', 
-    description: 'Endpoint này bị chặn hoàn toàn ở production (NODE_ENV=production)' 
+  @ApiOperation({
+    summary: 'Mock thanh toán thành công (chỉ development)',
+    description: 'Endpoint này bị chặn hoàn toàn ở production (NODE_ENV=production)'
   })
   async mockSuccess(@Req() req: Request, @Query('orderCode') orderCode: number) {
     const nodeEnv = process.env.NODE_ENV;
@@ -95,5 +100,79 @@ export class PaymentsController {
     }
     const result = await this.paymentsService.mockSuccess(Number(orderCode));
     return buildApiResponse(req, 'MOCK_PAYMENT_SUCCESS', 'Giả lập thanh toán thành công', result);
+  }
+
+  @Get('plans')
+  @Public()
+  @ApiOperation({ summary: 'Lấy danh sách gói và giá' })
+  async getPlans(@Req() req: Request) {
+    const { buildPlanList } = require('../../common/constants/subscription-plans.constants');
+    const plans = buildPlanList();
+    return buildApiResponse(req, 'PLANS_LIST_SUCCESS', 'Lấy danh sách gói thành công', plans);
+  }
+
+  @Get('subscriptions/me')
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth('access-token')
+  @ApiOperation({ summary: 'Lấy thông tin gói đăng ký hiện tại' })
+  async getCurrentSubscription(@Req() req: Request, @CurrentUser() user: AuthenticatedUser) {
+    const data = await this.subscriptionService.getCurrentSubscription(user.id);
+    return buildApiResponse(req, 'SUBSCRIPTION_ME_SUCCESS', 'Lấy thông tin gói đăng ký thành công', data);
+  }
+
+  @Get('subscriptions/history')
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth('access-token')
+  @ApiOperation({ summary: 'Lấy lịch sử gói đăng ký' })
+  async getSubscriptionHistory(
+    @Req() req: Request,
+    @CurrentUser() user: AuthenticatedUser,
+    @Query() query: SubscriptionHistoryQueryDto,
+  ) {
+    const result = await this.subscriptionService.getSubscriptionHistory(
+      user.id,
+      query.page || 1,
+      query.limit || 20,
+    );
+    return buildApiResponse(
+      req,
+      'SUBSCRIPTION_HISTORY_SUCCESS',
+      'Lấy lịch sử gói đăng ký thành công',
+      result.items,
+      result.meta,
+    );
+  }
+
+  @Post('subscriptions/cancel')
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth('access-token')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: 'Tắt tự động gia hạn',
+    description: 'Tắt auto-renew cho gói hiện tại. Người dùng vẫn được sử dụng gói đến hết hạn.',
+  })
+  async cancelAutoRenew(@Req() req: Request, @CurrentUser() user: AuthenticatedUser) {
+    const data = await this.subscriptionService.cancelAutoRenew(user.id);
+    return buildApiResponse(
+      req,
+      'SUBSCRIPTION_CANCELLED',
+      'Đã tắt tự động gia hạn. Bạn vẫn dùng gói đến hết ngày hết hạn.',
+      data,
+    );
+  }
+
+  @Post('subscriptions/resume')
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth('access-token')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Bật lại tự động gia hạn' })
+  async resumeAutoRenew(@Req() req: Request, @CurrentUser() user: AuthenticatedUser) {
+    const data = await this.subscriptionService.resumeAutoRenew(user.id);
+    return buildApiResponse(
+      req,
+      'SUBSCRIPTION_RESUMED',
+      'Đã bật lại tự động gia hạn.',
+      data,
+    );
   }
 }

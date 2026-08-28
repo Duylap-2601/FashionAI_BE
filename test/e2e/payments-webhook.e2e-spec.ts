@@ -117,10 +117,10 @@ describe('SePay IPN (e2e)', () => {
     prisma.order.findUnique.mockResolvedValue({
       ...pendingProductOrder,
       targetTier: UserTier.MEMBER,
-      amount: 99000,
+      amount: 49000,
     });
 
-    await post(orderPaidPayload(99000)).expect(200);
+    await post(orderPaidPayload(49000)).expect(200);
 
     expect(prisma.subscription.create).toHaveBeenCalledWith(
       expect.objectContaining({

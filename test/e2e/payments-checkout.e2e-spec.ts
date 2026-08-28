@@ -158,7 +158,7 @@ describe('POST /api/payments/checkout (e2e)', () => {
         orderCode: 87654321,
         userId: AUTH_USER.id,
         targetTier: UserTier.MEMBER,
-        amount: 99000,
+        amount: 49000,
         status: OrderStatus.PENDING,
       };
       prisma.order.create.mockResolvedValue(created);
@@ -172,7 +172,7 @@ describe('POST /api/payments/checkout (e2e)', () => {
       expect(res.body.data).toMatchObject({
         kind: 'SUBSCRIPTION',
         targetTier: 'MEMBER',
-        amount: 99000,
+        amount: 49000,
       });
       expect(prisma.order.create).toHaveBeenCalled();
     });
@@ -187,7 +187,7 @@ describe('POST /api/payments/checkout (e2e)', () => {
         orderCode: 11112222,
         userId: AUTH_USER.id,
         targetTier: UserTier.VIP,
-        amount: 299000,
+        amount: 99000,
         status: OrderStatus.PENDING,
       };
       prisma.order.create.mockResolvedValue(created);
@@ -201,7 +201,7 @@ describe('POST /api/payments/checkout (e2e)', () => {
       expect(res.body.data).toMatchObject({
         kind: 'SUBSCRIPTION',
         targetTier: 'VIP',
-        amount: 299000,
+        amount: 99000,
       });
       expect(prisma.order.create).toHaveBeenCalled();
     });
