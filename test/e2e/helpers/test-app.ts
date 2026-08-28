@@ -1,91 +1,153 @@
-import { INestApplication } from '@nestjs/common';
-import { Test, TestingModule } from '@nestjs/testing';
+import { INestApplication, ValidationPipe } from '@nestjs/common';
+import { Test, TestingModuleBuilder } from '@nestjs/testing';
+import { ModuleMetadata } from '@nestjs/common/interfaces';
+import { PrismaService } from '../../../src/database/prisma.service';
+import { RedisService } from '../../../src/common/services/redis.service';
+import { GlobalExceptionFilter } from '../../../src/common/filters/http-exception.filter';
 
-export type PrismaMock = any;
-export type RedisMock = any;
+/**
+ * E2E ở đây chạy toàn bộ HTTP stack thật (routing, guard, pipe, filter) nhưng thay
+ * Prisma và Redis bằng test double, nên không cần Postgres/Redis để chạy trong CI.
+ */
+export type PrismaMock = Record<string, any>;
 
-export function createPrismaMock(): PrismaMock {
-  return {
-    user: {
-      findUnique: jest.fn(),
-      findFirst: jest.fn(),
-      update: jest.fn(),
-      updateMany: jest.fn(),
-    },
-    subscription: {
-      create: jest.fn(),
-      findFirst: jest.fn(),
-      findMany: jest.fn(),
-      findUnique: jest.fn(),
-      updateMany: jest.fn(),
-      count: jest.fn(),
-    },
-    order: {
-      create: jest.fn(),
-      findFirst: jest.fn(),
-      findUnique: jest.fn(),
-      update: jest.fn(),
-      updateMany: jest.fn(),
-    },
-    product: {
-      update: jest.fn(),
-      findUnique: jest.fn(),
-    },
-    payment: {
-      create: jest.fn(),
-    },
-    $transaction: jest.fn((callback) => callback({
-      user: { findUnique: jest.fn(), update: jest.fn() },
-      subscription: { create: jest.fn(), updateMany: jest.fn() },
-      order: { updateMany: jest.fn() },
-      product: { update: jest.fn() },
-      payment: { create: jest.fn() },
-    })),
-  };
-}
-
-export function createRedisMock(): RedisMock {
-  return {
-    get: jest.fn(),
-    set: jest.fn(),
-    del: jest.fn(),
-    exists: jest.fn(),
-    expire: jest.fn(),
-    ttl: jest.fn(),
-    incr: jest.fn(),
-  };
-}
-
-interface CreateTestAppOptions {
-  prisma?: PrismaMock;
-  redis?: RedisMock;
-  metadata?: any;
-  configure?: (builder: any) => any;
-}
-
-export async function createTestApp(
-  options: CreateTestAppOptions,
-): Promise<{ app: INestApplication }> {
-  const { prisma, redis, metadata = {}, configure } = options;
-
-  const moduleBuilder = Test.createTestingModule({
-    imports: metadata.imports || [],
-    controllers: metadata.controllers || [],
-    providers: [
-      ...(metadata.providers || []),
-      ...(prisma ? [{ provide: 'PrismaService', useValue: prisma }] : []),
-      ...(redis ? [{ provide: 'RedisService', useValue: redis }] : []),
-    ],
+export function createPrismaMock(overrides: PrismaMock = {}): PrismaMock {
+  // Mọi method mặc định trả về Promise: code thật gọi `.catch()` trực tiếp trên
+  // kết quả Prisma (ví dụ QuotaService.consumeQuota), nên jest.fn() trả undefined
+  // sẽ làm request nổ 500 thay vì bộc lộ lỗi thật.
+  const model = () => ({
+    findUnique: jest.fn().mockResolvedValue(null),
+    findUniqueOrThrow: jest.fn().mockResolvedValue(null),
+    findFirst: jest.fn().mockResolvedValue(null),
+    findMany: jest.fn().mockResolvedValue([]),
+    create: jest.fn().mockResolvedValue({}),
+    update: jest.fn().mockResolvedValue({}),
+    updateMany: jest.fn().mockResolvedValue({ count: 0 }),
+    delete: jest.fn().mockResolvedValue({}),
+    deleteMany: jest.fn().mockResolvedValue({ count: 0 }),
+    count: jest.fn().mockResolvedValue(0),
+    aggregate: jest.fn().mockResolvedValue({ _sum: {} }),
+    groupBy: jest.fn().mockResolvedValue([]),
+    upsert: jest.fn().mockResolvedValue({}),
   });
 
-  let module = moduleBuilder;
-  if (configure) {
-    module = configure(moduleBuilder);
+  const base: PrismaMock = {
+    user: model(),
+    measurement: model(),
+    refreshToken: model(),
+    passwordResetToken: model(),
+    emailVerificationToken: model(),
+    product: model(),
+    productImage: model(),
+    tryOnResult: model(),
+    stylistResult: model(),
+    avatar: model(),
+    avatarPreset: model(),
+    order: model(),
+    orderItem: model(),
+    payment: model(),
+    subscription: model(),
+    dailyUsage: model(),
+    // Prisma có hai dạng: $transaction([...promises]) và $transaction(async (tx) => ...).
+    // Dạng callback phải được gọi thật với chính mock này làm `tx`, nếu không mọi
+    // lệnh ghi bên trong transaction sẽ âm thầm không chạy và test vẫn xanh.
+    $transaction: jest.fn((arg: unknown) => {
+      if (typeof arg === 'function') {
+        return Promise.resolve((arg as (tx: PrismaMock) => unknown)(base));
+      }
+      return Array.isArray(arg) ? Promise.all(arg) : Promise.resolve(arg);
+    }),
+    $queryRaw: jest.fn().mockResolvedValue([{ 1: 1 }]),
+    $connect: jest.fn(),
+    $disconnect: jest.fn(),
+    enableShutdownHooks: jest.fn(),
+    onModuleInit: jest.fn(),
+  };
+
+  for (const [key, value] of Object.entries(overrides)) {
+    base[key] = { ...(base[key] ?? {}), ...value };
   }
 
-  const compiled: TestingModule = await module.compile();
-  const app = compiled.createNestApplication();
-  await app.init();
+  return base;
+}
 
-  return { app };
+export function createRedisMock() {
+  const store = new Map<string, string>();
+  return {
+    get: jest.fn(async (key: string) => store.get(key) ?? null),
+    set: jest.fn(async (key: string, value: string) => {
+      store.set(key, value);
+    }),
+    incr: jest.fn(async (key: string) => {
+      const next = Number(store.get(key) ?? '0') + 1;
+      store.set(key, String(next));
+      return next;
+    }),
+    incrBy: jest.fn(async (key: string, amount: number) => {
+      const next = Number(store.get(key) ?? '0') + amount;
+      store.set(key, String(next));
+      return next;
+    }),
+    del: jest.fn(async (key: string) => {
+      store.delete(key);
+    }),
+    acquireLock: jest.fn().mockResolvedValue(true),
+    releaseLock: jest.fn().mockResolvedValue(undefined),
+    health: jest.fn().mockResolvedValue({ status: 'up', mode: 'test' }),
+    onModuleInit: jest.fn(),
+    onModuleDestroy: jest.fn(),
+  };
+}
+
+export interface TestAppOptions {
+  metadata: ModuleMetadata;
+  prisma?: PrismaMock;
+  redis?: ReturnType<typeof createRedisMock>;
+  configure?: (builder: TestingModuleBuilder) => TestingModuleBuilder;
+}
+
+export async function createTestApp(options: TestAppOptions): Promise<{
+  app: INestApplication;
+  prisma: PrismaMock;
+  redis: ReturnType<typeof createRedisMock>;
+}> {
+  const prisma = options.prisma ?? createPrismaMock();
+  const redis = options.redis ?? createRedisMock();
+
+  // Khai báo sẵn hai provider này trong module test rồi override, vì
+  // overrideProvider chỉ thay được thứ đã tồn tại trong graph.
+  let builder = Test.createTestingModule({
+    ...options.metadata,
+    providers: [
+      { provide: PrismaService, useValue: prisma },
+      { provide: RedisService, useValue: redis },
+      ...(options.metadata.providers ?? []),
+    ],
+  })
+    .overrideProvider(PrismaService)
+    .useValue(prisma)
+    .overrideProvider(RedisService)
+    .useValue(redis);
+
+  if (options.configure) {
+    builder = options.configure(builder);
+  }
+
+  const moduleRef = await builder.compile();
+  const app = moduleRef.createNestApplication({ rawBody: true });
+
+  // Khớp với cấu hình trong src/main.ts để e2e phản ánh hành vi thật.
+  app.setGlobalPrefix('api');
+  app.useGlobalFilters(new GlobalExceptionFilter());
+  app.useGlobalPipes(
+    new ValidationPipe({
+      whitelist: true,
+      forbidNonWhitelisted: true,
+      transform: true,
+      transformOptions: { enableImplicitConversion: true },
+    }),
+  );
+
+  await app.init();
+  return { app, prisma, redis };
 }

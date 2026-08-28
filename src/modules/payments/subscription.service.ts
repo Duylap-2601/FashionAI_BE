@@ -270,20 +270,13 @@ export class SubscriptionService {
   ) {
     const db = tx || this.prisma;
 
-    const [user, currentSub] = await Promise.all([
-      db.user.findUnique({ where: { id: userId }, select: { tier: true, tierExpiresAt: true } }),
-      db.subscription.findFirst({
-        where: {
-          userId,
-          status: { in: ['ACTIVE', 'SCHEDULED'] },
-        },
-        orderBy: { expiresAt: 'desc' },
-      }),
-    ]);
-
-    if (!user) {
-      throw new NotFoundException('Không tìm thấy người dùng');
-    }
+    const currentSub = await db.subscription.findFirst({
+      where: {
+        userId,
+        status: { in: ['ACTIVE', 'SCHEDULED'] },
+      },
+      orderBy: { expiresAt: 'desc' },
+    });
 
     let mode: 'NEW' | 'RENEWAL' | 'UPGRADE' | 'DOWNGRADE';
     const now = new Date();
