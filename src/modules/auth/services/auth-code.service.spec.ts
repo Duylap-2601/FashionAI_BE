@@ -4,7 +4,6 @@ import { RedisService } from '../../../common/services/redis.service';
 
 describe('AuthCodeService', () => {
   let service: AuthCodeService;
-  let redisService: RedisService;
 
   const mockRedisService = {
     set: jest.fn(),
