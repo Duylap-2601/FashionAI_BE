@@ -1,4 +1,3 @@
-import { Test, TestingModule } from '@nestjs/testing';
 import { Request } from 'express';
 import { SignedStateStore, readPlatformFromState } from './signed-state.store';
 
@@ -97,7 +96,7 @@ describe('SignedStateStore', () => {
       const req = {} as unknown as Request;
       const oldFormat = 'nonce.issuedAt.signature';
 
-      store.verify(req, oldFormat, undefined, (err, ok, result) => {
+      store.verify(req, oldFormat, undefined, (err, ok) => {
         expect(err).toBeNull();
         expect(ok).toBe(false);
         done();

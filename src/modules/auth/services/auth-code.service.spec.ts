@@ -25,7 +25,6 @@ describe('AuthCodeService', () => {
     }).compile();
 
     service = module.get<AuthCodeService>(AuthCodeService);
-    redisService = module.get<RedisService>(RedisService);
     jest.clearAllMocks();
   });
 
