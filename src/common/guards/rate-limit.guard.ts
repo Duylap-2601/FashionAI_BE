@@ -63,6 +63,9 @@ export class RateLimitGuard implements CanActivate {
     const isAuthSensitive =
       path.endsWith('/auth/login') ||
       path.endsWith('/auth/register') ||
+      path.endsWith('/auth/refresh') ||
+      path.endsWith('/auth/logout') ||
+      path.endsWith('/auth/exchange') ||
       path.endsWith('/auth/forgot-password') ||
       path.endsWith('/auth/reset-password') ||
       path.endsWith('/auth/resend-verification');
