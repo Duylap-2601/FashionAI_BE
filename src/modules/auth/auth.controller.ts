@@ -29,9 +29,11 @@ import { CurrentPlatform } from '../../common/decorators/current-platform.decora
 import { Public } from '../../common/decorators/public.decorator';
 import { AuthService } from './auth.service';
 import { TokenService } from './token.service';
+import { AuthCodeService } from './services/auth-code.service';
 import { LoginDto } from './dto/login.dto';
 import { RefreshTokenDto } from './dto/refresh-token.dto';
 import { RegisterDto } from './dto/register.dto';
+import { ExchangeDto } from './dto/exchange.dto';
 import {
   ChangePasswordDto,
   ForgotPasswordDto,
@@ -41,6 +43,7 @@ import {
 import { JwtAuthGuard } from './guards/jwt-auth.guard';
 import { AuthenticatedUser } from './interfaces/authenticated-user.interface';
 import { Platform } from './types/platform.type';
+import { readPlatformFromState } from './strategies/signed-state.store';
 import { buildApiResponse } from '../../common/utils/api-response.util';
 
 type AuthTokens = Awaited<ReturnType<AuthService['login']>>;
@@ -49,6 +52,7 @@ type GoogleOAuthUser = {
   name?: string;
   avatarUrl?: string;
   providerId: string;
+  platform?: Platform;
 };
 
 @ApiTags('Auth')
@@ -58,12 +62,17 @@ export class AuthController {
     private readonly authService: AuthService,
     private readonly config: ConfigService,
     private readonly tokenService: TokenService,
+    private readonly authCodeService: AuthCodeService,
   ) {}
 
   @Public()
   @Get('google')
   @UseGuards(AuthGuard('google'))
-  @ApiOperation({ summary: 'Redirect to Google OAuth login' })
+  @ApiOperation({
+    summary: 'Redirect to Google OAuth login',
+    description: 'Mobile gọi với ?platform=mobile. Param được nhúng vào signed OAuth state.',
+  })
+  @ApiQuery({ name: 'platform', enum: ['mobile', 'web'], required: false })
   async googleAuth() {
     return;
   }
@@ -77,26 +86,71 @@ export class AuthController {
     @Res({ passthrough: true }) res: Response,
     @Query('error') error?: string,
   ) {
-    const redirectUrl = this.buildGoogleFrontendRedirect();
-
     if (error || !req.user) {
+      const platform = readPlatformFromState(req.query?.state);
+      if (platform === 'mobile') {
+        const errorUrl = this.buildMobileCallbackUrl();
+        errorUrl.searchParams.set('error', error || 'google_auth_failed');
+        return res.redirect(errorUrl.toString());
+      }
+      const redirectUrl = this.buildGoogleFrontendRedirect();
       redirectUrl.searchParams.set('error', error || 'google_auth_failed');
       return res.redirect(redirectUrl.toString());
     }
 
+    const platform = req.user.platform ?? 'web';
     const tokens = await this.authService.handleGoogleLogin(req.user);
-    this.setRefreshCookie(res, tokens.refreshToken);
 
+    if (platform === 'mobile') {
+      const code = await this.authCodeService.createCode({
+        user: tokens.user,
+        accessToken: tokens.accessToken,
+        refreshToken: tokens.refreshToken,
+        accessTokenExpiresAt: tokens.accessTokenExpiresAt,
+        refreshTokenExpiresAt: tokens.refreshTokenExpiresAt,
+      });
+      const redirectUrl = this.buildMobileCallbackUrl();
+      redirectUrl.searchParams.set('code', code);
+      return res.redirect(redirectUrl.toString());
+    }
+
+    this.setRefreshCookie(res, tokens.refreshToken);
+    const redirectUrl = this.buildGoogleFrontendRedirect();
     redirectUrl.searchParams.set('accessToken', tokens.accessToken);
     redirectUrl.searchParams.set(
       'user',
-      Buffer.from(JSON.stringify({
-        ...tokens.user,
-        accessTokenExpiresAt: tokens.accessTokenExpiresAt,
-      })).toString('base64url'),
+      Buffer.from(
+        JSON.stringify({
+          id: tokens.user.id,
+          email: tokens.user.email,
+          name: tokens.user.name,
+          accessTokenExpiresAt: tokens.accessTokenExpiresAt,
+        }),
+      ).toString('base64url'),
     );
-
     return res.redirect(redirectUrl.toString());
+  }
+
+  @Public()
+  @Post('exchange')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: 'Đổi authorization code lấy tokens (cho mobile)',
+    description: 'Mobile app nhận code từ Google OAuth redirect, gọi endpoint này để lấy tokens. Code dùng một lần, TTL 5 phút.',
+  })
+  async exchange(@Req() req: Request, @Body() dto: ExchangeDto) {
+    const payload = await this.authCodeService.consumeCode(dto.code);
+    if (!payload) {
+      throw new UnauthorizedException('Invalid or expired authorization code');
+    }
+
+    return buildApiResponse(req, 'AUTH_EXCHANGE_SUCCESS', 'Tokens exchanged', {
+      user: payload.user,
+      accessToken: payload.accessToken,
+      accessTokenExpiresAt: payload.accessTokenExpiresAt,
+      refreshToken: payload.refreshToken,
+      refreshTokenExpiresAt: payload.refreshTokenExpiresAt,
+    });
   }
 
   @Public()
@@ -360,6 +414,12 @@ export class AuthController {
 
   private getRefreshCookieName() {
     return this.config.get<string>('REFRESH_COOKIE_NAME') ?? 'refresh_token';
+  }
+
+  private buildMobileCallbackUrl() {
+    return new URL(
+      this.config.get<string>('MOBILE_GOOGLE_CALLBACK_URL') || 'myapp://auth',
+    );
   }
 
   private buildGoogleFrontendRedirect() {

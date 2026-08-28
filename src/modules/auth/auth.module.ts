@@ -6,12 +6,13 @@ import { AuthService } from './auth.service';
 import { JwtStrategy } from './strategies/jwt.strategy';
 import { GoogleStrategy } from './strategies/google.strategy';
 import { TokenService } from './token.service';
+import { AuthCodeService } from './services/auth-code.service';
 import { RedisModule } from '../../common/redis/redis.module';
 
 @Module({
   imports: [PassportModule, JwtModule.register({}), RedisModule],
   controllers: [AuthController],
-  providers: [AuthService, TokenService, JwtStrategy, GoogleStrategy],
+  providers: [AuthService, TokenService, JwtStrategy, GoogleStrategy, AuthCodeService],
   exports: [AuthService, TokenService],
 })
 export class AuthModule {}
