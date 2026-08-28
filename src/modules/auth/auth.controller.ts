@@ -19,11 +19,13 @@ import {
   ApiCookieAuth,
   ApiOperation,
   ApiTags,
+  ApiQuery,
 } from '@nestjs/swagger';
 import { Request, Response, CookieOptions } from 'express';
 import ms, { StringValue } from 'ms';
 import { AuthGuard } from '@nestjs/passport';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
+import { CurrentPlatform } from '../../common/decorators/current-platform.decorator';
 import { Public } from '../../common/decorators/public.decorator';
 import { AuthService } from './auth.service';
 import { TokenService } from './token.service';
@@ -38,6 +40,7 @@ import {
 } from './dto/password.dto';
 import { JwtAuthGuard } from './guards/jwt-auth.guard';
 import { AuthenticatedUser } from './interfaces/authenticated-user.interface';
+import { Platform } from './types/platform.type';
 import { buildApiResponse } from '../../common/utils/api-response.util';
 
 type AuthTokens = Awaited<ReturnType<AuthService['login']>>;
@@ -103,9 +106,10 @@ export class AuthController {
     @Req() req: Request,
     @Res({ passthrough: true }) res: Response,
     @Body() dto: RegisterDto,
+    @CurrentPlatform() platform: Platform,
   ) {
     const tokens = await this.authService.register(dto);
-    return this.respondWithTokens(req, res, tokens, 'AUTH_REGISTER_SUCCESS');
+    return this.respondWithTokens(req, res, tokens, 'AUTH_REGISTER_SUCCESS', platform);
   }
 
   @Public()
@@ -116,9 +120,10 @@ export class AuthController {
     @Req() req: Request,
     @Res({ passthrough: true }) res: Response,
     @Body() dto: LoginDto,
+    @CurrentPlatform() platform: Platform,
   ) {
     const tokens = await this.authService.login(dto);
-    return this.respondWithTokens(req, res, tokens, 'AUTH_LOGIN_SUCCESS');
+    return this.respondWithTokens(req, res, tokens, 'AUTH_LOGIN_SUCCESS', platform);
   }
 
   @Public()
@@ -128,20 +133,36 @@ export class AuthController {
   @ApiBody({ type: RefreshTokenDto, required: false })
   @ApiOperation({
     summary: 'Rotate refresh token và cấp access token mới',
-    description: 'Tự động đọc Refresh Token từ Cookie (trình duyệt Web). Mobile App có thể truyền refreshToken trong Body JSON nếu không dùng Cookie.',
+    description: 'Web: đọc từ Cookie. Mobile: truyền refreshToken trong Body + header X-Platform.',
   })
   async refresh(
     @Req() req: Request,
     @Res({ passthrough: true }) res: Response,
+    @CurrentPlatform() platform: Platform,
     @Body() dto?: RefreshTokenDto,
   ) {
     const refreshToken = dto?.refreshToken ?? this.readRefreshCookie(req);
+
     if (!refreshToken) {
-      throw new UnauthorizedException('Không tìm thấy Refresh Token trong Cookie hoặc Request Body. Vui lòng đăng nhập lại.');
+      throw new UnauthorizedException('Không tìm thấy Refresh Token. Vui lòng đăng nhập lại.');
     }
 
     const tokens = await this.authService.refresh({ refreshToken });
-    return this.respondWithTokens(req, res, tokens, 'AUTH_TOKEN_REFRESHED');
+
+    if (platform === 'mobile') {
+      return buildApiResponse(req, 'AUTH_TOKEN_REFRESHED', 'Token refreshed', {
+        accessToken: tokens.accessToken,
+        accessTokenExpiresAt: tokens.accessTokenExpiresAt,
+        refreshToken: tokens.refreshToken,
+        refreshTokenExpiresAt: tokens.refreshTokenExpiresAt,
+      });
+    }
+
+    this.setRefreshCookie(res, tokens.refreshToken);
+    return buildApiResponse(req, 'AUTH_TOKEN_REFRESHED', 'Token refreshed', {
+      accessToken: tokens.accessToken,
+      accessTokenExpiresAt: tokens.accessTokenExpiresAt,
+    });
   }
 
   @Public()
@@ -153,14 +174,20 @@ export class AuthController {
   async logout(
     @Req() req: Request,
     @Res({ passthrough: true }) res: Response,
+    @CurrentPlatform() platform: Platform,
     @Body() dto?: RefreshTokenDto,
   ) {
     const refreshToken = dto?.refreshToken ?? this.readRefreshCookie(req);
+
     if (refreshToken) {
       await this.authService.logout({ refreshToken });
     }
     await this.blacklistBearerToken(req);
-    this.clearRefreshCookie(res);
+
+    if (platform !== 'mobile') {
+      this.clearRefreshCookie(res);
+    }
+
     return buildApiResponse(req, 'AUTH_LOGOUT_SUCCESS', 'Đăng xuất thành công', null);
   }
 
@@ -173,10 +200,15 @@ export class AuthController {
     @Req() req: Request,
     @Res({ passthrough: true }) res: Response,
     @CurrentUser() user: AuthenticatedUser,
+    @CurrentPlatform() platform: Platform,
   ) {
     const result = await this.authService.logoutAll(user.id);
     await this.authService.blacklistAccessToken(user.jti, user.exp);
-    this.clearRefreshCookie(res);
+
+    if (platform !== 'mobile') {
+      this.clearRefreshCookie(res);
+    }
+
     return buildApiResponse(
       req,
       'AUTH_LOGOUT_ALL_SUCCESS',
@@ -264,7 +296,18 @@ export class AuthController {
     res: Response,
     tokens: AuthTokens,
     code: string,
+    platform: Platform,
   ) {
+    if (platform === 'mobile') {
+      return buildApiResponse(req, code, 'Authentication successful', {
+        user: tokens.user,
+        accessToken: tokens.accessToken,
+        accessTokenExpiresAt: tokens.accessTokenExpiresAt,
+        refreshToken: tokens.refreshToken,
+        refreshTokenExpiresAt: tokens.refreshTokenExpiresAt,
+      });
+    }
+
     this.setRefreshCookie(res, tokens.refreshToken);
     return buildApiResponse(req, code, 'Authentication successful', {
       user: tokens.user,

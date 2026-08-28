@@ -35,7 +35,7 @@ async function bootstrap() {
       logger,
     ),
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'X-Platform'],
     credentials: corsCredentials,
   });
 
