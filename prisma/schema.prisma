@@ -5,7 +5,7 @@ datasource db {
 }
 
 generator client {
-  provider = "prisma-client-js"
+  provider      = "prisma-client-js"
   // Alpine không có binary `openssl` nên Prisma tự đoán sai thành openssl-1.1.x và
   // sinh engine link tới libssl.so.1.1 (không tồn tại trong image). Khai báo tay
   // để engine luôn khớp libssl.so.3.
@@ -66,31 +66,32 @@ enum NotificationType {
 }
 
 model User {
-  id              String       @id @default(uuid()) @db.Uuid
-  email           String       @unique
-  passwordHash    String?      @map("password_hash")
-  name            String?
-  avatarUrl       String?      @map("avatar_url")
-  provider        AuthProvider @default(LOCAL)
-  providerId      String?      @map("provider_id")
-  tier            UserTier     @default(FREE)
-  tierExpiresAt   DateTime?    @map("tier_expires_at")
-  role            Role         @default(USER)
-  isVerified      Boolean      @default(false) @map("is_verified")
-  createdAt       DateTime     @default(now()) @map("created_at")
-  updatedAt       DateTime     @updatedAt @map("updated_at")
+  id            String       @id @default(uuid()) @db.Uuid
+  email         String       @unique
+  passwordHash  String?      @map("password_hash")
+  name          String?
+  avatarUrl     String?      @map("avatar_url")
+  provider      AuthProvider @default(LOCAL)
+  providerId    String?      @map("provider_id")
+  tier          UserTier     @default(FREE)
+  tierExpiresAt DateTime?    @map("tier_expires_at")
+  role          Role         @default(USER)
+  isVerified    Boolean      @default(false) @map("is_verified")
+  createdAt     DateTime     @default(now()) @map("created_at")
+  updatedAt     DateTime     @updatedAt @map("updated_at")
 
-  measurements             Measurement?
-  refreshTokens            RefreshToken[]
-  passwordResetTokens      PasswordResetToken[]
+  measurements            Measurement?
+  refreshTokens           RefreshToken[]
+  passwordResetTokens     PasswordResetToken[]
   emailVerificationTokens EmailVerificationToken[]
-  tryOnResults             TryOnResult[]
-  stylistResults           StylistResult[]
-  orders                   Order[]
-  dailyUsages              DailyUsage[]
-  chatSessions             ChatSession[]
-  notifications            Notification[]
-  subscriptions            Subscription[]
+  tryOnResults            TryOnResult[]
+  stylistResults          StylistResult[]
+  orders                  Order[]
+  dailyUsages             DailyUsage[]
+  chatSessions            ChatSession[]
+  notifications           Notification[]
+  subscriptions           Subscription[]
+  rackItems               RackItem[]
 
   @@map("users")
 }
@@ -105,14 +106,14 @@ model Measurement {
   hip          Decimal? @db.Decimal(5, 1)
   shoulder     Decimal? @db.Decimal(5, 1)
   neck         Decimal? @db.Decimal(5, 1)
-  sleeveLength Decimal? @db.Decimal(5, 1) @map("sleeve_length")
+  sleeveLength Decimal? @map("sleeve_length") @db.Decimal(5, 1)
   wrist        Decimal? @db.Decimal(5, 1)
   thigh        Decimal? @db.Decimal(5, 1)
   knee         Decimal? @db.Decimal(5, 1)
   calf         Decimal? @db.Decimal(5, 1)
   inseam       Decimal? @db.Decimal(5, 1)
   outseam      Decimal? @db.Decimal(5, 1)
-  shirtLength  Decimal? @db.Decimal(5, 1) @map("shirt_length")
+  shirtLength  Decimal? @map("shirt_length") @db.Decimal(5, 1)
   underbust    Decimal? @db.Decimal(5, 1)
   updatedAt    DateTime @updatedAt @map("updated_at")
 
@@ -167,21 +168,36 @@ model Product {
   category      GarmentCategory @default(UPPER)
   color         String?
   price         Decimal         @db.Decimal(10, 2)
-  originalPrice Decimal?        @db.Decimal(10, 2) @map("original_price")
+  originalPrice Decimal?        @map("original_price") @db.Decimal(10, 2)
   stock         Int             @default(0)
   brand         String?         @default("StAle. SIGNATURE")
   garmentUrl    String          @map("garment_url")
   status        ProductStatus   @default(ACTIVE)
-  colors        Json?           // [{ name: string, hex: string }]
+  colors        Json? // [{ name: string, hex: string }]
   createdAt     DateTime        @default(now()) @map("created_at")
   updatedAt     DateTime        @updatedAt @map("updated_at")
 
-  images        ProductImage[]
-  tryOnResults  TryOnResult[]
+  images         ProductImage[]
+  tryOnResults   TryOnResult[]
   stylistResults StylistResult[]
-  orderItems    OrderItem[]
+  orderItems     OrderItem[]
+  rackItems      RackItem[]
 
   @@map("products")
+}
+
+model RackItem {
+  id        String   @id @default(uuid()) @db.Uuid
+  userId    String   @map("user_id") @db.Uuid
+  productId String   @map("product_id") @db.Uuid
+  createdAt DateTime @default(now()) @map("created_at")
+
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  product Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, productId])
+  @@index([userId])
+  @@map("rack_items")
 }
 
 model ProductImage {
@@ -221,24 +237,24 @@ model TryOnResult {
 }
 
 model StylistResult {
-  id                 String   @id @default(uuid()) @db.Uuid
-  userId             String   @map("user_id") @db.Uuid
-  productId          String?  @map("product_id") @db.Uuid
-  humanImageUrl      String   @map("human_image_url")
-  humanImageHash     String?  @map("human_image_hash")
-  garmentDescription String?  @map("garment_description")
-  occasion           String?
-  stylePreference    String?  @map("style_preference")
-  genderPreference   String?  @map("gender_preference")
-  budget             String?  @map("budget")
-  fitAdvice          String?  @map("fit_advice")
-  model              String?  @map("model")
-  analysisResult     Json     @map("analysis_result")
-  inputContext       Json?    @map("input_context")
-  rawProviderResponse Json?   @map("raw_provider_response")
-  cacheKey           String?  @map("cache_key")
-  expiresAt          DateTime? @map("expires_at")
-  createdAt          DateTime @default(now()) @map("created_at")
+  id                  String    @id @default(uuid()) @db.Uuid
+  userId              String    @map("user_id") @db.Uuid
+  productId           String?   @map("product_id") @db.Uuid
+  humanImageUrl       String    @map("human_image_url")
+  humanImageHash      String?   @map("human_image_hash")
+  garmentDescription  String?   @map("garment_description")
+  occasion            String?
+  stylePreference     String?   @map("style_preference")
+  genderPreference    String?   @map("gender_preference")
+  budget              String?   @map("budget")
+  fitAdvice           String?   @map("fit_advice")
+  model               String?   @map("model")
+  analysisResult      Json      @map("analysis_result")
+  inputContext        Json?     @map("input_context")
+  rawProviderResponse Json?     @map("raw_provider_response")
+  cacheKey            String?   @map("cache_key")
+  expiresAt           DateTime? @map("expires_at")
+  createdAt           DateTime  @default(now()) @map("created_at")
 
   user    User     @relation(fields: [userId], references: [id], onDelete: Cascade)
   product Product? @relation(fields: [productId], references: [id], onDelete: SetNull)
@@ -252,24 +268,24 @@ model StylistResult {
 }
 
 model Order {
-  id            String      @id @default(uuid()) @db.Uuid
-  orderCode     Int         @unique @map("order_code")
-  userId        String      @map("user_id") @db.Uuid
-  targetTier    UserTier?   @map("target_tier")
-  amount        Decimal     @db.Decimal(10, 2)
-  status        OrderStatus @default(PENDING)
-  shippingInfo  Json?       @map("shipping_info")
-  paymentMethod String?     @map("payment_method")
-  paymentProvider String?   @map("payment_provider")
-  checkoutUrl   String?     @map("checkout_url")
-  checkoutExpiresAt DateTime? @map("checkout_expires_at")
-  shippingFee   Decimal?    @db.Decimal(10, 2) @map("shipping_fee")
-  discountAmount Decimal?   @db.Decimal(10, 2) @map("discount_amount")
-  couponCode    String?     @map("coupon_code")
-  createdAt     DateTime    @default(now()) @map("created_at")
-  updatedAt     DateTime    @updatedAt @map("updated_at")
+  id                String      @id @default(uuid()) @db.Uuid
+  orderCode         Int         @unique @map("order_code")
+  userId            String      @map("user_id") @db.Uuid
+  targetTier        UserTier?   @map("target_tier")
+  amount            Decimal     @db.Decimal(10, 2)
+  status            OrderStatus @default(PENDING)
+  shippingInfo      Json?       @map("shipping_info")
+  paymentMethod     String?     @map("payment_method")
+  paymentProvider   String?     @map("payment_provider")
+  checkoutUrl       String?     @map("checkout_url")
+  checkoutExpiresAt DateTime?   @map("checkout_expires_at")
+  shippingFee       Decimal?    @map("shipping_fee") @db.Decimal(10, 2)
+  discountAmount    Decimal?    @map("discount_amount") @db.Decimal(10, 2)
+  couponCode        String?     @map("coupon_code")
+  createdAt         DateTime    @default(now()) @map("created_at")
+  updatedAt         DateTime    @updatedAt @map("updated_at")
 
-  user          User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user          User           @relation(fields: [userId], references: [id], onDelete: Cascade)
   payments      Payment[]
   items         OrderItem[]
   subscriptions Subscription[]
@@ -279,14 +295,14 @@ model Order {
 }
 
 model OrderItem {
-  id        String   @id @default(uuid()) @db.Uuid
-  orderId   String   @map("order_id") @db.Uuid
-  productId String   @map("product_id") @db.Uuid
-  quantity  Int      @default(1)
-  color     String?
-  measurementSnapshot Json? @map("measurement_snapshot")
-  price     Decimal  @db.Decimal(10, 2)
-  createdAt DateTime @default(now()) @map("created_at")
+  id                  String   @id @default(uuid()) @db.Uuid
+  orderId             String   @map("order_id") @db.Uuid
+  productId           String   @map("product_id") @db.Uuid
+  quantity            Int      @default(1)
+  color               String?
+  measurementSnapshot Json?    @map("measurement_snapshot")
+  price               Decimal  @db.Decimal(10, 2)
+  createdAt           DateTime @default(now()) @map("created_at")
 
   order   Order   @relation(fields: [orderId], references: [id], onDelete: Cascade)
   product Product @relation(fields: [productId], references: [id], onDelete: Restrict)
@@ -314,7 +330,7 @@ model DailyUsage {
   id        String       @id @default(uuid()) @db.Uuid
   userId    String       @map("user_id") @db.Uuid
   action    AiActionType
-  date      String       // Format: YYYY-MM-DD
+  date      String // Format: YYYY-MM-DD
   count     Int          @default(1)
   createdAt DateTime     @default(now()) @map("created_at")
   updatedAt DateTime     @updatedAt @map("updated_at")
@@ -342,7 +358,7 @@ model ChatSession {
 model ChatMessage {
   id        String   @id @default(uuid()) @db.Uuid
   sessionId String   @map("session_id") @db.Uuid
-  role      String   // "user" | "assistant" | "system"
+  role      String // "user" | "assistant" | "system"
   content   String   @db.Text
   tokensIn  Int?     @map("tokens_in")
   tokensOut Int?     @map("tokens_out")
@@ -381,16 +397,16 @@ enum SubscriptionStatus {
 }
 
 model Subscription {
-  id        String               @id @default(uuid()) @db.Uuid
-  userId    String               @map("user_id") @db.Uuid
-  tier      UserTier
-  orderId   String               @map("order_id") @db.Uuid
-  status    SubscriptionStatus   @default(ACTIVE)
-  autoRenew Boolean              @default(true) @map("auto_renew")
-  startsAt  DateTime             @map("starts_at")
-  expiresAt DateTime             @map("expires_at")
-  renewalReminderSentAt DateTime? @map("renewal_reminder_sent_at")
-  createdAt DateTime             @default(now()) @map("created_at")
+  id                    String             @id @default(uuid()) @db.Uuid
+  userId                String             @map("user_id") @db.Uuid
+  tier                  UserTier
+  orderId               String             @map("order_id") @db.Uuid
+  status                SubscriptionStatus @default(ACTIVE)
+  autoRenew             Boolean            @default(true) @map("auto_renew")
+  startsAt              DateTime           @map("starts_at")
+  expiresAt             DateTime           @map("expires_at")
+  renewalReminderSentAt DateTime?          @map("renewal_reminder_sent_at")
+  createdAt             DateTime           @default(now()) @map("created_at")
 
   user  User  @relation(fields: [userId], references: [id], onDelete: Cascade)
   order Order @relation(fields: [orderId], references: [id], onDelete: Restrict)

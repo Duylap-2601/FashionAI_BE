@@ -20,6 +20,7 @@ import { MaintenanceModule } from './modules/maintenance/maintenance.module';
 import { HealthModule } from './modules/health/health.module';
 import { RealtimeModule } from './modules/realtime/realtime.module';
 import { NotificationModule } from './modules/notification/notification.module';
+import { RackModule } from './modules/rack/rack.module';
 import { RequestIdMiddleware } from './common/middleware/request-id.middleware';
 import { RateLimitGuard } from './common/guards/rate-limit.guard';
 import { RedisModule } from './common/redis/redis.module';
@@ -48,6 +49,7 @@ import { RedisModule } from './common/redis/redis.module';
     MaintenanceModule,
     RealtimeModule,
     NotificationModule,
+    RackModule,
   ],
   controllers: [AppController],
   providers: [
