@@ -15,7 +15,6 @@ import { PaymentsModule } from './modules/payments/payments.module';
 import { MailModule } from './modules/mail/mail.module';
 import { StorageModule } from './modules/storage/storage.module';
 import { AdminModule } from './modules/admin/admin.module';
-import { AvatarModule } from './modules/avatar/avatar.module';
 import { ChatModule } from './modules/chat/chat.module';
 import { MaintenanceModule } from './modules/maintenance/maintenance.module';
 import { HealthModule } from './modules/health/health.module';
@@ -45,7 +44,6 @@ import { RedisModule } from './common/redis/redis.module';
     StylistModule,
     PaymentsModule,
     AdminModule,
-    AvatarModule,
     ChatModule,
     MaintenanceModule,
     RealtimeModule,
