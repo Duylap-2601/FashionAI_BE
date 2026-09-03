@@ -70,6 +70,11 @@ export class CreateProductDto {
   @IsOptional()
   brand?: string;
 
+  @ApiProperty({ description: 'Chất liệu vải', required: false, example: 'Cotton 100%' })
+  @IsString()
+  @IsOptional()
+  material?: string;
+
   @ApiProperty({ description: 'Danh sách màu sắc', required: false, type: 'array', items: { type: 'object', properties: { name: { type: 'string' }, hex: { type: 'string' } } } })
   @IsOptional()
   @Transform(parseJsonArray)

@@ -174,6 +174,7 @@ model Product {
   garmentUrl    String          @map("garment_url")
   status        ProductStatus   @default(ACTIVE)
   colors        Json? // [{ name: string, hex: string }]
+  material      String?
   createdAt     DateTime        @default(now()) @map("created_at")
   updatedAt     DateTime        @updatedAt @map("updated_at")
 

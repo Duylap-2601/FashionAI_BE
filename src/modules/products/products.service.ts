@@ -55,6 +55,10 @@ export class ProductsService {
       createData.colors = dto.colors;
     }
 
+    if (dto.material !== undefined) {
+      createData.material = dto.material;
+    }
+
     return this.prisma.product.create({
       data: createData,
       include: { images: true },
@@ -77,6 +81,7 @@ export class ProductsService {
       ...(status ? { status } : {}),
       ...(category ? { category } : {}),
       ...(color ? { color: { contains: color, mode: 'insensitive' } } : {}),
+      ...(material ? { material: { contains: material, mode: 'insensitive' } } : {}),
       ...(minPrice !== undefined || maxPrice !== undefined
         ? {
             price: {

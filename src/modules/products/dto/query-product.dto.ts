@@ -19,6 +19,11 @@ export class QueryProductDto {
   @IsOptional()
   color?: string;
 
+  @ApiProperty({ required: false, description: 'Lọc theo chất liệu vải (tìm kiếm tương đối)' })
+  @IsString()
+  @IsOptional()
+  material?: string;
+
   @ApiProperty({ required: false })
   @Type(() => Number)
   @IsNumber()

@@ -72,6 +72,7 @@ export class ProductsController {
         description: { type: 'string' },
         category: { type: 'string', enum: ['UPPER', 'LOWER', 'FULL_BODY'] },
         color: { type: 'string', example: 'Trắng' },
+        material: { type: 'string', example: 'Cotton 100%', description: 'Chất liệu vải' },
         price: { type: 'number', example: 350000 },
         status: { type: 'string', enum: ['DRAFT', 'ACTIVE', 'ARCHIVED'] },
         garmentUrl: {
