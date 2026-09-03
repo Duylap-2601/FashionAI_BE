@@ -63,6 +63,7 @@ enum NotificationType {
   PAYMENT
   PROMOTION
   SYSTEM
+  REVIEW
 }
 
 model User {
@@ -92,6 +93,8 @@ model User {
   notifications           Notification[]
   subscriptions           Subscription[]
   rackItems               RackItem[]
+  reviews                 Review[]
+  reviewReplies           ReviewReply[]
 
   @@map("users")
 }
@@ -175,6 +178,8 @@ model Product {
   status        ProductStatus   @default(ACTIVE)
   colors        Json? // [{ name: string, hex: string }]
   material      String?
+  avgRating     Decimal?        @default(0) @db.Decimal(2, 1) @map("avg_rating")
+  reviewCount   Int             @default(0) @map("review_count")
   createdAt     DateTime        @default(now()) @map("created_at")
   updatedAt     DateTime        @updatedAt @map("updated_at")
 
@@ -183,8 +188,47 @@ model Product {
   stylistResults StylistResult[]
   orderItems     OrderItem[]
   rackItems      RackItem[]
+  reviews        Review[]
 
   @@map("products")
+}
+
+model Review {
+  id        String   @id @default(uuid()) @db.Uuid
+  userId    String   @map("user_id") @db.Uuid
+  productId String   @map("product_id") @db.Uuid
+  orderId   String   @map("order_id") @db.Uuid
+  rating    Int
+  comment   String?  @db.Text
+  images    Json?    // [{ url: string }]
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  product Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+  order   Order   @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  replies ReviewReply[]
+
+  @@unique([userId, productId, orderId])
+  @@index([productId])
+  @@index([userId])
+  @@map("reviews")
+}
+
+model ReviewReply {
+  id        String   @id @default(uuid()) @db.Uuid
+  reviewId  String   @map("review_id") @db.Uuid
+  userId    String   @map("user_id") @db.Uuid
+  content   String   @db.Text
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  review Review @relation(fields: [reviewId], references: [id], onDelete: Cascade)
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([reviewId])
+  @@index([userId])
+  @@map("review_replies")
 }
 
 model RackItem {
@@ -290,6 +334,7 @@ model Order {
   payments      Payment[]
   items         OrderItem[]
   subscriptions Subscription[]
+  reviews       Review[]
 
   @@index([userId])
   @@map("orders")

@@ -87,4 +87,31 @@ export class NotificationService {
     });
     return { updated: result.count };
   }
+
+  async markReviewNotificationsRead(userId: string, reviewIds: string[]) {
+    if (!reviewIds.length) return { updated: 0 };
+    // Prisma JSON filter doesn't support 'in' directly, so we fetch and filter
+    const notifications = await this.prisma.notification.findMany({
+      where: {
+        userId,
+        type: NotificationType.REVIEW,
+        isRead: false,
+      },
+      select: { id: true, data: true },
+    });
+
+    const targetIds = new Set(reviewIds);
+    const toUpdate = notifications.filter((n) => {
+      const reviewId = (n.data as Record<string, unknown>)?.reviewId;
+      return typeof reviewId === 'string' && targetIds.has(reviewId);
+    });
+
+    if (!toUpdate.length) return { updated: 0 };
+
+    const result = await this.prisma.notification.updateMany({
+      where: { id: { in: toUpdate.map((n) => n.id) } },
+      data: { isRead: true },
+    });
+    return { updated: result.count };
+  }
 }

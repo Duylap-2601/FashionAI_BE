@@ -27,12 +27,16 @@ import { FileValidationPipe } from '../../common/pipes/file-validation.pipe';
 import { CreateProductDto } from './dto/create-product.dto';
 import { QueryProductDto } from './dto/query-product.dto';
 import { ProductsService } from './products.service';
+import { ReviewsService } from './reviews.service';
 import { buildApiResponse } from '../../common/utils/api-response.util';
 
 @ApiTags('Products')
 @Controller('products')
 export class ProductsController {
-  constructor(private readonly productsService: ProductsService) {}
+  constructor(
+    private readonly productsService: ProductsService,
+    private readonly reviewsService: ReviewsService,
+  ) {}
 
   @Public()
   @Get()
@@ -54,6 +58,14 @@ export class ProductsController {
   async findOne(@Req() req: Request, @Param('id') id: string) {
     const data = await this.productsService.findOne(id);
     return buildApiResponse(req, 'PRODUCT_FETCH_SUCCESS', 'Lấy thông tin sản phẩm thành công', data);
+  }
+
+  @Public()
+  @Get(':id/reviews/stats')
+  @ApiOperation({ summary: 'Thống kê đánh giá sản phẩm (avg rating, distribution)' })
+  async getReviewStats(@Req() req: Request, @Param('id') id: string) {
+    const data = await this.reviewsService.getProductStats(id);
+    return buildApiResponse(req, 'REVIEW_STATS_SUCCESS', 'Lấy thống kê đánh giá thành công', data);
   }
 
   @Post()
