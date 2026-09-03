@@ -70,6 +70,7 @@ export class ProductsService {
       search,
       category,
       color,
+      material,
       minPrice,
       maxPrice,
       status = ProductStatus.ACTIVE,
