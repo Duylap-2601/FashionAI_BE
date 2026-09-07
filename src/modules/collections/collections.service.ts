@@ -10,6 +10,7 @@ import { CreateCollectionDto } from './dto/create-collection.dto';
 import { UpdateCollectionDto } from './dto/update-collection.dto';
 import { QueryCollectionDto } from './dto/query-collection.dto';
 import { AddProductDto } from './dto/add-product.dto';
+import { Prisma } from '@prisma/client';
 
 @Injectable()
 export class CollectionsService {
@@ -206,7 +207,7 @@ export class CollectionsService {
       );
     }
 
-    const updateData: any = {};
+    const updateData: Prisma.CollectionUpdateInput = {};
 
     if (dto.name) {
       // Check name uniqueness (exclude current collection)
@@ -351,7 +352,7 @@ export class CollectionsService {
 
   async getProducts(
     collectionId: string,
-    query: any,
+    query: QueryCollectionDto,
   ) {
     await this.findOne(collectionId);
 
