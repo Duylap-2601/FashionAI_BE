@@ -43,7 +43,7 @@ import {
 import { JwtAuthGuard } from './guards/jwt-auth.guard';
 import { AuthenticatedUser } from './interfaces/authenticated-user.interface';
 import { Platform } from './types/platform.type';
-import { readPlatformFromState } from './strategies/signed-state.store';
+import { readPlatformFromState, readRedirectUriFromState } from './strategies/signed-state.store';
 import { buildApiResponse } from '../../common/utils/api-response.util';
 
 type AuthTokens = Awaited<ReturnType<AuthService['login']>>;
@@ -88,8 +88,9 @@ export class AuthController {
   ) {
     if (error || !req.user) {
       const platform = readPlatformFromState(req.query?.state);
+      const redirectUri = readRedirectUriFromState(req.query?.state);
       if (platform === 'mobile') {
-        const errorUrl = this.buildMobileCallbackUrl();
+        const errorUrl = this.buildMobileCallbackUrl(redirectUri);
         errorUrl.searchParams.set('error', error || 'google_auth_failed');
         return res.redirect(errorUrl.toString());
       }
@@ -99,6 +100,7 @@ export class AuthController {
     }
 
     const platform = req.user.platform ?? 'web';
+    const redirectUri = readRedirectUriFromState(req.query?.state);
     const tokens = await this.authService.handleGoogleLogin(req.user);
 
     if (platform === 'mobile') {
@@ -109,7 +111,7 @@ export class AuthController {
         accessTokenExpiresAt: tokens.accessTokenExpiresAt,
         refreshTokenExpiresAt: tokens.refreshTokenExpiresAt,
       });
-      const redirectUrl = this.buildMobileCallbackUrl();
+      const redirectUrl = this.buildMobileCallbackUrl(redirectUri);
       redirectUrl.searchParams.set('code', code);
       return res.redirect(redirectUrl.toString());
     }
@@ -416,10 +418,26 @@ export class AuthController {
     return this.config.get<string>('REFRESH_COOKIE_NAME') ?? 'refresh_token';
   }
 
-  private buildMobileCallbackUrl() {
-    return new URL(
-      this.config.get<string>('MOBILE_GOOGLE_CALLBACK_URL') || 'myapp://auth',
-    );
+  private buildMobileCallbackUrl(redirectUri?: string) {
+    const fallback = this.config.get<string>('MOBILE_GOOGLE_CALLBACK_URL') || 'fashionai://auth';
+    const candidate = this.parseMobileRedirectUrl(redirectUri);
+    if (candidate && this.isAllowedMobileRedirectUrl(candidate)) return candidate;
+    return new URL(fallback);
+  }
+
+  private parseMobileRedirectUrl(value?: string) {
+    if (!value) return undefined;
+    try {
+      return new URL(value);
+    } catch {
+      return undefined;
+    }
+  }
+
+  private isAllowedMobileRedirectUrl(url: URL) {
+    if (url.protocol === 'fashionai:') return true;
+    if (url.protocol === 'exp:' && this.config.get<string>('NODE_ENV') !== 'production') return true;
+    return false;
   }
 
   private buildGoogleFrontendRedirect() {
