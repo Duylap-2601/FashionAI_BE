@@ -21,6 +21,7 @@ import { HealthModule } from './modules/health/health.module';
 import { RealtimeModule } from './modules/realtime/realtime.module';
 import { NotificationModule } from './modules/notification/notification.module';
 import { RackModule } from './modules/rack/rack.module';
+import { CollectionsModule } from './modules/collections/collections.module';
 import { RequestIdMiddleware } from './common/middleware/request-id.middleware';
 import { RateLimitGuard } from './common/guards/rate-limit.guard';
 import { RedisModule } from './common/redis/redis.module';
@@ -50,6 +51,7 @@ import { RedisModule } from './common/redis/redis.module';
     RealtimeModule,
     NotificationModule,
     RackModule,
+    CollectionsModule,
   ],
   controllers: [AppController],
   providers: [
