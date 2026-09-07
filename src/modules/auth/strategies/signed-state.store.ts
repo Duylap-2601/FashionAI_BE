@@ -20,7 +20,7 @@ const SEPARATOR = '.';
  * top-level thì Set-Cookie đó là cookie third-party và bị trình duyệt chặn, state
  * không bao giờ được lưu và callback luôn trả 401.
  *
- * Ở đây state = nonce + thời điểm phát hành + platform + HMAC của ba phần đó.
+ * Ở đây state = nonce + thời điểm phát hành + platform + redirect URI + HMAC.
  * Server chỉ cần secret để xác minh nên không phải nhớ gì giữa hai request, và kẻ
  * tấn công không ký được state hợp lệ nên vẫn chặn được CSRF trên vòng OAuth.
  *
@@ -32,8 +32,19 @@ const SEPARATOR = '.';
 export function readPlatformFromState(rawState: unknown): Platform {
   if (typeof rawState !== 'string') return 'web';
   const parts = rawState.split(SEPARATOR);
-  if (parts.length !== 4) return 'web';
+  if (parts.length < 4) return 'web';
   return normalizePlatform(parts[2]);
+}
+
+export function readRedirectUriFromState(rawState: unknown): string | undefined {
+  if (typeof rawState !== 'string') return undefined;
+  const parts = rawState.split(SEPARATOR);
+  if (parts.length < 5) return undefined;
+  try {
+    return Buffer.from(parts[3], 'base64url').toString('utf8') || undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 export class SignedStateStore {
@@ -53,7 +64,9 @@ export class SignedStateStore {
       const nonce = crypto.randomBytes(16).toString('base64url');
       const issuedAt = Math.floor(Date.now() / 1000).toString(36);
       const platform = normalizePlatform(req.query?.platform);
-      const payload = `${nonce}${SEPARATOR}${issuedAt}${SEPARATOR}${platform}`;
+      const redirectUri = typeof req.query?.redirect_uri === 'string' ? req.query.redirect_uri : '';
+      const encodedRedirectUri = Buffer.from(redirectUri, 'utf8').toString('base64url');
+      const payload = `${nonce}${SEPARATOR}${issuedAt}${SEPARATOR}${platform}${SEPARATOR}${encodedRedirectUri}`;
 
       callback(null, `${payload}${SEPARATOR}${this.sign(payload)}`);
     } catch (err) {
@@ -76,12 +89,18 @@ export class SignedStateStore {
     }
 
     const parts = providedState.split(SEPARATOR);
-    if (parts.length !== 4) {
+    if (parts.length < 4 || parts.length > 5) {
       return callback(null, false, { message: 'OAuth state không hợp lệ.' });
     }
 
-    const [nonce, issuedAt, platform, signature] = parts;
-    const payload = `${nonce}${SEPARATOR}${issuedAt}${SEPARATOR}${platform}`;
+    const [nonce, issuedAt, platform, maybeRedirectUri, maybeSignature] = parts;
+    // Support both old format (4 parts: nonce.issuedAt.platform.signature)
+    // and new format (5 parts: nonce.issuedAt.platform.redirectUri.signature)
+    const encodedRedirectUri = parts.length === 5 ? maybeRedirectUri : '';
+    const signature = parts.length === 5 ? maybeSignature : maybeRedirectUri;
+    const payload = parts.length === 5
+      ? `${nonce}${SEPARATOR}${issuedAt}${SEPARATOR}${platform}${SEPARATOR}${encodedRedirectUri}`
+      : `${nonce}${SEPARATOR}${issuedAt}${SEPARATOR}${platform}`;
 
     if (!this.timingSafeEqual(this.sign(payload), signature)) {
       return callback(null, false, { message: 'OAuth state không hợp lệ.' });
