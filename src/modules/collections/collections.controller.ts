@@ -6,6 +6,7 @@ import {
   HttpCode,
   HttpStatus,
   Param,
+  ParseUUIDPipe,
   Patch,
   Post,
   Query,
@@ -145,7 +146,7 @@ export class CollectionsController {
   @ApiOperation({ summary: 'Chi tiết bộ sưu tập theo ID (Admin Only)' })
   async findOne(
     @Req() req: Request,
-    @Param('id') id: string,
+    @Param('id', ParseUUIDPipe) id: string,
   ) {
     const data = await this.collectionsService.findOne(id);
     return buildApiResponse(
@@ -182,7 +183,7 @@ export class CollectionsController {
   @UseInterceptors(AnyFilesInterceptor())
   async update(
     @Req() req: Request,
-    @Param('id') id: string,
+    @Param('id', ParseUUIDPipe) id: string,
     @Body() dto: UpdateCollectionDto,
     @UploadedFiles() files?: Express.Multer.File[],
   ) {
@@ -213,7 +214,7 @@ export class CollectionsController {
   @ApiOperation({ summary: 'Xóa bộ sưu tập (Admin Only)' })
   async remove(
     @Req() req: Request,
-    @Param('id') id: string,
+    @Param('id', ParseUUIDPipe) id: string,
   ) {
     const data = await this.collectionsService.remove(id);
     return buildApiResponse(
@@ -232,7 +233,7 @@ export class CollectionsController {
   @ApiOperation({ summary: 'Thêm sản phẩm vào bộ sưu tập (Admin Only)' })
   async addProduct(
     @Req() req: Request,
-    @Param('collectionId') collectionId: string,
+    @Param('collectionId', ParseUUIDPipe) collectionId: string,
     @Body() dto: AddProductDto,
   ) {
     const data = await this.collectionsService.addProduct(collectionId, dto);
@@ -251,8 +252,8 @@ export class CollectionsController {
   @ApiOperation({ summary: 'Xóa sản phẩm khỏi bộ sưu tập (Admin Only)' })
   async removeProduct(
     @Req() req: Request,
-    @Param('collectionId') collectionId: string,
-    @Param('productId') productId: string,
+    @Param('collectionId', ParseUUIDPipe) collectionId: string,
+    @Param('productId', ParseUUIDPipe) productId: string,
   ) {
     const data = await this.collectionsService.removeProduct(
       collectionId,
@@ -271,7 +272,7 @@ export class CollectionsController {
   @ApiOperation({ summary: 'Danh sách sản phẩm trong bộ sưu tập (Public)' })
   async getProducts(
     @Req() req: Request,
-    @Param('collectionId') collectionId: string,
+    @Param('collectionId', ParseUUIDPipe) collectionId: string,
     @Query() query: QueryCollectionDto,
   ) {
     const result = await this.collectionsService.getProducts(
