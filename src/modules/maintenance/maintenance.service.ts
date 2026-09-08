@@ -83,4 +83,24 @@ export class MaintenanceService {
       this.logger.error(`Gửi nhắc gia hạn thất bại: ${message}`);
     }
   }
+
+  @Cron(CronExpression.EVERY_5_MINUTES, { name: 'keep-alive-ping' })
+  async keepAlive() {
+    if (!this.enabled) return;
+
+    const baseUrl = this.config.get<string>('PUBLIC_API_URL') ?? 'http://localhost:3002';
+    const healthUrl = `${baseUrl.replace(/\/$/, '')}/health`;
+
+    try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 10000);
+      const res = await fetch(healthUrl, { signal: controller.signal });
+      clearTimeout(timeoutId);
+
+      this.logger.log(`Keep-alive ping: ${res.status} ${res.statusText} -> ${healthUrl}`);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'unknown';
+      this.logger.warn(`Keep-alive ping failed: ${message} (${healthUrl})`);
+    }
+  }
 }
