@@ -117,19 +117,16 @@ export class AuthController {
     }
 
     this.setRefreshCookie(res, tokens.refreshToken);
+    this.setAuthMarkerCookie(res);
+    const code = await this.authCodeService.createCode({
+      user: tokens.user,
+      accessToken: tokens.accessToken,
+      refreshToken: tokens.refreshToken,
+      accessTokenExpiresAt: tokens.accessTokenExpiresAt,
+      refreshTokenExpiresAt: tokens.refreshTokenExpiresAt,
+    });
     const redirectUrl = this.buildGoogleFrontendRedirect();
-    redirectUrl.searchParams.set('accessToken', tokens.accessToken);
-    redirectUrl.searchParams.set(
-      'user',
-      Buffer.from(
-        JSON.stringify({
-          id: tokens.user.id,
-          email: tokens.user.email,
-          name: tokens.user.name,
-          accessTokenExpiresAt: tokens.accessTokenExpiresAt,
-        }),
-      ).toString('base64url'),
-    );
+    redirectUrl.searchParams.set('code', code);
     return res.redirect(redirectUrl.toString());
   }
 
@@ -140,10 +137,25 @@ export class AuthController {
     summary: 'Đổi authorization code lấy tokens (cho mobile)',
     description: 'Mobile app nhận code từ Google OAuth redirect, gọi endpoint này để lấy tokens. Code dùng một lần, TTL 5 phút.',
   })
-  async exchange(@Req() req: Request, @Body() dto: ExchangeDto) {
+  async exchange(
+    @Req() req: Request,
+    @Res({ passthrough: true }) res: Response,
+    @Body() dto: ExchangeDto,
+    @CurrentPlatform() platform: Platform,
+  ) {
     const payload = await this.authCodeService.consumeCode(dto.code);
     if (!payload) {
       throw new UnauthorizedException('Invalid or expired authorization code');
+    }
+
+    if (platform !== 'mobile') {
+      this.setRefreshCookie(res, payload.refreshToken);
+      this.setAuthMarkerCookie(res);
+      return buildApiResponse(req, 'AUTH_EXCHANGE_SUCCESS', 'Tokens exchanged', {
+        user: payload.user,
+        accessToken: payload.accessToken,
+        accessTokenExpiresAt: payload.accessTokenExpiresAt,
+      });
     }
 
     return buildApiResponse(req, 'AUTH_EXCHANGE_SUCCESS', 'Tokens exchanged', {
@@ -215,6 +227,7 @@ export class AuthController {
     }
 
     this.setRefreshCookie(res, tokens.refreshToken);
+    this.setAuthMarkerCookie(res);
     return buildApiResponse(req, 'AUTH_TOKEN_REFRESHED', 'Token refreshed', {
       accessToken: tokens.accessToken,
       accessTokenExpiresAt: tokens.accessTokenExpiresAt,
@@ -242,6 +255,7 @@ export class AuthController {
 
     if (platform !== 'mobile') {
       this.clearRefreshCookie(res);
+      this.clearAuthMarkerCookie(res);
     }
 
     return buildApiResponse(req, 'AUTH_LOGOUT_SUCCESS', 'Đăng xuất thành công', null);
@@ -263,6 +277,7 @@ export class AuthController {
 
     if (platform !== 'mobile') {
       this.clearRefreshCookie(res);
+      this.clearAuthMarkerCookie(res);
     }
 
     return buildApiResponse(
@@ -365,6 +380,7 @@ export class AuthController {
     }
 
     this.setRefreshCookie(res, tokens.refreshToken);
+    this.setAuthMarkerCookie(res);
     return buildApiResponse(req, code, 'Authentication successful', {
       user: tokens.user,
       accessToken: tokens.accessToken,
@@ -402,6 +418,19 @@ export class AuthController {
     res.clearCookie(this.getRefreshCookieName(), this.buildCookieOptions());
   }
 
+  private setAuthMarkerCookie(res: Response) {
+    res.cookie(this.getAuthMarkerCookieName(), '1', {
+      ...this.buildMarkerCookieOptions(),
+      maxAge: ms(
+        (this.config.get<string>('JWT_REFRESH_EXPIRES_IN') ?? '30d') as StringValue,
+      ),
+    });
+  }
+
+  private clearAuthMarkerCookie(res: Response) {
+    res.clearCookie(this.getAuthMarkerCookieName(), this.buildMarkerCookieOptions());
+  }
+
   private buildCookieOptions(): CookieOptions {
     return {
       httpOnly: true,
@@ -416,6 +445,20 @@ export class AuthController {
 
   private getRefreshCookieName() {
     return this.config.get<string>('REFRESH_COOKIE_NAME') ?? 'refresh_token';
+  }
+
+  private buildMarkerCookieOptions(): CookieOptions {
+    const refreshOptions = this.buildCookieOptions();
+    return {
+      secure: refreshOptions.secure,
+      sameSite: refreshOptions.sameSite,
+      path: '/',
+      httpOnly: false,
+    };
+  }
+
+  private getAuthMarkerCookieName() {
+    return this.config.get<string>('AUTH_MARKER_COOKIE_NAME') ?? 'auth_marker';
   }
 
   private buildMobileCallbackUrl(redirectUri?: string) {
