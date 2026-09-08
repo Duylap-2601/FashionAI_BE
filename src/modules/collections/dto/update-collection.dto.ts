@@ -1,5 +1,5 @@
-import { IsString, IsBoolean, IsOptional, Matches, IsNumber } from 'class-validator';
-import { PartialType } from '@nestjs/swagger';
+import { IsString, IsBoolean, IsOptional, Matches, IsNumber, IsArray } from 'class-validator';
+import { PartialType, ApiProperty } from '@nestjs/swagger';
 import { CreateCollectionDto } from './create-collection.dto';
 
 export class UpdateCollectionDto extends PartialType(CreateCollectionDto) {
@@ -26,5 +26,13 @@ export class UpdateCollectionDto extends PartialType(CreateCollectionDto) {
   @IsOptional()
   displayOrder?: number;
 
-  // Note: cover images can be replaced via files in multipart/form-data
+  @ApiProperty({
+    description: 'Array of cover image URLs (when not uploading files)',
+    example: ['https://example.com/cover1.jpg'],
+    required: false,
+  })
+  @IsArray()
+  @IsString({ each: true })
+  @IsOptional()
+  coverImages?: string[];
 }

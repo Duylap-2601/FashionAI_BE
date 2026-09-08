@@ -1,4 +1,4 @@
-import { IsString, IsNotEmpty, IsBoolean, IsOptional, Matches } from 'class-validator';
+import { IsString, IsNotEmpty, IsBoolean, IsOptional, Matches, IsArray } from 'class-validator';
 import { ApiProperty } from '@nestjs/swagger';
 
 export class CreateCollectionDto {
@@ -46,5 +46,13 @@ export class CreateCollectionDto {
 
   // Note: coverImages are uploaded as files via multipart/form-data
   // Field name: 'coverImages' (array of up to 3 files)
-  // Validation happens in service after file upload
+  @ApiProperty({
+    description: 'Array of cover image URLs (when not uploading files)',
+    example: ['https://example.com/cover1.jpg'],
+    required: false,
+  })
+  @IsArray()
+  @IsString({ each: true })
+  @IsOptional()
+  coverImages?: string[];
 }
