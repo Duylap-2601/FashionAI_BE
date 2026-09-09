@@ -22,6 +22,13 @@ export class HealthController {
   ) {}
 
   @Public()
+  @Get('liveness')
+  @ApiOperation({ summary: 'Kiểm tra tiến trình còn sống, không đụng DB/Redis (dùng cho keep-alive ping)' })
+  liveness() {
+    return { status: 'ok', uptime: process.uptime() };
+  }
+
+  @Public()
   @Get()
   @HealthCheck()
   @ApiOperation({ summary: 'Kiểm tra trạng thái ứng dụng, database, Redis và WebSocket' })

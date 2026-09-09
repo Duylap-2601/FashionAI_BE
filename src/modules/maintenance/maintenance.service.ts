@@ -84,12 +84,12 @@ export class MaintenanceService {
     }
   }
 
-  @Cron(CronExpression.EVERY_5_MINUTES, { name: 'keep-alive-ping' })
+  @Cron(CronExpression.EVERY_10_MINUTES, { name: 'keep-alive-ping' })
   async keepAlive() {
     if (!this.enabled) return;
 
     const baseUrl = this.config.get<string>('PUBLIC_API_URL') ?? 'http://localhost:3002';
-    const healthUrl = `${baseUrl.replace(/\/$/, '')}/health`;
+    const healthUrl = `${baseUrl.replace(/\/$/, '')}/health/liveness`;
 
     try {
       const controller = new AbortController();
