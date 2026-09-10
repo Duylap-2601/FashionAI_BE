@@ -44,12 +44,46 @@ enum OrderStatus {
   PENDING
   PAID
   CONFIRMED
+  MEASUREMENT_REVIEW
+  MEASUREMENT_CONFIRMED
+  TAILORING
+  QUALITY_CHECK
+  READY_TO_SHIP
   SHIPPING
   DELIVERED
   CANCELLED
   RETURNED
   EXPIRED
   FAILED
+}
+
+enum PaymentStatus {
+  PENDING
+  PAID
+  FAILED
+  REFUNDED
+  PARTIALLY_REFUNDED
+}
+
+enum RefundStatus {
+  NONE
+  REQUIRED
+  PROCESSING
+  COMPLETED
+}
+
+enum ShipmentStatus {
+  PENDING
+  CREATED
+  PICKING
+  PICKED
+  IN_TRANSIT
+  DELIVERING
+  DELIVERED
+  DELIVERY_FAILED
+  RETURNING
+  RETURNED
+  CANCELLED
 }
 
 enum AiActionType {
@@ -328,6 +362,10 @@ model Order {
   shippingFee       Decimal?    @map("shipping_fee") @db.Decimal(10, 2)
   discountAmount    Decimal?    @map("discount_amount") @db.Decimal(10, 2)
   couponCode        String?     @map("coupon_code")
+  fulfillmentFlowVersion Int?    @map("fulfillment_flow_version")
+  paymentStatus     PaymentStatus? @map("payment_status")
+  refundStatus      RefundStatus @default(NONE) @map("refund_status")
+  refundEvidence    Json?       @map("refund_evidence")
   createdAt         DateTime    @default(now()) @map("created_at")
   updatedAt         DateTime    @updatedAt @map("updated_at")
 
@@ -336,6 +374,8 @@ model Order {
   items         OrderItem[]
   subscriptions Subscription[]
   reviews       Review[]
+  shipments     Shipment[]
+  events        OrderEvent[]
 
   @@index([userId])
   @@map("orders")
@@ -348,6 +388,9 @@ model OrderItem {
   quantity            Int      @default(1)
   color               String?
   measurementSnapshot Json?    @map("measurement_snapshot")
+  productNameSnapshot String?  @map("product_name_snapshot")
+  fabricSnapshot      String?  @map("fabric_snapshot")
+  measurementReview   Json?    @map("measurement_review")
   price               Decimal  @db.Decimal(10, 2)
   createdAt           DateTime @default(now()) @map("created_at")
 
@@ -357,6 +400,66 @@ model OrderItem {
   @@index([orderId])
   @@index([productId])
   @@map("order_items")
+}
+
+model Shipment {
+  id                   String         @id @default(uuid()) @db.Uuid
+  orderId              String         @map("order_id") @db.Uuid
+  provider             String         @default("GHN")
+  providerOrderCode    String?        @map("provider_order_code")
+  requestKey           String         @unique @map("request_key")
+  status               ShipmentStatus @default(PENDING)
+  shippingFee          Decimal?       @map("shipping_fee") @db.Decimal(10, 2)
+  quotedShippingFee    Decimal?       @map("quoted_shipping_fee") @db.Decimal(10, 2)
+  actualShippingFee    Decimal?       @map("actual_shipping_fee") @db.Decimal(10, 2)
+  expectedDeliveryTime DateTime?      @map("expected_delivery_time")
+  trackingData         Json?          @map("tracking_data")
+  lastSyncedAt         DateTime?      @map("last_synced_at")
+  createdAt            DateTime       @default(now()) @map("created_at")
+  updatedAt            DateTime       @updatedAt @map("updated_at")
+
+  order  Order        @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  events OrderEvent[]
+
+  @@unique([provider, providerOrderCode])
+  @@index([orderId])
+  @@map("shipments")
+}
+
+model WebhookEvent {
+  id                String    @id @default(uuid()) @db.Uuid
+  provider          String
+  eventKey          String    @unique @map("event_key")
+  providerOrderCode String?   @map("provider_order_code")
+  eventType         String?   @map("event_type")
+  payload           Json?
+  processedAt       DateTime  @default(now()) @map("processed_at")
+
+  @@index([provider, providerOrderCode])
+  @@map("webhook_events")
+}
+
+model OrderEvent {
+  id               String       @id @default(uuid()) @db.Uuid
+  orderId          String       @map("order_id") @db.Uuid
+  shipmentId       String?      @map("shipment_id") @db.Uuid
+  type             String
+  fromStatus       OrderStatus? @map("from_status")
+  toStatus         OrderStatus? @map("to_status")
+  source           String
+  actorId          String?      @map("actor_id") @db.Uuid
+  occurredAt       DateTime     @default(now()) @map("occurred_at")
+  recordedAt       DateTime     @default(now()) @map("recorded_at")
+  deduplicationKey String?      @unique @map("deduplication_key")
+  publicMessage    String?      @map("public_message") @db.Text
+  internalNote     String?      @map("internal_note") @db.Text
+  metadata         Json?
+
+  order    Order     @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  shipment Shipment? @relation(fields: [shipmentId], references: [id], onDelete: SetNull)
+
+  @@index([orderId, occurredAt])
+  @@map("order_events")
 }
 
 model Payment {

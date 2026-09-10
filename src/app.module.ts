@@ -22,6 +22,7 @@ import { RealtimeModule } from './modules/realtime/realtime.module';
 import { NotificationModule } from './modules/notification/notification.module';
 import { RackModule } from './modules/rack/rack.module';
 import { CollectionsModule } from './modules/collections/collections.module';
+import { ShippingModule } from './modules/shipping/shipping.module';
 import { RequestIdMiddleware } from './common/middleware/request-id.middleware';
 import { RateLimitGuard } from './common/guards/rate-limit.guard';
 import { RedisModule } from './common/redis/redis.module';
@@ -52,6 +53,7 @@ import { RedisModule } from './common/redis/redis.module';
     NotificationModule,
     RackModule,
     CollectionsModule,
+    ShippingModule,
   ],
   controllers: [AppController],
   providers: [

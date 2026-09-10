@@ -21,6 +21,9 @@ import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { AuthenticatedUser } from '../auth/interfaces/authenticated-user.interface';
 import { buildApiResponse } from '../../common/utils/api-response.util';
 import { CreateOrderDto } from './dto/create-order.dto';
+import { CreateMeasurementReviewDto, UpdateItemMeasurementDto } from './dto/measurement-review.dto';
+import { RefundOrderDto } from './dto/refund-order.dto';
+import { CancelShipmentDto, CreateShipmentDto } from './dto/shipment.dto';
 import { UpdateOrderStatusDto } from './dto/update-order-status.dto';
 import { OrdersService } from './orders.service';
 
@@ -73,6 +76,17 @@ export class OrdersController {
     );
   }
 
+  @Get(':id/tracking')
+  @ApiOperation({ summary: 'Theo dõi vận chuyển của đơn hàng' })
+  async getTracking(
+    @Req() req: Request,
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id') id: string,
+  ) {
+    const data = await this.ordersService.getTracking(user.id, id);
+    return buildApiResponse(req, 'ORDER_TRACKING_FETCH_SUCCESS', 'Lấy theo dõi vận chuyển thành công', data);
+  }
+
   @Get(':id')
   @ApiOperation({ summary: 'Chi tiết đơn hàng' })
   async findOne(
@@ -82,6 +96,21 @@ export class OrdersController {
   ) {
     const data = await this.ordersService.findOne(user.id, id);
     return buildApiResponse(req, 'ORDER_FETCH_SUCCESS', 'Lấy chi tiết đơn hàng thành công', data);
+  }
+
+  @Patch(':id/status')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(Role.ADMIN)
+  @ApiBearerAuth('access-token')
+  @ApiOperation({ summary: 'Cập nhật trạng thái đơn hàng (Admin Only)' })
+  async updateStatus(
+    @Req() req: Request,
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id') id: string,
+    @Body() dto: UpdateOrderStatusDto,
+  ) {
+    const data = await this.ordersService.updateStatus(id, dto, user.id);
+    return buildApiResponse(req, 'ORDER_STATUS_UPDATED', 'Cập nhật trạng thái đơn hàng thành công', data);
   }
 
   @Patch(':id/cancel')
@@ -95,17 +124,73 @@ export class OrdersController {
     return buildApiResponse(req, 'ORDER_CANCEL_SUCCESS', 'Hủy đơn hàng thành công', data);
   }
 
-  @Patch(':id/status')
+  @Patch(':orderId/items/:itemId/measurement')
+  @ApiOperation({ summary: 'Khách gửi lại snapshot số đo cho item có yêu cầu đang mở' })
+  async updateItemMeasurement(
+    @Req() req: Request,
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('orderId') orderId: string,
+    @Param('itemId') itemId: string,
+    @Body() dto: UpdateItemMeasurementDto,
+  ) {
+    const data = await this.ordersService.updateItemMeasurement(user.id, orderId, itemId, dto);
+    return buildApiResponse(req, 'ORDER_MEASUREMENT_UPDATED', 'Cập nhật số đo đơn hàng thành công', data);
+  }
+
+  @Post(':orderId/items/:itemId/measurement-review')
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(Role.ADMIN)
-  @ApiBearerAuth('access-token')
-  @ApiOperation({ summary: 'Cập nhật trạng thái đơn hàng (Admin Only)' })
-  async updateStatus(
+  @ApiOperation({ summary: 'Admin mở yêu cầu khách bổ sung số đo cho item' })
+  async requestMeasurementReview(
     @Req() req: Request,
-    @Param('id') id: string,
-    @Body() dto: UpdateOrderStatusDto,
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('orderId') orderId: string,
+    @Param('itemId') itemId: string,
+    @Body() dto: CreateMeasurementReviewDto,
   ) {
-    const data = await this.ordersService.updateStatus(id, dto.status);
-    return buildApiResponse(req, 'ORDER_STATUS_UPDATED', 'Cập nhật trạng thái đơn hàng thành công', data);
+    const data = await this.ordersService.requestMeasurementReview(orderId, itemId, dto, user.id);
+    return buildApiResponse(req, 'ORDER_MEASUREMENT_REVIEW_CREATED', 'Đã tạo yêu cầu bổ sung số đo', data);
+  }
+
+  @Patch(':id/refund')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(Role.ADMIN)
+  @ApiOperation({ summary: 'Admin cập nhật xử lý hoàn tiền' })
+  async updateRefund(
+    @Req() req: Request,
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id') id: string,
+    @Body() dto: RefundOrderDto,
+  ) {
+    const data = await this.ordersService.updateRefund(id, dto, user.id);
+    return buildApiResponse(req, 'ORDER_REFUND_UPDATED', 'Cập nhật hoàn tiền thành công', data);
+  }
+
+  @Post(':id/shipment')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(Role.ADMIN)
+  @ApiOperation({ summary: 'Admin tạo vận đơn GHN cho đơn sẵn sàng giao' })
+  async createShipment(
+    @Req() req: Request,
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id') id: string,
+    @Body() dto: CreateShipmentDto,
+  ) {
+    const data = await this.ordersService.createShipment(id, dto, user.id);
+    return buildApiResponse(req, 'ORDER_SHIPMENT_CREATED', 'Tạo vận đơn thành công', data);
+  }
+
+  @Post(':id/shipment/cancel')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(Role.ADMIN)
+  @ApiOperation({ summary: 'Admin hủy vận đơn active' })
+  async cancelShipment(
+    @Req() req: Request,
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id') id: string,
+    @Body() dto: CancelShipmentDto,
+  ) {
+    const data = await this.ordersService.cancelShipment(id, dto, user.id);
+    return buildApiResponse(req, 'ORDER_SHIPMENT_CANCELLED', 'Hủy vận đơn thành công', data);
   }
 }

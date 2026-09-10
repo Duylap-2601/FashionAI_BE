@@ -8,7 +8,7 @@ import {
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../../database/prisma.service';
-import { UserTier, OrderStatus, Order, Prisma } from '@prisma/client';
+import { UserTier, OrderStatus, Order, Prisma, PaymentStatus } from '@prisma/client';
 import * as crypto from 'crypto';
 import { createWithUniqueOrderCode } from '../../common/utils/order-code.util';
 import { CheckoutDto } from './dto/checkout.dto';
@@ -139,6 +139,7 @@ export class PaymentsService {
           targetTier,
           amount: TIER_PRICES[targetTier],
           status: OrderStatus.PENDING,
+          paymentStatus: PaymentStatus.PENDING,
         },
       }),
     );
@@ -435,6 +436,17 @@ export class PaymentsService {
         where: { id: order.id },
         data: { status: OrderStatus.CANCELLED },
       }),
+      this.prisma.orderEvent.create({
+        data: {
+          orderId: order.id,
+          type: 'PAYMENT_CANCELLED',
+          source: 'PAYMENT',
+          fromStatus: OrderStatus.PENDING,
+          toStatus: OrderStatus.CANCELLED,
+          publicMessage: 'Giao dịch thanh toán đã bị hủy.',
+          deduplicationKey: `payment:${provider}:${paymentData?.transaction?.transaction_id ?? Date.now()}:cancelled`,
+        },
+      }),
       this.prisma.payment.create({
         data: {
           orderId: order.id,
@@ -509,6 +521,7 @@ export class PaymentsService {
           where: { id: order.id, status: OrderStatus.PENDING },
           data: {
             status: OrderStatus.PAID,
+            paymentStatus: PaymentStatus.PAID,
             // Link đã dùng xong, không cho tái sử dụng.
             checkoutUrl: null,
             checkoutExpiresAt: null,
@@ -523,6 +536,18 @@ export class PaymentsService {
             provider,
             transactionId: String(paymentData?.transId ?? paymentData?.reference ?? Date.now()),
             paymentData,
+          },
+        });
+
+        await tx.orderEvent.create({
+          data: {
+            orderId: order.id,
+            type: 'PAYMENT_SUCCEEDED',
+            source: 'PAYMENT',
+            fromStatus: OrderStatus.PENDING,
+            toStatus: OrderStatus.PAID,
+            publicMessage: 'Thanh toán đã được xác minh thành công.',
+            deduplicationKey: `payment:${provider}:${paymentData?.transId ?? paymentData?.reference ?? Date.now()}`,
           },
         });
 
@@ -696,6 +721,7 @@ export class PaymentsService {
               targetTier: sub.tier,
               amount: TIER_PRICES[sub.tier],
               status: OrderStatus.PENDING,
+              paymentStatus: PaymentStatus.PENDING,
             },
           }),
         );

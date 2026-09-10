@@ -13,6 +13,7 @@ import {
   Min,
   ValidateNested,
 } from 'class-validator';
+import { ONLINE_PAYMENT_METHODS } from '../constants/order-flow.constants';
 
 export class CreateOrderItemDto {
   @ApiProperty({ description: 'Product ID (UUID)' })
@@ -58,6 +59,21 @@ export class ShippingInfoDto {
   @IsNotEmpty()
   address!: string;
 
+  @ApiProperty({ required: false, example: 'TP. Hồ Chí Minh' })
+  @IsString()
+  @IsOptional()
+  provinceName?: string;
+
+  @ApiProperty({ required: false, example: 'Quận 1' })
+  @IsString()
+  @IsOptional()
+  districtName?: string;
+
+  @ApiProperty({ required: false, example: 'Phường Bến Nghé' })
+  @IsString()
+  @IsOptional()
+  wardName?: string;
+
   @ApiProperty({ required: false, example: 'Giao giờ hành chính' })
   @IsString()
   @IsOptional()
@@ -67,6 +83,21 @@ export class ShippingInfoDto {
   @IsString()
   @IsOptional()
   notes?: string;
+
+  @ApiProperty({ required: false, example: 202 })
+  @IsInt()
+  @IsOptional()
+  ghnProvinceId?: number;
+
+  @ApiProperty({ required: false, example: 1442 })
+  @IsInt()
+  @IsOptional()
+  ghnDistrictId?: number;
+
+  @ApiProperty({ required: false, example: '21211' })
+  @IsString()
+  @IsOptional()
+  ghnWardCode?: string;
 }
 
 export class CreateOrderDto {
@@ -83,7 +114,7 @@ export class CreateOrderDto {
   @Type(() => ShippingInfoDto)
   shippingInfo!: ShippingInfoDto;
 
-  @ApiProperty({ description: 'Phương thức thanh toán', enum: ['COD', 'BANK', 'EWALLET'], example: 'COD', required: false })
+  @ApiProperty({ description: 'Phương thức thanh toán online cho đơn may đo mới', enum: ONLINE_PAYMENT_METHODS, example: 'BANK_TRANSFER', required: false })
   @IsString()
   @IsOptional()
   paymentMethod?: string;
