@@ -5,7 +5,7 @@ import { OrderStatus, UserTier } from '@prisma/client';
 import { PaymentsController } from '../../src/modules/payments/payments.controller';
 import { PaymentsService } from '../../src/modules/payments/payments.service';
 import { SubscriptionService } from '../../src/modules/payments/subscription.service';
-import { MailService } from '../../src/modules/mail/mail.service';
+import { MailQueueService } from '../../src/modules/mail/mail-queue.service';
 import { NotificationService } from '../../src/modules/notification/notification.service';
 import { JwtAuthGuard } from '../../src/modules/auth/guards/jwt-auth.guard';
 import { RateLimitGuard } from '../../src/common/guards/rate-limit.guard';
@@ -45,7 +45,13 @@ describe('POST /api/payments/checkout (e2e)', () => {
         providers: [
           PaymentsService,
           SubscriptionService,
-          MailService,
+          {
+            provide: MailQueueService,
+            useValue: {
+              sendOrderConfirmationEmail: jest.fn().mockResolvedValue(undefined),
+              sendRenewalReminderEmail: jest.fn().mockResolvedValue(undefined),
+            },
+          },
           { provide: NotificationService, useValue: { create: jest.fn().mockResolvedValue({}) } },
         ],
       },
@@ -61,7 +67,7 @@ describe('POST /api/payments/checkout (e2e)', () => {
   });
 
   afterEach(async () => {
-    await app.close();
+    await app?.close();
   });
 
   describe('đơn hàng sản phẩm', () => {
