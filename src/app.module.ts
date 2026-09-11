@@ -1,5 +1,6 @@
 import { MiddlewareConsumer, Module, NestModule } from '@nestjs/common';
-import { ConfigModule } from '@nestjs/config';
+import { BullModule } from '@nestjs/bullmq';
+import { ConfigModule, ConfigService } from '@nestjs/config';
 import { APP_GUARD } from '@nestjs/core';
 import { ScheduleModule } from '@nestjs/schedule';
 import { AppController } from './app.controller';
@@ -32,6 +33,41 @@ import { RedisModule } from './common/redis/redis.module';
     ConfigModule.forRoot({
       isGlobal: true,
       envFilePath: '.env',
+    }),
+    BullModule.forRootAsync({
+      inject: [ConfigService],
+      useFactory: (configService: ConfigService) => {
+        const redisUrl = configService.get<string>('REDIS_URL');
+        const defaultJobOptions = {
+          attempts: 3,
+          backoff: { type: 'exponential', delay: 5000 },
+          removeOnComplete: 1000,
+          removeOnFail: 5000,
+        };
+
+        if (redisUrl) {
+          const url = new URL(redisUrl);
+          return {
+            connection: {
+              host: url.hostname,
+              port: Number(url.port || 6379),
+              username: url.username || undefined,
+              password: url.password ? decodeURIComponent(url.password) : undefined,
+              db: Number(url.pathname.replace('/', '') || 0),
+            },
+            defaultJobOptions,
+          };
+        }
+
+        return {
+          connection: {
+            host: configService.get<string>('REDIS_HOST', 'localhost'),
+            port: Number(configService.get<string>('REDIS_PORT', '6379')),
+            password: configService.get<string>('REDIS_PASSWORD') || undefined,
+          },
+          defaultJobOptions,
+        };
+      },
     }),
     ScheduleModule.forRoot(),
     RedisModule,
