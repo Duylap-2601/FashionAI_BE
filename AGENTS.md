@@ -200,6 +200,9 @@ Match tests to risk:
   contract.
 - For payment, stock, status transition, refund, or shipment changes, test
   idempotency and invalid-state paths, not only the happy path.
+- Before pushing a PR branch, run the CI-relevant checks for the change and fix
+  failures locally. For cross-cutting dependency injection changes, run build,
+  unit tests, and e2e tests before pushing.
 
 ## Working Rules
 
