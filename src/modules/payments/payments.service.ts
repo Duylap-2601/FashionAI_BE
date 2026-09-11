@@ -13,7 +13,7 @@ import * as crypto from 'crypto';
 import { createWithUniqueOrderCode } from '../../common/utils/order-code.util';
 import { CheckoutDto } from './dto/checkout.dto';
 import { ConfirmManualPaymentDto } from './dto/confirm-manual-payment.dto';
-import { MailService } from '../mail/mail.service';
+import { MailQueueService } from '../mail/mail-queue.service';
 import { NotificationService } from '../notification/notification.service';
 import { SubscriptionService } from './subscription.service';
 import {
@@ -36,7 +36,7 @@ export class PaymentsService {
   constructor(
     private readonly configService: ConfigService,
     private readonly prisma: PrismaService,
-    private readonly mailService: MailService,
+    private readonly mailQueueService: MailQueueService,
     private readonly notificationService: NotificationService,
     private readonly subscriptionService: SubscriptionService,
   ) {}
@@ -705,7 +705,7 @@ export class PaymentsService {
       0,
     );
 
-    await this.mailService.sendOrderConfirmationEmail(order.user.email, {
+    await this.mailQueueService.sendOrderConfirmationEmail(order.user.email, {
       orderId: order.id,
       orderCode: order.orderCode,
       items: order.items.map((item) => ({
@@ -802,7 +802,7 @@ export class PaymentsService {
           .catch(() => undefined);
 
         // Send email
-        await this.mailService
+        await this.mailQueueService
           .sendRenewalReminderEmail(sub.user.email, {
             name: sub.user.name || 'Khách hàng',
             tier: sub.tier,

@@ -8,7 +8,7 @@ import { User, AuthProvider } from '@prisma/client';
 import * as bcrypt from 'bcrypt';
 import * as crypto from 'crypto';
 import { PrismaService } from '../../database/prisma.service';
-import { MailService } from '../mail/mail.service';
+import { MailQueueService } from '../mail/mail-queue.service';
 import { LoginDto } from './dto/login.dto';
 import { RefreshTokenDto } from './dto/refresh-token.dto';
 import { RegisterDto } from './dto/register.dto';
@@ -37,7 +37,7 @@ export class AuthService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly tokenService: TokenService,
-    private readonly mailService: MailService,
+    private readonly mailQueueService: MailQueueService,
   ) {}
 
   async register(dto: RegisterDto) {
@@ -154,7 +154,7 @@ export class AuthService {
       },
     });
 
-    await this.mailService.sendPasswordResetEmail(user.email, rawToken);
+    await this.mailQueueService.sendPasswordResetEmail(user.email, rawToken);
 
     return { message: 'Nếu email tồn tại trong hệ thống, hướng dẫn đặt lại mật khẩu đã được gửi.' };
   }
@@ -201,7 +201,7 @@ export class AuthService {
       },
     });
 
-    await this.mailService.sendVerificationEmail(user.email, rawToken);
+    await this.mailQueueService.sendVerificationEmail(user.email, rawToken);
     return { message: 'Email xác thực đã được gửi.' };
   }
 
