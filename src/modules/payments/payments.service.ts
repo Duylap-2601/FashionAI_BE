@@ -12,6 +12,7 @@ import { UserTier, OrderStatus, Order, Prisma, PaymentStatus } from '@prisma/cli
 import * as crypto from 'crypto';
 import { createWithUniqueOrderCode } from '../../common/utils/order-code.util';
 import { CheckoutDto } from './dto/checkout.dto';
+import { ConfirmManualPaymentDto } from './dto/confirm-manual-payment.dto';
 import { MailService } from '../mail/mail.service';
 import { NotificationService } from '../notification/notification.service';
 import { SubscriptionService } from './subscription.service';
@@ -300,6 +301,26 @@ export class PaymentsService {
       Number(payload.transferAmount),
     );
     return { success: true };
+  }
+
+  /**
+   * Admin xác nhận thủ công khi tiền đã vào tài khoản nhưng webhook SePay không
+   * tới (lỗi mạng, IPN bị chặn, v.v). Tái dùng processOrderSuccess() để giữ
+   * nguyên mọi ràng buộc của luồng webhook thật (khớp số tiền, idempotent,
+   * trừ kho, tạo Payment/OrderEvent, gia hạn subscription, gửi email).
+   */
+  async confirmManualPayment(orderCode: number, dto: ConfirmManualPaymentDto, adminId: string) {
+    const order = await this.prisma.order.findUnique({ where: { orderCode } });
+    if (!order) {
+      throw new NotFoundException(`Không tìm thấy đơn hàng mã ${orderCode}`);
+    }
+
+    return this.processOrderSuccess(
+      orderCode,
+      'MANUAL_ADMIN',
+      { reference: dto.reference, note: dto.note, confirmedBy: adminId },
+      Number(order.amount),
+    );
   }
 
   private signSePayFields(fields: Record<string, string>, secretKey: string) {

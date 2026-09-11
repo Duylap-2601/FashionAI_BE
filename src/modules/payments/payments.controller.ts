@@ -4,18 +4,23 @@ import {
   Get,
   HttpCode,
   HttpStatus,
+  Param,
   Post,
   Query,
   Req,
   UseGuards,
 } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
+import { Role } from '@prisma/client';
 import { Request } from 'express';
 import { Public } from '../../common/decorators/public.decorator';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
+import { Roles } from '../../common/decorators/roles.decorator';
+import { RolesGuard } from '../../common/guards/roles.guard';
 import { AuthenticatedUser } from '../auth/interfaces/authenticated-user.interface';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { CheckoutDto } from './dto/checkout.dto';
+import { ConfirmManualPaymentDto } from './dto/confirm-manual-payment.dto';
 import { SubscriptionHistoryQueryDto } from './dto/subscription-history-query.dto';
 import { PaymentsService } from './payments.service';
 import { SubscriptionService } from './subscription.service';
@@ -71,6 +76,24 @@ export class PaymentsController {
       req.headers,
       (req as Request & { rawBody?: Buffer }).rawBody,
     );
+  }
+
+  @Post('admin/orders/:orderCode/confirm-manual')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(Role.ADMIN)
+  @ApiBearerAuth('access-token')
+  @ApiOperation({
+    summary: 'Xác nhận thanh toán thủ công khi webhook không tới (Admin Only)',
+    description: 'Dùng khi khách đã chuyển khoản và admin đã nhận được tiền nhưng webhook SePay không cập nhật trạng thái đơn.',
+  })
+  async confirmManualPayment(
+    @Req() req: Request,
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('orderCode') orderCode: string,
+    @Body() dto: ConfirmManualPaymentDto,
+  ) {
+    const data = await this.paymentsService.confirmManualPayment(Number(orderCode), dto, user.id);
+    return buildApiResponse(req, 'PAYMENT_MANUAL_CONFIRMED', 'Xác nhận thanh toán thủ công thành công', data);
   }
 
   @Get('orders')
