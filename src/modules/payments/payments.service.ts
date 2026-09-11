@@ -145,6 +145,22 @@ export class PaymentsService {
     );
   }
 
+  /**
+   * SePay redirect thẳng về success_url/error_url/cancel_url không kèm thêm
+   * tham số nào của riêng đơn hàng, nên FE không biết đơn nào vừa thanh toán.
+   * Nhúng sẵn orderCode + status vào URL trước khi ký để FE tra được đúng đơn.
+   */
+  private appendOrderCodeParam(
+    baseUrl: string,
+    orderCode: number,
+    status: 'success' | 'error' | 'cancel',
+  ) {
+    const url = new URL(baseUrl);
+    url.searchParams.set('orderCode', String(orderCode));
+    url.searchParams.set('status', status);
+    return url.toString();
+  }
+
   private buildOrderDescription(order: Order) {
     return order.targetTier
       ? `Nang cap tai khoan FashionAI goi ${order.targetTier}`
@@ -164,17 +180,20 @@ export class PaymentsService {
       'SEPAY_CHECKOUT_URL',
       'https://pay-sandbox.sepay.vn/v1/checkout/init',
     );
-    const successUrl = this.configService.get<string>(
-      'SEPAY_SUCCESS_URL',
-      'http://localhost:3000/orders/success',
+    const successUrl = this.appendOrderCodeParam(
+      this.configService.get<string>('SEPAY_SUCCESS_URL', 'http://localhost:3000/orders/success'),
+      orderCode,
+      'success',
     );
-    const errorUrl = this.configService.get<string>(
-      'SEPAY_ERROR_URL',
-      'http://localhost:3000/checkout/error',
+    const errorUrl = this.appendOrderCodeParam(
+      this.configService.get<string>('SEPAY_ERROR_URL', 'http://localhost:3000/checkout/error'),
+      orderCode,
+      'error',
     );
-    const cancelUrl = this.configService.get<string>(
-      'SEPAY_CANCEL_URL',
-      'http://localhost:3000/checkout',
+    const cancelUrl = this.appendOrderCodeParam(
+      this.configService.get<string>('SEPAY_CANCEL_URL', 'http://localhost:3000/checkout'),
+      orderCode,
+      'cancel',
     );
 
     if (!merchant || !secretKey) {
