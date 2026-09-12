@@ -9,6 +9,28 @@ export class GhnClient {
 
   constructor(private readonly configService: ConfigService) {}
 
+  async get<T>(path: string, params?: Record<string, unknown>): Promise<T> {
+    const config = getGhnConfig(this.configService);
+    const startedAt = Date.now();
+
+    try {
+      const response = await axios.get<T>(`${config.baseUrl}${path}`, {
+        timeout: 15000,
+        params,
+        headers: {
+          Token: config.token,
+          ShopId: config.shopId,
+        },
+      });
+      this.logger.log(`provider=GHN operation=get path=${path} statusCode=${response.status} duration=${Date.now() - startedAt} result=success`);
+      return response.data;
+    } catch (error) {
+      const axiosError = error as AxiosError<{ message?: string }>;
+      this.logger.warn(`provider=GHN operation=get path=${path} statusCode=${axiosError.response?.status ?? 'NETWORK'} duration=${Date.now() - startedAt} result=failed`);
+      throw new BadGatewayException(axiosError.response?.data?.message || 'GHN request failed');
+    }
+  }
+
   async post<T>(path: string, body: unknown): Promise<T> {
     const config = getGhnConfig(this.configService);
     const startedAt = Date.now();

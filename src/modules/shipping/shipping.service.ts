@@ -8,8 +8,31 @@ import { ShippingProviderFactory } from './shipping-provider.factory';
 import { GhnClient } from './providers/ghn/ghn.client';
 import { GhnShippingProvider } from './providers/ghn/ghn.provider';
 
+interface GhnMasterLocation {
+  _id: number;
+  name: string;
+  status: number;
+}
+
+interface GhnMasterDataResponse {
+  data: GhnMasterLocation[] | null;
+}
+
+export interface ShippingLocationWard {
+  id: number;
+  name: string;
+}
+
+export interface ShippingLocationProvince {
+  id: number;
+  name: string;
+  wards: ShippingLocationWard[];
+}
+
 @Injectable()
 export class ShippingService {
+  private locationsCache: { expiresAt: number; data: ShippingLocationProvince[] } | null = null;
+
   constructor(
     private readonly configService: ConfigService,
     private readonly prisma: PrismaService,
@@ -60,6 +83,45 @@ export class ShippingService {
   async getWards(districtId: number) {
     const response = await this.ghnClient.post<{ data?: unknown[] }>('/shiip/public-api/master-data/ward', { district_id: districtId });
     return response.data ?? [];
+  }
+
+  async getLocations() {
+    const now = Date.now();
+    if (this.locationsCache && this.locationsCache.expiresAt > now) {
+      return this.locationsCache.data;
+    }
+
+    const provinceResponse = await this.ghnClient.get<GhnMasterDataResponse>(
+      '/shiip/public-api/v3/master-data/province/all',
+      { offset: 0, limit: 200 },
+    );
+
+    const provinces = (provinceResponse.data || [])
+      .filter((item) => item.status === 1)
+      .map((item) => ({ id: item._id, name: item.name }));
+
+    const data = await Promise.all(
+      provinces.map(async (province) => {
+        const wardResponse = await this.ghnClient.get<GhnMasterDataResponse>(
+          '/shiip/public-api/v3/master-data/ward/all-by-province-id',
+          { province_id: province.id, offset: 0, limit: 200 },
+        );
+
+        return {
+          ...province,
+          wards: (wardResponse.data || [])
+            .filter((item) => item.status === 1)
+            .map((item) => ({ id: item._id, name: item.name })),
+        };
+      }),
+    );
+
+    this.locationsCache = {
+      expiresAt: now + 24 * 60 * 60 * 1000,
+      data,
+    };
+
+    return data;
   }
 
   async handleGhnWebhook(payload: Record<string, unknown>, headers: Record<string, unknown>) {
