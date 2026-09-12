@@ -7,6 +7,7 @@ import { PaymentsService } from '../../src/modules/payments/payments.service';
 import { SubscriptionService } from '../../src/modules/payments/subscription.service';
 import { MailQueueService } from '../../src/modules/mail/mail-queue.service';
 import { NotificationService } from '../../src/modules/notification/notification.service';
+import { OutboxService } from '../../src/modules/outbox/services/outbox.service';
 import { JwtAuthGuard } from '../../src/modules/auth/guards/jwt-auth.guard';
 import { RateLimitGuard } from '../../src/common/guards/rate-limit.guard';
 import {
@@ -53,6 +54,7 @@ describe('POST /api/payments/checkout (e2e)', () => {
             },
           },
           { provide: NotificationService, useValue: { create: jest.fn().mockResolvedValue({}) } },
+          { provide: OutboxService, useValue: { enqueueEvent: jest.fn().mockResolvedValue({}) } },
         ],
       },
       configure: (builder) =>

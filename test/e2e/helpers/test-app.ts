@@ -46,6 +46,10 @@ export function createPrismaMock(overrides: PrismaMock = {}): PrismaMock {
     orderItem: model(),
     orderEvent: model(),
     payment: model(),
+    refund: model(),
+    outboxEvent: model(),
+    webhookEvent: model(),
+    shipment: model(),
     subscription: model(),
     dailyUsage: model(),
     // Prisma có hai dạng: $transaction([...promises]) và $transaction(async (tx) => ...).
