@@ -4,7 +4,7 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-import { OrderStatus, PaymentStatus, Prisma, RefundStatus, ShipmentStatus } from '@prisma/client';
+import { OrderStatus, PaymentStatus, Prisma, Product, RefundStatus, ShipmentStatus } from '@prisma/client';
 import { PrismaService } from '../../database/prisma.service';
 import { MailQueueService } from '../mail/mail-queue.service';
 import { NotificationService } from '../notification/notification.service';
@@ -35,6 +35,8 @@ type IOrderWithRelations = Prisma.OrderGetPayload<{
   include: ReturnType<OrdersService['orderInclude']>;
 }> & { user?: unknown };
 
+type IOrderProduct = Product;
+
 @Injectable()
 export class OrdersService {
   constructor(
@@ -44,6 +46,20 @@ export class OrdersService {
     private readonly shippingService: ShippingService,
   ) {}
 
+  async quote(userId: string, dto: CreateOrderDto) {
+    const products = await this.getActiveOrderProducts(dto);
+    const pricing = await this.buildOrderPricing(dto, products);
+    return {
+      userId,
+      itemsTotal: pricing.itemsTotal,
+      shippingFee: pricing.shippingFee,
+      discountAmount: pricing.discountAmount,
+      couponCode: pricing.couponCode,
+      totalAmount: pricing.total,
+      shippingQuote: pricing.shippingQuote,
+    };
+  }
+
   async create(userId: string, dto: CreateOrderDto) {
     const paymentMethod = dto.paymentMethod ?? 'BANK_TRANSFER';
     if (!ONLINE_PAYMENT_METHODS.includes(paymentMethod as (typeof ONLINE_PAYMENT_METHODS)[number])) {
@@ -51,12 +67,7 @@ export class OrdersService {
     }
 
     const productIds = dto.items.map((item) => item.productId);
-    const products = await this.prisma.product.findMany({
-      where: {
-        id: { in: productIds },
-        status: 'ACTIVE',
-      },
-    });
+    const products = await this.getActiveOrderProducts(dto);
 
     const productMap = new Map(products.map((product) => [product.id, product]));
     const missingIds = productIds.filter((id) => !productMap.has(id));
@@ -104,20 +115,13 @@ export class OrdersService {
 
     // Luôn dùng giá trong DB, KHÔNG tin item.price do client gửi lên, tránh gian
     // lận giá (client không thể tự đặt giá sản phẩm).
-    const itemsTotal = dto.items.reduce((sum, item) => {
-      const product = productMap.get(item.productId)!;
-      return sum + Number(product.price) * item.quantity;
-    }, 0);
-
-    const shippingFee = dto.shippingFee ?? 0;
-    const discountAmount = dto.discountAmount ?? 0;
+    const { itemsTotal, shippingFee, discountAmount, total, couponCode } =
+      await this.buildOrderPricing(dto, products);
 
     // Chặn việc dùng giảm giá để đưa đơn về 0 đồng.
     if (discountAmount > itemsTotal + shippingFee) {
       throw new BadRequestException('Số tiền giảm giá vượt quá giá trị đơn hàng');
     }
-
-    const total = itemsTotal + shippingFee - discountAmount;
 
     if (total <= 0) {
       throw new BadRequestException('Giá trị đơn hàng phải lớn hơn 0');
@@ -149,7 +153,7 @@ export class OrdersService {
             paymentMethod,
             shippingFee: new Prisma.Decimal(shippingFee),
             discountAmount: new Prisma.Decimal(discountAmount),
-            couponCode: dto.couponCode,
+            couponCode,
             items: {
               create: dto.items.map((item) => {
                 const product = productMap.get(item.productId)!;
@@ -593,6 +597,101 @@ export class OrdersService {
     };
   }
 
+  private async getActiveOrderProducts(dto: CreateOrderDto) {
+    const productIds = dto.items.map((item) => item.productId);
+    const products = await this.prisma.product.findMany({
+      where: {
+        id: { in: productIds },
+        status: 'ACTIVE',
+      },
+    });
+
+    const productMap = new Map(products.map((product) => [product.id, product]));
+    const missingIds = productIds.filter((id) => !productMap.has(id));
+    if (missingIds.length > 0) {
+      throw new BadRequestException(
+        `Product is missing or inactive: ${missingIds.join(', ')}`,
+      );
+    }
+
+    return products;
+  }
+
+  private async buildOrderPricing(dto: CreateOrderDto, products: IOrderProduct[]) {
+    const productMap = new Map(products.map((product) => [product.id, product]));
+    const itemsTotal = dto.items.reduce((sum, item) => {
+      const product = productMap.get(item.productId)!;
+      return sum + Number(product.price) * item.quantity;
+    }, 0);
+    const shippingQuote = await this.calculateOrderShippingFee(dto, itemsTotal);
+    const shippingFee = shippingQuote.totalFee;
+    const discountAmount = this.resolveDiscountAmount(dto.couponCode, itemsTotal);
+
+    if (discountAmount > itemsTotal + shippingFee) {
+      throw new BadRequestException('Discount amount exceeds order amount');
+    }
+
+    const total = itemsTotal + shippingFee - discountAmount;
+    if (total <= 0) {
+      throw new BadRequestException('Order total must be greater than 0');
+    }
+
+    return {
+      itemsTotal,
+      shippingFee,
+      discountAmount,
+      couponCode: discountAmount > 0 ? dto.couponCode?.trim().toUpperCase() : undefined,
+      total,
+      shippingQuote: {
+        provider: shippingQuote.provider,
+        totalFee: shippingQuote.totalFee,
+        serviceFee: shippingQuote.serviceFee,
+        insuranceFee: shippingQuote.insuranceFee,
+        codFee: shippingQuote.codFee,
+        expectedDeliveryTime: shippingQuote.expectedDeliveryTime,
+      },
+    };
+  }
+
+  private calculateOrderShippingFee(dto: CreateOrderDto, itemsTotal: number) {
+    const { ghnDistrictId, ghnWardCode } = dto.shippingInfo;
+    if (!ghnDistrictId || !ghnWardCode) {
+      throw new BadRequestException('GHN district and ward are required to calculate shipping fee');
+    }
+
+    const weight = Math.max(
+      500,
+      dto.items.reduce((sum, item) => sum + item.quantity * 500, 0),
+    );
+
+    return this.shippingService.calculateFee({
+      toDistrictId: ghnDistrictId,
+      toWardCode: ghnWardCode,
+      weight,
+      length: 25,
+      width: 20,
+      height: 8,
+      insuranceValue: itemsTotal,
+      codAmount: 0,
+    });
+  }
+
+  private resolveDiscountAmount(couponCode: string | undefined, itemsTotal: number) {
+    const code = couponCode?.trim().toUpperCase();
+    if (!code) return 0;
+
+    switch (code) {
+      case 'WELCOME':
+        return Math.min(100000, itemsTotal);
+      case 'STALE10':
+        return Math.round(itemsTotal * 0.1);
+      case 'FASHIONAI':
+        return Math.min(150000, itemsTotal);
+      default:
+        throw new BadRequestException('Coupon code is invalid or expired');
+    }
+  }
+
   // Chụp lại số đo cơ thể thành object number thuần để lưu JSON trên OrderItem.
   // Chỉ giữ các trường có giá trị; Decimal được chuyển về number.
   private buildMeasurementSnapshot(
@@ -732,6 +831,8 @@ export class OrdersService {
             providerOrderCode: order.shipments[0].providerOrderCode,
             status: order.shipments[0].status,
             shippingFee: order.shipments[0].shippingFee === null || order.shipments[0].shippingFee === undefined ? null : Number(order.shipments[0].shippingFee),
+            quotedShippingFee: order.shipments[0].quotedShippingFee === null || order.shipments[0].quotedShippingFee === undefined ? null : Number(order.shipments[0].quotedShippingFee),
+            actualShippingFee: order.shipments[0].actualShippingFee === null || order.shipments[0].actualShippingFee === undefined ? null : Number(order.shipments[0].actualShippingFee),
             expectedDeliveryTime: order.shipments[0].expectedDeliveryTime,
             lastSyncedAt: order.shipments[0].lastSyncedAt,
           }

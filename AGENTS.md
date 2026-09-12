@@ -75,12 +75,15 @@ Existing ownership boundaries:
 - `products`: product catalog, product images, reviews, and review replies.
 - `orders`: product order lifecycle, order status transitions, measurement
   review for made-to-measure orders, order history, shipment linkage, refunds,
-  stock changes, and customer-visible order tracking.
+  stock changes, backend-authoritative order pricing, and customer-visible
+  order tracking.
 - `payments`: checkout links, SePay webhooks/IPN handling, payment records, and
   subscription activation.
 - `shipping`: shipping fee/address/provider lookup and shipping-provider API
-  integration. Persisted shipment state that changes an order still needs to
-  coordinate with `orders`.
+  integration. GHN pickup address settings are stored through admin settings
+  and should override environment fallback values when calculating fees.
+  Persisted shipment state that changes an order still needs to coordinate with
+  `orders`.
 - `notification`: notification persistence and user notification APIs.
 - `realtime`: Socket.IO gateway/auth/emitter plumbing. Business modules should
   emit through exported services instead of depending directly on gateways.
@@ -179,6 +182,16 @@ When schema changes are required:
   `@Roles(Role.ADMIN)`.
 - Preserve the current response envelope:
   `{ success, code, message, timestamp, path, data, meta? }`.
+- Order creation and order quote endpoints must resolve monetary values on the
+  backend. Never trust client-provided product prices, shipping fees, discount
+  amounts, or totals as the source of truth; use client totals only as a
+  double-check after recomputing prices, GHN shipping fees, and coupon discounts.
+- Product orders that require shipping should validate structured GHN address
+  fields before pricing or shipment creation, especially `ghnDistrictId` and
+  `ghnWardCode`.
+- GHN pickup origin should be read from `/admin/settings/ghn-pickup` persisted
+  settings when available. `GHN_FROM_*` environment variables are fallback
+  values, not the primary runtime configuration.
 - For order tracking, customer endpoints must return enough state for the client
   to follow progress: current order status, payment status, shipment summary, and
   public order history/events where applicable.

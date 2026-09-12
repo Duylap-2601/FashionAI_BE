@@ -7,26 +7,23 @@ import { ShippingProviderType } from './constants/shipping-provider.enum';
 import { ShippingProviderFactory } from './shipping-provider.factory';
 import { GhnClient } from './providers/ghn/ghn.client';
 import { GhnShippingProvider } from './providers/ghn/ghn.provider';
-
-interface GhnMasterLocation {
-  _id: number;
-  name: string;
-  status: number;
-}
-
-interface GhnMasterDataResponse {
-  data: GhnMasterLocation[] | null;
-}
+import { AdminSettingsService } from '../admin/admin-settings.service';
 
 export interface ShippingLocationWard {
+  code: string;
+  name: string;
+}
+
+export interface ShippingLocationDistrict {
   id: number;
   name: string;
+  wards: ShippingLocationWard[];
 }
 
 export interface ShippingLocationProvince {
   id: number;
   name: string;
-  wards: ShippingLocationWard[];
+  districts: ShippingLocationDistrict[];
 }
 
 @Injectable()
@@ -39,11 +36,17 @@ export class ShippingService {
     private readonly factory: ShippingProviderFactory,
     private readonly ghnClient: GhnClient,
     private readonly ghnProvider: GhnShippingProvider,
+    private readonly adminSettingsService: AdminSettingsService,
   ) {}
 
-  calculateFee(dto: CalculateShippingFeeDto) {
+  async calculateFee(dto: CalculateShippingFeeDto) {
+    const pickupSettings = await this.adminSettingsService.getGhnPickupSettings();
     return this.factory.get(ShippingProviderType.GHN).calculateFee({
-      from: { address: 'FashionAI workshop' },
+      from: {
+        address: 'FashionAI workshop',
+        districtId: pickupSettings.districtId,
+        wardCode: pickupSettings.wardCode,
+      },
       to: {
         address: '',
         districtId: dto.toDistrictId,
@@ -72,17 +75,43 @@ export class ShippingService {
 
   async getProvinces() {
     const response = await this.ghnClient.post<{ data?: unknown[] }>('/shiip/public-api/master-data/province', {});
-    return response.data ?? [];
+    return (response.data ?? [])
+      .map((item) => this.normalizeLegacyLocation(item, 'ProvinceID', 'ProvinceName'))
+      .filter((item): item is { id: number; name: string } => Boolean(item));
   }
 
   async getDistricts(provinceId: number) {
     const response = await this.ghnClient.post<{ data?: unknown[] }>('/shiip/public-api/master-data/district', { province_id: provinceId });
-    return response.data ?? [];
+    return (response.data ?? [])
+      .map((item) => this.normalizeLegacyLocation(item, 'DistrictID', 'DistrictName'))
+      .filter((item): item is { id: number; name: string } => Boolean(item));
   }
 
   async getWards(districtId: number) {
     const response = await this.ghnClient.post<{ data?: unknown[] }>('/shiip/public-api/master-data/ward', { district_id: districtId });
-    return response.data ?? [];
+    return (response.data ?? [])
+      .map((item) => this.normalizeLegacyWard(item))
+      .filter((item): item is { code: string; name: string } => Boolean(item));
+  }
+
+  private normalizeLegacyLocation(value: unknown, idKey: string, nameKey: string) {
+    if (!value || typeof value !== 'object') return null;
+    const record = value as Record<string, unknown>;
+    const id = Number(record[idKey]);
+    const name = record[nameKey];
+    return Number.isFinite(id) && id > 0 && typeof name === 'string' && name.trim()
+      ? { id, name: name.trim() }
+      : null;
+  }
+
+  private normalizeLegacyWard(value: unknown) {
+    if (!value || typeof value !== 'object') return null;
+    const record = value as Record<string, unknown>;
+    const code = record.WardCode;
+    const name = record.WardName;
+    return typeof code === 'string' && code.trim() && typeof name === 'string' && name.trim()
+      ? { code: code.trim(), name: name.trim() }
+      : null;
   }
 
   async getLocations() {
@@ -91,27 +120,20 @@ export class ShippingService {
       return this.locationsCache.data;
     }
 
-    const provinceResponse = await this.ghnClient.get<GhnMasterDataResponse>(
-      '/shiip/public-api/v3/master-data/province/all',
-      { offset: 0, limit: 200 },
-    );
-
-    const provinces = (provinceResponse.data || [])
-      .filter((item) => item.status === 1)
-      .map((item) => ({ id: item._id, name: item.name }));
-
+    const provinces = await this.getProvinces();
     const data = await Promise.all(
       provinces.map(async (province) => {
-        const wardResponse = await this.ghnClient.get<GhnMasterDataResponse>(
-          '/shiip/public-api/v3/master-data/ward/all-by-province-id',
-          { province_id: province.id, offset: 0, limit: 200 },
+        const districts = await this.getDistricts(province.id);
+        const districtsWithWards = await Promise.all(
+          districts.map(async (district) => ({
+            ...district,
+            wards: await this.getWards(district.id),
+          })),
         );
 
         return {
           ...province,
-          wards: (wardResponse.data || [])
-            .filter((item) => item.status === 1)
-            .map((item) => ({ id: item._id, name: item.name })),
+          districts: districtsWithWards,
         };
       }),
     );
