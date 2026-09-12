@@ -34,4 +34,11 @@ export class ShippingController {
   async getWards(@Req() req: Request, @Query('districtId') districtId: string) {
     return buildApiResponse(req, 'SHIPPING_WARDS_FETCHED', 'Lấy danh sách phường xã thành công', await this.shippingService.getWards(Number(districtId)));
   }
+
+  @Get('locations')
+  @ApiOperation({ summary: 'Lấy danh sách Tỉnh/Thành và Phường/Xã GHN theo mô hình 2 cấp' })
+  async getLocations(@Req() req: Request) {
+    const data = await this.shippingService.getLocations();
+    return buildApiResponse(req, 'SHIPPING_LOCATIONS_FETCHED', 'Lấy danh sách địa chỉ giao hàng thành công', data);
+  }
 }
