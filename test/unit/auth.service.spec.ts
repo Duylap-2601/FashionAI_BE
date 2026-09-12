@@ -2,7 +2,7 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { AuthService } from '../../src/modules/auth/auth.service';
 import { PrismaService } from '../../src/database/prisma.service';
 import { TokenService } from '../../src/modules/auth/token.service';
-import { MailService } from '../../src/modules/mail/mail.service';
+import { MailQueueService } from '../../src/modules/mail/mail-queue.service';
 import { ConflictException, BadRequestException } from '@nestjs/common';
 
 describe('AuthService', () => {
@@ -37,7 +37,7 @@ describe('AuthService', () => {
     revokeAllUserRefreshTokens: jest.fn().mockResolvedValue(1),
   };
 
-  const mockMailService = {
+  const mockMailQueueService = {
     sendVerificationEmail: jest.fn().mockResolvedValue(true),
     sendPasswordResetEmail: jest.fn().mockResolvedValue(true),
   };
@@ -48,7 +48,7 @@ describe('AuthService', () => {
         AuthService,
         { provide: PrismaService, useValue: mockPrisma },
         { provide: TokenService, useValue: mockTokenService },
-        { provide: MailService, useValue: mockMailService },
+        { provide: MailQueueService, useValue: mockMailQueueService },
       ],
     }).compile();
 

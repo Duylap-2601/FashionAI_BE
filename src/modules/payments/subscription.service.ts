@@ -7,7 +7,6 @@ import {
 import { PrismaService } from '../../database/prisma.service';
 import { UserTier, Prisma } from '@prisma/client';
 import { NotificationService } from '../notification/notification.service';
-import { MailService } from '../mail/mail.service';
 import {
   SUBSCRIPTION_DURATION_DAYS,
   RENEWAL_REMINDER_DAYS_BEFORE,
@@ -22,7 +21,6 @@ export class SubscriptionService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly notificationService: NotificationService,
-    private readonly mailService: MailService,
   ) {}
 
   async getCurrentSubscription(userId: string) {

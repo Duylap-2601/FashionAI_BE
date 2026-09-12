@@ -6,7 +6,7 @@ import {
 } from '@nestjs/common';
 import { OrderStatus, PaymentStatus, Prisma, RefundStatus, ShipmentStatus } from '@prisma/client';
 import { PrismaService } from '../../database/prisma.service';
-import { MailService } from '../mail/mail.service';
+import { MailQueueService } from '../mail/mail-queue.service';
 import { NotificationService } from '../notification/notification.service';
 import { createWithUniqueOrderCode } from '../../common/utils/order-code.util';
 import { CreateOrderDto } from './dto/create-order.dto';
@@ -39,7 +39,7 @@ type IOrderWithRelations = Prisma.OrderGetPayload<{
 export class OrdersService {
   constructor(
     private readonly prisma: PrismaService,
-    private readonly mailService: MailService,
+    private readonly mailQueueService: MailQueueService,
     private readonly notificationService: NotificationService,
     private readonly shippingService: ShippingService,
   ) {}
@@ -400,7 +400,7 @@ export class OrdersService {
 
     // Gửi email thông báo cho user; lỗi email không được làm hỏng luồng cập nhật.
     if (STATUS_NOTIFY_EMAIL.includes(status) && order.user?.email) {
-      this.mailService
+      this.mailQueueService
         .sendOrderStatusUpdateEmail(order.user.email, {
           orderId: order.id,
           orderCode: order.orderCode,
