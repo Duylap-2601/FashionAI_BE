@@ -46,6 +46,17 @@ export class OrdersController {
     return buildApiResponse(req, 'ORDER_CREATE_SUCCESS', 'Tạo đơn hàng thành công', data);
   }
 
+  @Post('quote')
+  @ApiOperation({ summary: 'Tinh tong tien don hang tren backend' })
+  async quote(
+    @Req() req: Request,
+    @CurrentUser() user: AuthenticatedUser,
+    @Body() dto: CreateOrderDto,
+  ) {
+    const data = await this.ordersService.quote(user.id, dto);
+    return buildApiResponse(req, 'ORDER_QUOTE_SUCCESS', 'Tinh tong tien don hang thanh cong', data);
+  }
+
   @Get()
   @ApiOperation({ summary: 'Danh sách đơn hàng của tôi' })
   async findAll(@Req() req: Request, @CurrentUser() user: AuthenticatedUser) {

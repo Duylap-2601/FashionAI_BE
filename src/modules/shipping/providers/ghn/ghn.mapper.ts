@@ -59,10 +59,12 @@ export class GhnMapper {
     }
   }
 
-  toFeeRequest(input: CalculateShippingFeeInput, fromDistrictId: number, fromWardCode: string) {
+  toFeeRequest(input: CalculateShippingFeeInput, fromDistrictId?: number, fromWardCode?: string) {
+    const resolvedFromDistrictId = input.from.districtId ?? fromDistrictId;
+    const resolvedFromWardCode = input.from.wardCode ?? fromWardCode;
     return {
-      from_district_id: input.from.districtId ?? fromDistrictId,
-      from_ward_code: input.from.wardCode ?? fromWardCode,
+      ...(resolvedFromDistrictId ? { from_district_id: resolvedFromDistrictId } : {}),
+      ...(resolvedFromWardCode ? { from_ward_code: resolvedFromWardCode } : {}),
       to_district_id: input.to.districtId,
       to_ward_code: input.to.wardCode,
       service_type_id: this.resolveServiceType(input.weight),
@@ -88,6 +90,7 @@ export class GhnMapper {
       to_province_name: input.receiver.provinceName,
       to_ward_code: input.receiver.wardCode,
       to_district_id: input.receiver.districtId,
+      service_type_id: this.resolveServiceType(input.weight),
       weight: input.weight,
       length: input.dimensions?.length ?? 25,
       width: input.dimensions?.width ?? 20,
