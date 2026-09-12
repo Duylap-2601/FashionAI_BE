@@ -163,9 +163,10 @@ export class PaymentsService {
   }
 
   private buildOrderDescription(order: Order) {
+    const invoiceNumber = `FAI${order.orderCode}`;
     return order.targetTier
-      ? `Nang cap tai khoan FashionAI goi ${order.targetTier}`
-      : `Thanh toan don hang FashionAI #${order.orderCode}`;
+      ? `Nang cap tai khoan FashionAI goi ${order.targetTier} ${invoiceNumber}`
+      : `Thanh toan don hang FashionAI ${invoiceNumber}`;
   }
 
   private async createSePayCheckoutLink(
