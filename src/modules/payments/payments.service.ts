@@ -339,8 +339,10 @@ export class PaymentsService {
     rawPayload: unknown,
     orderCode?: number,
   ) {
-    await this.prisma.webhookFailure
-      .create({
+    // Best-effort: không bao giờ được throw ra ngoài. Bao gồm cả trường hợp
+    // prisma.webhookFailure undefined (ví dụ khi test mock Prisma không đầy đủ).
+    try {
+      await this.prisma.webhookFailure?.create({
         data: {
           provider,
           reason,
@@ -348,8 +350,10 @@ export class PaymentsService {
           rawPayload: (rawPayload ?? {}) as Prisma.InputJsonValue,
           orderCode,
         },
-      })
-      .catch((err) => this.logger.error(`Không ghi được webhook failure: ${err?.message}`));
+      });
+    } catch (err) {
+      this.logger.error(`Không ghi được webhook failure: ${(err as Error)?.message}`);
+    }
   }
 
   async listWebhookFailures(resolved?: boolean) {
