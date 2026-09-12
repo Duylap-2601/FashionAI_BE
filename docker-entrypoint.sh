@@ -13,6 +13,12 @@ MAX_RETRIES=5
 RETRY_DELAY=5
 attempt=1
 
+# Resolve known failed migrations so prisma migrate deploy can proceed.
+# This is safe to run repeatedly — if the migration is already resolved it
+# becomes a no-op (Prisma just errors harmlessly).
+echo "[entrypoint] Resolving failed migrations (if any)..."
+npx prisma migrate resolve --rolled-back 202609130001_order_payment_shipping_foundation 2>&1 || true
+
 echo "[entrypoint] Applying pending Prisma migrations..."
 until npm run migrate:deploy; do
   if [ "$attempt" -ge "$MAX_RETRIES" ]; then
