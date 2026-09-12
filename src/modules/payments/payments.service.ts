@@ -16,6 +16,8 @@ import { ConfirmManualPaymentDto } from './dto/confirm-manual-payment.dto';
 import { MailQueueService } from '../mail/mail-queue.service';
 import { NotificationService } from '../notification/notification.service';
 import { SubscriptionService } from './subscription.service';
+import { OutboxService } from '../outbox/services/outbox.service';
+import { OUTBOX_EVENT_TYPE } from '../outbox/constants/outbox.constants';
 import {
   TIER_PRICES,
   RENEWAL_REMINDER_DAYS_BEFORE,
@@ -39,6 +41,7 @@ export class PaymentsService {
     private readonly mailQueueService: MailQueueService,
     private readonly notificationService: NotificationService,
     private readonly subscriptionService: SubscriptionService,
+    private readonly outboxService: OutboxService,
   ) {}
 
   /**
@@ -745,6 +748,18 @@ export class PaymentsService {
     if (isSubscription) {
       return { message: 'Payment processed and user tier updated successfully' };
     }
+
+    // Enqueue outbox event để worker tạo shipment (không gọi provider trong transaction).
+    this.outboxService
+      .enqueueEvent({
+        type: OUTBOX_EVENT_TYPE.SHIPMENT_CREATE_REQUESTED,
+        aggregateType: 'Order',
+        aggregateId: order.id,
+        payload: { orderId: order.id, orderCode: order.orderCode, userId: order.userId },
+      })
+      .catch((err) =>
+        this.logger.error(`Failed to enqueue SHIPMENT_CREATE_REQUESTED for order ${orderCode}: ${err?.message}`),
+      );
 
     // Gửi email xác nhận đơn hàng cho user. Không để lỗi email làm hỏng luồng
     // thanh toán (đã ghi PAID thành công rồi).

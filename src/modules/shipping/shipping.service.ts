@@ -40,8 +40,10 @@ export class ShippingService {
   ) {}
 
   async calculateFee(dto: CalculateShippingFeeDto) {
+    const providerType = this.getConfiguredProvider();
+
     const pickupSettings = await this.adminSettingsService.getGhnPickupSettings();
-    return this.factory.get(ShippingProviderType.GHN).calculateFee({
+    return this.factory.get(providerType).calculateFee({
       from: {
         address: 'FashionAI workshop',
         districtId: pickupSettings.districtId,
@@ -61,8 +63,11 @@ export class ShippingService {
     });
   }
 
-  async createShipment(input: Parameters<ReturnType<ShippingProviderFactory['get']>['createShipment']>[0]) {
-    return this.factory.get(input.sender ? ShippingProviderType.GHN : ShippingProviderType.GHN).createShipment(input);
+  async createShipment(
+    input: Parameters<ReturnType<ShippingProviderFactory['get']>['createShipment']>[0],
+    idempotencyKey?: string,
+  ) {
+    return this.factory.get(this.getConfiguredProvider()).createShipment(input, idempotencyKey);
   }
 
   async cancelShipment(provider: ShippingProviderType, providerOrderCode: string) {
@@ -71,6 +76,10 @@ export class ShippingService {
 
   async getTracking(provider: ShippingProviderType, providerOrderCode: string) {
     return this.factory.get(provider).getTracking(providerOrderCode);
+  }
+
+  getConfiguredProvider() {
+    return ShippingProviderType.GHN;
   }
 
   async getProvinces() {
@@ -161,15 +170,64 @@ export class ShippingService {
     const eventKey = `GHN:${providerOrderCode}:${eventType}:${eventTime}`;
     const shipmentStatus = this.ghnProvider.mapWebhookStatus(rawStatus);
 
+    return this.handleShippingStatus({
+      provider: ShippingProviderType.GHN,
+      providerOrderCode,
+      shipmentStatus,
+      rawStatus,
+      eventKey,
+      eventType,
+      payload,
+    });
+  }
+
+  /**
+   * Handle shipment status update from any source (webhook, staging simulator, reconciliation).
+   * This is the single handler that both production webhooks and staging simulator use.
+   */
+  async handleShippingStatus(params: {
+    provider: ShippingProviderType;
+    providerOrderCode?: string;
+    shipmentId?: string;
+    shipmentStatus: ShipmentStatus;
+    rawStatus?: string;
+    eventKey: string;
+    eventType?: string;
+    payload?: Record<string, unknown>;
+    source?: string;
+  }) {
+    const { provider, providerOrderCode, shipmentId, shipmentStatus, rawStatus, eventKey, eventType, payload, source } = params;
+
+    const shipment = await this.prisma.shipment.findFirst({
+      where: shipmentId
+        ? { id: shipmentId }
+        : { provider, providerOrderCode: providerOrderCode! },
+      include: { order: true },
+    });
+    if (!shipment) return { ignored: true };
+
+    // Transition guard: never regress terminal states
+    const terminalStatuses: ShipmentStatus[] = [
+      ShipmentStatus.DELIVERED,
+      ShipmentStatus.RETURNED,
+      ShipmentStatus.CANCELLED,
+    ];
+    if (terminalStatuses.includes(shipment.status)) {
+      return { ignored: true, reason: `Shipment already in terminal status ${shipment.status}` };
+    }
+
     return this.prisma.$transaction(async (tx) => {
       try {
         await tx.webhookEvent.create({
           data: {
-            provider: ShippingProviderType.GHN,
+            provider,
             eventKey,
-            providerOrderCode,
-            eventType,
+            providerOrderCode: providerOrderCode ?? shipment.providerOrderCode,
+            eventType: eventType ?? 'status',
             payload: payload as Prisma.InputJsonValue,
+            signatureValid: source === 'STAGING_SIMULATOR' ? true : undefined,
+            shipmentId: shipment.id,
+            orderId: shipment.orderId,
           },
         });
       } catch (error) {
@@ -179,18 +237,14 @@ export class ShippingService {
         throw error;
       }
 
-      const shipment = await tx.shipment.findFirst({
-        where: { provider: ShippingProviderType.GHN, providerOrderCode },
-        include: { order: true },
-      });
-      if (!shipment) return { ignored: true };
-
       const nextOrderStatus = this.mapShipmentToOrderStatus(shipmentStatus, shipment.order.status);
       await tx.shipment.update({
         where: { id: shipment.id },
         data: {
           status: shipmentStatus,
+          rawStatus: rawStatus ?? shipmentStatus,
           trackingData: payload as Prisma.InputJsonValue,
+          providerEventAt: new Date(),
           lastSyncedAt: new Date(),
         },
       });
@@ -203,8 +257,8 @@ export class ShippingService {
         data: {
           orderId: shipment.orderId,
           shipmentId: shipment.id,
-          type: 'SHIPMENT_WEBHOOK',
-          source: 'SHIPPING',
+          type: source === 'STAGING_SIMULATOR' ? 'SHIPMENT_SIMULATED' : 'SHIPMENT_WEBHOOK',
+          source: source === 'STAGING_SIMULATOR' ? 'STAGING' : 'SHIPPING',
           fromStatus: shipment.order.status,
           toStatus: nextOrderStatus,
           publicMessage: this.buildShipmentPublicMessage(shipmentStatus),
@@ -226,18 +280,42 @@ export class ShippingService {
   }
 
   private mapShipmentToOrderStatus(status: ShipmentStatus, current: OrderStatus) {
+    // Terminal order states should not be changed by delayed webhooks
+    const terminalOrderStatuses: OrderStatus[] = [
+      OrderStatus.CANCELLED,
+      OrderStatus.RETURNED,
+      OrderStatus.EXPIRED,
+    ];
+    if (terminalOrderStatuses.includes(current)) {
+      return current;
+    }
+
     if (status === ShipmentStatus.DELIVERED) return OrderStatus.DELIVERED;
-    const shippingStatuses: ShipmentStatus[] = [
+
+    const processingStatuses: ShipmentStatus[] = [
+      ShipmentStatus.READY_TO_PICK,
       ShipmentStatus.CREATED,
       ShipmentStatus.PICKING,
+    ];
+    if (processingStatuses.includes(status)) {
+      return OrderStatus.SHIPPING;
+    }
+
+    const inTransitStatuses: ShipmentStatus[] = [
       ShipmentStatus.PICKED,
+      ShipmentStatus.SHIPPING,
       ShipmentStatus.IN_TRANSIT,
       ShipmentStatus.DELIVERING,
     ];
-    if (shippingStatuses.includes(status)) {
+    if (inTransitStatuses.includes(status)) {
       return OrderStatus.SHIPPING;
     }
+
+    if (status === ShipmentStatus.DELIVERY_FAILED) return current;
+    if (status === ShipmentStatus.RETURNING) return OrderStatus.RETURNED;
     if (status === ShipmentStatus.RETURNED) return OrderStatus.RETURNED;
+    if (status === ShipmentStatus.CANCELLED) return current;
+
     return current;
   }
 

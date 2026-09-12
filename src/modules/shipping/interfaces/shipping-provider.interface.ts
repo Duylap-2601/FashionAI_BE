@@ -9,8 +9,8 @@ import {
 
 export interface IShippingProvider {
   calculateFee(input: CalculateShippingFeeInput): Promise<ShippingFee>;
-  createShipment(input: CreateShipmentInput): Promise<CreateShipmentResult>;
-  cancelShipment(providerOrderCode: string): Promise<void>;
+  createShipment(input: CreateShipmentInput, idempotencyKey?: string): Promise<CreateShipmentResult>;
+  cancelShipment(providerOrderCode: string, idempotencyKey?: string): Promise<void>;
   getTracking(providerOrderCode: string): Promise<ShipmentTracking>;
   readonly provider: ShippingProviderType;
 }
