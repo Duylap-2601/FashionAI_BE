@@ -115,7 +115,7 @@ export class OrdersService {
 
     // Luôn dùng giá trong DB, KHÔNG tin item.price do client gửi lên, tránh gian
     // lận giá (client không thể tự đặt giá sản phẩm).
-    const { itemsTotal, shippingFee, discountAmount, total, couponCode } =
+    const { itemsTotal, shippingFee, discountAmount, total, couponCode, shippingQuote } =
       await this.buildOrderPricing(dto, products);
 
     // Chặn việc dùng giảm giá để đưa đơn về 0 đồng.
@@ -145,11 +145,19 @@ export class OrdersService {
             orderCode,
             userId,
             amount: new Prisma.Decimal(total),
+            itemsSubtotalVnd: this.toVnd(itemsTotal),
+            shippingFeeVnd: this.toVnd(shippingFee),
+            discountVnd: this.toVnd(discountAmount),
+            taxVnd: 0,
+            totalVnd: this.toVnd(total),
+            currency: 'VND',
             status: OrderStatus.PENDING,
             paymentStatus: PaymentStatus.PENDING,
             refundStatus: RefundStatus.NONE,
             fulfillmentFlowVersion: 1,
             shippingInfo: shippingInfo as unknown as Prisma.InputJsonValue,
+            shippingAddressSnapshot: shippingInfo as unknown as Prisma.InputJsonValue,
+            shippingQuoteSnapshot: shippingQuote as unknown as Prisma.InputJsonValue,
             paymentMethod,
             shippingFee: new Prisma.Decimal(shippingFee),
             discountAmount: new Prisma.Decimal(discountAmount),
@@ -164,12 +172,26 @@ export class OrdersService {
                   measurementSnapshot:
                     measurementSnapshot as Prisma.InputJsonValue,
                   productNameSnapshot: product.name,
+                  productCategorySnapshot: product.category,
+                  brandSnapshot: product.brand,
                   fabricSnapshot: product.material,
                   // Chốt giá server tại thời điểm đặt hàng: đổi giá sản phẩm sau này
                   // không ảnh hưởng đơn cũ, và client không thể tự đặt giá.
                   price: product.price,
+                  unitPriceVnd: this.toVnd(Number(product.price)),
+                  lineTotalVnd: this.toVnd(Number(product.price) * item.quantity),
                 };
               }),
+            },
+            payments: {
+              create: {
+                method: paymentMethod,
+                provider: 'SEPAY',
+                status: PaymentStatus.PENDING,
+                amountVnd: this.toVnd(total),
+                currency: 'VND',
+                idempotencyKey: `payment:create:${orderCode}`,
+              },
             },
           },
           include: this.orderInclude(),
@@ -483,7 +505,43 @@ export class OrdersService {
     if (!order) throw new NotFoundException(`Không tìm thấy đơn hàng có ID ${id}`);
 
     const paymentStatus = dto.refundStatus === RefundStatus.COMPLETED ? PaymentStatus.REFUNDED : order.paymentStatus;
+    const refundStatusForOrder = dto.refundStatus === RefundStatus.COMPLETED
+      ? RefundStatus.COMPLETED
+      : dto.refundStatus === RefundStatus.PROCESSING
+        ? RefundStatus.PENDING
+        : dto.refundStatus;
+
     await this.prisma.$transaction(async (tx) => {
+      // Create Refund record for tracking
+      if (dto.refundStatus === RefundStatus.REQUIRED || dto.refundStatus === RefundStatus.PROCESSING || dto.refundStatus === RefundStatus.COMPLETED) {
+        const existingRefund = await tx.refund.findFirst({
+          where: { orderId: order.id, status: { notIn: ['CANCELLED'] } },
+        });
+
+        if (!existingRefund) {
+          await tx.refund.create({
+            data: {
+              orderId: order.id,
+              provider: 'MANUAL',
+              amountVnd: BigInt(Math.round(Number(order.amount))),
+              reason: dto.internalNote ?? 'Refund requested',
+              status: refundStatusForOrder,
+              idempotencyKey: `refund:${order.id}:${Date.now()}`,
+            },
+          });
+        } else if (dto.refundStatus === RefundStatus.COMPLETED) {
+          await tx.refund.update({
+            where: { id: existingRefund.id },
+            data: { status: RefundStatus.COMPLETED, processedAt: new Date() },
+          });
+          // Update amountRefundedVnd on order
+          await tx.order.update({
+            where: { id: order.id },
+            data: { amountRefundedVnd: BigInt(Math.round(Number(order.amount))) },
+          });
+        }
+      }
+
       await tx.order.update({
         where: { id: order.id },
         data: {
@@ -690,6 +748,10 @@ export class OrdersService {
       default:
         throw new BadRequestException('Coupon code is invalid or expired');
     }
+  }
+
+  private toVnd(amount: number) {
+    return BigInt(Math.round(amount));
   }
 
   // Chụp lại số đo cơ thể thành object number thuần để lưu JSON trên OrderItem.

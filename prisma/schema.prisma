@@ -41,6 +41,7 @@ enum ProductStatus {
 }
 
 enum OrderStatus {
+  PENDING_PAYMENT
   PENDING
   PAID
   CONFIRMED
@@ -48,10 +49,15 @@ enum OrderStatus {
   MEASUREMENT_CONFIRMED
   TAILORING
   QUALITY_CHECK
+  PROCESSING
   READY_TO_SHIP
   SHIPPING
   DELIVERED
+  COMPLETED
   CANCELLED
+  RETURN_REQUESTED
+  RETURN_APPROVED
+  RETURNING
   RETURNED
   EXPIRED
   FAILED
@@ -61,22 +67,30 @@ enum PaymentStatus {
   PENDING
   PAID
   FAILED
+  REFUND_REQUIRED
+  REFUND_PENDING
   REFUNDED
   PARTIALLY_REFUNDED
+  COD_COLLECTED
 }
 
 enum RefundStatus {
   NONE
+  PENDING
   REQUIRED
   PROCESSING
   COMPLETED
+  FAILED
+  CANCELLED
 }
 
 enum ShipmentStatus {
   PENDING
+  READY_TO_PICK
   CREATED
   PICKING
   PICKED
+  SHIPPING
   IN_TRANSIT
   DELIVERING
   DELIVERED
@@ -84,6 +98,24 @@ enum ShipmentStatus {
   RETURNING
   RETURNED
   CANCELLED
+  FAILED
+}
+
+enum WebhookEventStatus {
+  RECEIVED
+  PROCESSING
+  PROCESSED
+  FAILED_RETRYABLE
+  FAILED_DEAD
+  IGNORED_DUPLICATE
+}
+
+enum OutboxEventStatus {
+  PENDING
+  PROCESSING
+  PROCESSED
+  FAILED_RETRYABLE
+  FAILED_DEAD
 }
 
 enum AiActionType {
@@ -362,8 +394,18 @@ model Order {
   userId            String      @map("user_id") @db.Uuid
   targetTier        UserTier?   @map("target_tier")
   amount            Decimal     @db.Decimal(10, 2)
+  itemsSubtotalVnd  BigInt?     @map("items_subtotal_vnd")
+  shippingFeeVnd    BigInt?     @map("shipping_fee_vnd")
+  discountVnd       BigInt?     @map("discount_vnd")
+  taxVnd            BigInt?     @default(0) @map("tax_vnd")
+  totalVnd          BigInt?     @map("total_vnd")
+  amountPaidVnd     BigInt      @default(0) @map("amount_paid_vnd")
+  amountRefundedVnd BigInt      @default(0) @map("amount_refunded_vnd")
+  currency          String      @default("VND")
   status            OrderStatus @default(PENDING)
   shippingInfo      Json?       @map("shipping_info")
+  shippingAddressSnapshot Json?  @map("shipping_address_snapshot")
+  shippingQuoteSnapshot   Json?  @map("shipping_quote_snapshot")
   paymentMethod     String?     @map("payment_method")
   paymentProvider   String?     @map("payment_provider")
   checkoutUrl       String?     @map("checkout_url")
@@ -380,6 +422,7 @@ model Order {
 
   user          User           @relation(fields: [userId], references: [id], onDelete: Cascade)
   payments      Payment[]
+  refunds       Refund[]
   items         OrderItem[]
   subscriptions Subscription[]
   reviews       Review[]
@@ -387,6 +430,10 @@ model Order {
   events        OrderEvent[]
 
   @@index([userId])
+  @@index([userId, createdAt])
+  @@index([status, createdAt])
+  @@index([paymentStatus, createdAt])
+  @@index([checkoutExpiresAt])
   @@map("orders")
 }
 
@@ -398,9 +445,15 @@ model OrderItem {
   color               String?
   measurementSnapshot Json?    @map("measurement_snapshot")
   productNameSnapshot String?  @map("product_name_snapshot")
+  productSkuSnapshot  String?  @map("product_sku_snapshot")
+  productImageSnapshot String? @map("product_image_snapshot")
+  productCategorySnapshot String? @map("product_category_snapshot")
+  brandSnapshot       String?  @map("brand_snapshot")
   fabricSnapshot      String?  @map("fabric_snapshot")
   measurementReview   Json?    @map("measurement_review")
   price               Decimal  @db.Decimal(10, 2)
+  unitPriceVnd        BigInt?  @map("unit_price_vnd")
+  lineTotalVnd        BigInt?  @map("line_total_vnd")
   createdAt           DateTime @default(now()) @map("created_at")
 
   order   Order   @relation(fields: [orderId], references: [id], onDelete: Cascade)
@@ -418,11 +471,15 @@ model Shipment {
   providerOrderCode    String?        @map("provider_order_code")
   requestKey           String         @unique @map("request_key")
   status               ShipmentStatus @default(PENDING)
+  rawStatus            String?        @map("raw_status")
   shippingFee          Decimal?       @map("shipping_fee") @db.Decimal(10, 2)
+  shippingFeeVnd       BigInt?        @map("shipping_fee_vnd")
   quotedShippingFee    Decimal?       @map("quoted_shipping_fee") @db.Decimal(10, 2)
   actualShippingFee    Decimal?       @map("actual_shipping_fee") @db.Decimal(10, 2)
   expectedDeliveryTime DateTime?      @map("expected_delivery_time")
+  trackingUrl          String?        @map("tracking_url")
   trackingData         Json?          @map("tracking_data")
+  providerEventAt      DateTime?      @map("provider_event_at")
   lastSyncedAt         DateTime?      @map("last_synced_at")
   createdAt            DateTime       @default(now()) @map("created_at")
   updatedAt            DateTime       @updatedAt @map("updated_at")
@@ -432,19 +489,35 @@ model Shipment {
 
   @@unique([provider, providerOrderCode])
   @@index([orderId])
+  @@index([orderId, status])
+  @@index([provider, status])
   @@map("shipments")
 }
 
 model WebhookEvent {
-  id                String    @id @default(uuid()) @db.Uuid
+  id                String             @id @default(uuid()) @db.Uuid
   provider          String
-  eventKey          String    @unique @map("event_key")
-  providerOrderCode String?   @map("provider_order_code")
-  eventType         String?   @map("event_type")
+  eventKey          String             @unique @map("event_key")
+  providerEventId   String?            @map("provider_event_id")
+  providerOrderCode String?            @map("provider_order_code")
+  eventType         String?            @map("event_type")
+  status            WebhookEventStatus @default(PROCESSED)
   payload           Json?
-  processedAt       DateTime  @default(now()) @map("processed_at")
+  signatureValid    Boolean?           @map("signature_valid")
+  orderId           String?            @map("order_id") @db.Uuid
+  paymentId         String?            @map("payment_id") @db.Uuid
+  shipmentId        String?            @map("shipment_id") @db.Uuid
+  receivedAt        DateTime           @default(now()) @map("received_at")
+  processedAt       DateTime?          @default(now()) @map("processed_at")
+  attemptCount      Int                @default(0) @map("attempt_count")
+  lastError         String?            @map("last_error") @db.Text
 
+  @@unique([provider, providerEventId])
   @@index([provider, providerOrderCode])
+  @@index([provider, eventType, receivedAt])
+  @@index([orderId])
+  @@index([paymentId])
+  @@index([shipmentId])
   @@map("webhook_events")
 }
 
@@ -455,6 +528,10 @@ model OrderEvent {
   type             String
   fromStatus       OrderStatus? @map("from_status")
   toStatus         OrderStatus? @map("to_status")
+  fromPaymentStatus PaymentStatus? @map("from_payment_status")
+  toPaymentStatus   PaymentStatus? @map("to_payment_status")
+  fromShipmentStatus ShipmentStatus? @map("from_shipment_status")
+  toShipmentStatus   ShipmentStatus? @map("to_shipment_status")
   source           String
   actorId          String?      @map("actor_id") @db.Uuid
   occurredAt       DateTime     @default(now()) @map("occurred_at")
@@ -472,17 +549,80 @@ model OrderEvent {
 }
 
 model Payment {
-  id            String   @id @default(uuid()) @db.Uuid
-  orderId       String   @map("order_id") @db.Uuid
-  provider      String   @default("SEPAY")
-  transactionId String?  @map("transaction_id")
-  paymentData   Json?    @map("payment_data")
-  createdAt     DateTime @default(now()) @map("created_at")
+  id                 String        @id @default(uuid()) @db.Uuid
+  orderId            String        @map("order_id") @db.Uuid
+  method             String?       @map("method")
+  provider           String        @default("SEPAY")
+  transactionId      String?       @map("transaction_id")
+  providerPaymentId  String?       @map("provider_payment_id")
+  status             PaymentStatus @default(PENDING)
+  amountVnd          BigInt?       @map("amount_vnd")
+  currency           String        @default("VND")
+  paidAt             DateTime?     @map("paid_at")
+  failedAt           DateTime?     @map("failed_at")
+  refundedAt         DateTime?     @map("refunded_at")
+  failureReason      String?       @map("failure_reason") @db.Text
+  idempotencyKey     String?       @unique @map("idempotency_key")
+  paymentData        Json?         @map("payment_data")
+  createdAt          DateTime      @default(now()) @map("created_at")
+  updatedAt          DateTime      @updatedAt @map("updated_at")
 
-  order Order @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  order   Order    @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  refunds Refund[]
 
   @@unique([provider, transactionId])
+  @@unique([provider, providerPaymentId])
+  @@index([orderId, status])
+  @@index([orderId, createdAt])
+  @@index([provider, createdAt])
   @@map("payments")
+}
+
+model Refund {
+  id               String       @id @default(uuid()) @db.Uuid
+  orderId          String       @map("order_id") @db.Uuid
+  paymentId        String?      @map("payment_id") @db.Uuid
+  provider         String       @default("MANUAL")
+  providerRefundId String?      @map("provider_refund_id")
+  amountVnd        BigInt       @map("amount_vnd")
+  currency         String       @default("VND")
+  reason           String?      @db.Text
+  status           RefundStatus @default(PENDING)
+  idempotencyKey   String?      @unique @map("idempotency_key")
+  requestedAt      DateTime     @default(now()) @map("requested_at")
+  processedAt      DateTime?    @map("processed_at")
+  failedReason     String?      @map("failed_reason") @db.Text
+  metadata         Json?
+  createdAt        DateTime     @default(now()) @map("created_at")
+  updatedAt        DateTime     @updatedAt @map("updated_at")
+
+  order   Order    @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  payment Payment? @relation(fields: [paymentId], references: [id], onDelete: SetNull)
+
+  @@unique([provider, providerRefundId])
+  @@index([orderId, status])
+  @@index([paymentId])
+  @@map("refunds")
+}
+
+model OutboxEvent {
+  id            String            @id @default(uuid()) @db.Uuid
+  eventKey      String            @unique @map("event_key")
+  type          String
+  aggregateType String            @map("aggregate_type")
+  aggregateId   String            @map("aggregate_id")
+  payload       Json?
+  status        OutboxEventStatus @default(PENDING)
+  attemptCount  Int               @default(0) @map("attempt_count")
+  nextRunAt     DateTime?         @map("next_run_at")
+  lastError     String?           @map("last_error") @db.Text
+  createdAt     DateTime          @default(now()) @map("created_at")
+  updatedAt     DateTime          @updatedAt @map("updated_at")
+  processedAt   DateTime?         @map("processed_at")
+
+  @@index([status, nextRunAt])
+  @@index([aggregateType, aggregateId])
+  @@map("outbox_events")
 }
 
 model WebhookFailure {
