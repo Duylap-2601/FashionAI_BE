@@ -50,30 +50,57 @@ async function main() {
   });
   console.log(`✅ Admin user created: ${admin.email}`);
 
-  // Create Demo Member User
-  const userPasswordHash = await bcrypt.hash(requiredPassword('SEED_DEMO_PASSWORD'), 12);
-  const demoUser = await prisma.user.upsert({
-    where: { email: 'demo@fashionai.com' },
-    update: {},
-    create: {
+  // Create Demo Users (FREE + MEMBER + VIP tiers)
+  const demoPasswordHash = await bcrypt.hash(requiredPassword('SEED_DEMO_PASSWORD'), 12);
+  const demoUsers = [
+    {
       email: 'demo@fashionai.com',
-      passwordHash: userPasswordHash,
       name: 'Nguyen Van A',
-      role: Role.USER,
       tier: UserTier.FREE,
-      isVerified: true,
-      measurements: {
-        create: {
-          height: 175,
-          weight: 68,
-          chest: 95,
-          waist: 78,
-          hip: 94,
-        },
-      },
+      measurements: { height: 175, weight: 68, chest: 95, waist: 78, hip: 94 },
     },
-  });
-  console.log(`✅ Demo user created: ${demoUser.email}`);
+    {
+      email: 'member1@fashionai.com',
+      name: 'Tran Thi B',
+      tier: UserTier.MEMBER,
+      measurements: { height: 162, weight: 52, chest: 84, waist: 66, hip: 90 },
+    },
+    {
+      email: 'member2@fashionai.com',
+      name: 'Le Van C',
+      tier: UserTier.MEMBER,
+      measurements: { height: 178, weight: 72, chest: 98, waist: 82, hip: 96 },
+    },
+    {
+      email: 'vip1@fashionai.com',
+      name: 'Pham Thi D',
+      tier: UserTier.VIP,
+      measurements: { height: 168, weight: 58, chest: 88, waist: 70, hip: 92 },
+    },
+    {
+      email: 'vip2@fashionai.com',
+      name: 'Hoang Van E',
+      tier: UserTier.VIP,
+      measurements: { height: 180, weight: 75, chest: 100, waist: 84, hip: 98 },
+    },
+  ];
+
+  for (const demoUser of demoUsers) {
+    const user = await prisma.user.upsert({
+      where: { email: demoUser.email },
+      update: {},
+      create: {
+        email: demoUser.email,
+        passwordHash: demoPasswordHash,
+        name: demoUser.name,
+        role: Role.USER,
+        tier: demoUser.tier,
+        isVerified: true,
+        measurements: { create: demoUser.measurements },
+      },
+    });
+    console.log(`✅ Demo user created: ${user.email} (${demoUser.tier})`);
+  }
 
   // Create Sample Garment Products
   const sampleProducts = [

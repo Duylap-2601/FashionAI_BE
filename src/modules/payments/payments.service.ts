@@ -247,11 +247,13 @@ export class PaymentsService {
     );
 
     if (!invoiceNumber) {
+      await this.recordWebhookFailure('SEPAY_IPN', 'PARSE_FAILED', 'Missing SePay order_invoice_number', ipnData);
       throw new BadRequestException('Missing SePay order_invoice_number');
     }
 
     const orderCode = this.parseSePayOrderCode(invoiceNumber);
     if (!orderCode) {
+      await this.recordWebhookFailure('SEPAY_IPN', 'PARSE_FAILED', `Invalid SePay invoice number: ${invoiceNumber}`, ipnData);
       throw new BadRequestException(`Invalid SePay invoice number: ${invoiceNumber}`);
     }
 
@@ -291,6 +293,7 @@ export class PaymentsService {
 
     const orderCode = this.parseSePayPaymentCode(payload.code, payload.content);
     if (!orderCode) {
+      await this.recordWebhookFailure('SEPAY_WEBHOOK', 'PARSE_FAILED', 'Missing or invalid SePay payment code', payload);
       throw new BadRequestException('Missing or invalid SePay payment code');
     }
 
@@ -321,6 +324,51 @@ export class PaymentsService {
       { reference: dto.reference, note: dto.note, confirmedBy: adminId },
       Number(order.amount),
     );
+  }
+
+  /**
+   * Ghi nhận các webhook thanh toán không xử lý được (không parse ra mã đơn,
+   * không tìm thấy đơn, sai số tiền, sai trạng thái) để admin chủ động phát
+   * hiện giao dịch "tiền đã vào nhưng không match đơn" thay vì chỉ nằm im
+   * trong log server. Best-effort: lỗi ghi log không được làm hỏng webhook.
+   */
+  private async recordWebhookFailure(
+    provider: string,
+    reason: string,
+    message: string,
+    rawPayload: unknown,
+    orderCode?: number,
+  ) {
+    await this.prisma.webhookFailure
+      .create({
+        data: {
+          provider,
+          reason,
+          message,
+          rawPayload: (rawPayload ?? {}) as Prisma.InputJsonValue,
+          orderCode,
+        },
+      })
+      .catch((err) => this.logger.error(`Không ghi được webhook failure: ${err?.message}`));
+  }
+
+  async listWebhookFailures(resolved?: boolean) {
+    return this.prisma.webhookFailure.findMany({
+      where: resolved === undefined ? undefined : { resolved },
+      orderBy: { createdAt: 'desc' },
+      take: 100,
+    });
+  }
+
+  async markWebhookFailureResolved(id: string) {
+    const failure = await this.prisma.webhookFailure.findUnique({ where: { id } });
+    if (!failure) {
+      throw new NotFoundException(`Không tìm thấy webhook failure ${id}`);
+    }
+    return this.prisma.webhookFailure.update({
+      where: { id },
+      data: { resolved: true, resolvedAt: new Date() },
+    });
   }
 
   private signSePayFields(fields: Record<string, string>, secretKey: string) {
@@ -516,6 +564,9 @@ export class PaymentsService {
     });
 
     if (!order) {
+      if (provider !== 'MANUAL_ADMIN') {
+        await this.recordWebhookFailure(provider, 'ORDER_NOT_FOUND', `Không tìm thấy đơn hàng mã ${orderCode}`, paymentData, orderCode);
+      }
       throw new NotFoundException(`Không tìm thấy đơn hàng mã ${orderCode}`);
     }
 
@@ -526,6 +577,15 @@ export class PaymentsService {
       this.logger.warn(
         `Số tiền không khớp cho đơn #${orderCode} | provider=${provider} | expected=${Number(order.amount)} | received=${paidAmount}`,
       );
+      if (provider !== 'MANUAL_ADMIN') {
+        await this.recordWebhookFailure(
+          provider,
+          'AMOUNT_MISMATCH',
+          `Số tiền không khớp cho đơn #${orderCode}: expected=${Number(order.amount)}, received=${paidAmount}`,
+          paymentData,
+          orderCode,
+        );
+      }
       throw new BadRequestException(
         'Số tiền thanh toán không khớp với giá trị đơn hàng.',
       );
@@ -542,6 +602,15 @@ export class PaymentsService {
       this.logger.warn(
         `Nhận thanh toán cho đơn #${orderCode} ở trạng thái ${order.status} | provider=${provider}`,
       );
+      if (provider !== 'MANUAL_ADMIN') {
+        await this.recordWebhookFailure(
+          provider,
+          'INVALID_ORDER_STATUS',
+          `Nhận thanh toán cho đơn #${orderCode} ở trạng thái ${order.status}, không thể ghi nhận thanh toán.`,
+          paymentData,
+          orderCode,
+        );
+      }
       throw new BadRequestException(
         `Đơn hàng #${orderCode} đang ở trạng thái ${order.status}, không thể ghi nhận thanh toán.`,
       );

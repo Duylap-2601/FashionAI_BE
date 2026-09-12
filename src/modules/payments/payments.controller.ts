@@ -5,6 +5,7 @@ import {
   HttpCode,
   HttpStatus,
   Param,
+  Patch,
   Post,
   Query,
   Req,
@@ -94,6 +95,28 @@ export class PaymentsController {
   ) {
     const data = await this.paymentsService.confirmManualPayment(Number(orderCode), dto, user.id);
     return buildApiResponse(req, 'PAYMENT_MANUAL_CONFIRMED', 'Xác nhận thanh toán thủ công thành công', data);
+  }
+
+  @Get('admin/webhook-failures')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(Role.ADMIN)
+  @ApiBearerAuth('access-token')
+  @ApiOperation({ summary: 'Danh sách webhook thanh toán không xử lý được (Admin Only)' })
+  async listWebhookFailures(@Req() req: Request, @Query('resolved') resolved?: string) {
+    const data = await this.paymentsService.listWebhookFailures(
+      resolved === undefined ? undefined : resolved === 'true',
+    );
+    return buildApiResponse(req, 'WEBHOOK_FAILURES_FETCH_SUCCESS', 'Lấy danh sách webhook lỗi thành công', data);
+  }
+
+  @Patch('admin/webhook-failures/:id/resolve')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(Role.ADMIN)
+  @ApiBearerAuth('access-token')
+  @ApiOperation({ summary: 'Đánh dấu webhook lỗi đã xử lý xong (Admin Only)' })
+  async resolveWebhookFailure(@Req() req: Request, @Param('id') id: string) {
+    const data = await this.paymentsService.markWebhookFailureResolved(id);
+    return buildApiResponse(req, 'WEBHOOK_FAILURE_RESOLVED', 'Đã đánh dấu xử lý xong', data);
   }
 
   @Get('orders')
