@@ -4,7 +4,7 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-import { OrderStatus, PaymentStatus, Prisma, Product, RefundStatus, ShipmentStatus } from '@prisma/client';
+import { NotificationType, OrderStatus, PaymentStatus, Prisma, Product, RefundStatus, Role, ShipmentStatus } from '@prisma/client';
 import { PrismaService } from '../../database/prisma.service';
 import { MailQueueService } from '../mail/mail-queue.service';
 import { NotificationService } from '../notification/notification.service';
@@ -211,6 +211,14 @@ export class OrdersService {
       }),
     );
 
+    // Notify admins about new order (fire-and-forget, don't block response)
+    const user = await this.prisma.user.findUnique({ where: { id: userId }, select: { name: true } });
+    const customerName = user?.name ?? 'Khách hàng';
+    this.notifyAdminsNewOrder(
+      { id: order.id, orderCode: order.orderCode, totalVnd: order.totalVnd },
+      customerName,
+    ).catch(() => undefined);
+
     return this.toPublicOrder(order);
   }
 
@@ -279,6 +287,14 @@ export class OrdersService {
         'Đơn hàng vừa được cập nhật trạng thái, không thể hủy. Vui lòng tải lại.',
       );
     }
+
+    // Notify admins about cancelled order (fire-and-forget, don't block response)
+    const user = await this.prisma.user.findUnique({ where: { id: userId }, select: { name: true } });
+    const customerName = user?.name ?? 'Khách hàng';
+    this.notifyAdminOrderCancelled(
+      { id: order.id, orderCode: order.orderCode, totalVnd: order.totalVnd },
+      customerName,
+    ).catch(() => undefined);
 
     return this.findOne(userId, order.id);
   }
@@ -882,6 +898,42 @@ export class OrdersService {
       if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002') return null;
       throw err;
     });
+  }
+
+  private async notifyAdminsNewOrder(order: { id: string; orderCode: string; totalVnd: number }, customerName: string) {
+    const admins = await this.prisma.user.findMany({
+      where: { role: Role.ADMIN },
+      select: { id: true },
+    });
+
+    const totalAmount = (order.totalVnd / 1000).toFixed(0) + 'k';
+    for (const admin of admins) {
+      await this.notificationService.create({
+        userId: admin.id,
+        type: NotificationType.ORDER_STATUS,
+        title: 'Đơn hàng mới',
+        message: `${customerName} vừa đặt đơn #${order.orderCode} (${totalAmount}đ)`,
+        data: { orderId: order.id, orderCode: order.orderCode, type: 'NEW_ORDER' },
+      });
+    }
+  }
+
+  private async notifyAdminOrderCancelled(order: { id: string; orderCode: string; totalVnd: number }, customerName: string) {
+    const admins = await this.prisma.user.findMany({
+      where: { role: Role.ADMIN },
+      select: { id: true },
+    });
+
+    const totalAmount = (order.totalVnd / 1000).toFixed(0) + 'k';
+    for (const admin of admins) {
+      await this.notificationService.create({
+        userId: admin.id,
+        type: NotificationType.ORDER_STATUS,
+        title: 'Đơn hàng bị hủy',
+        message: `${customerName} đã hủy đơn #${order.orderCode} (${totalAmount}đ)`,
+        data: { orderId: order.id, orderCode: order.orderCode, type: 'ORDER_CANCELLED' },
+      });
+    }
   }
 
   private toPublicOrder(order: IOrderWithRelations) {
