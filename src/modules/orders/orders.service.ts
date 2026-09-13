@@ -629,10 +629,11 @@ export class OrdersService {
 
   async confirmDelivery(userId: string, id: string, note?: string) {
     const order = await this.findOrderForOwner(userId, id);
-    if (order.status !== OrderStatus.DELIVERED) {
-      throw new BadRequestException('Chỉ có thể xác nhận đơn hàng đã được giao (status = DELIVERED).');
+    if (order.status !== OrderStatus.SHIPPING && order.status !== OrderStatus.DELIVERED) {
+      throw new BadRequestException('Chỉ có thể xác nhận khi đơn hàng đang giao hoặc đã được giao (status = SHIPPING hoặc DELIVERED).');
     }
 
+    const fromStatus = order.status;
     await this.prisma.$transaction(async (tx) => {
       await tx.order.update({
         where: { id: order.id },
@@ -643,7 +644,7 @@ export class OrdersService {
         type: 'DELIVERY_CONFIRMED',
         source: 'USER',
         actorId: userId,
-        fromStatus: OrderStatus.DELIVERED,
+        fromStatus,
         toStatus: OrderStatus.COMPLETED,
         publicMessage: 'Khách hàng đã xác nhận nhận hàng thành công.',
         internalNote: note,
