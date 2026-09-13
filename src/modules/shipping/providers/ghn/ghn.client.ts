@@ -47,8 +47,8 @@ export class GhnClient {
       this.logger.log(`provider=GHN operation=post path=${path} statusCode=${response.status} duration=${Date.now() - startedAt} result=success`);
       return response.data;
     } catch (error) {
-      const axiosError = error as AxiosError<{ message?: string }>;
-      this.logger.warn(`provider=GHN operation=post path=${path} statusCode=${axiosError.response?.status ?? 'NETWORK'} duration=${Date.now() - startedAt} result=failed`);
+      const axiosError = error as AxiosError<{ message?: string; data?: unknown }>;
+      this.logger.error(`provider=GHN operation=post path=${path} statusCode=${axiosError.response?.status ?? 'NETWORK'} duration=${Date.now() - startedAt} result=failed requestBody=${JSON.stringify(body)} errorData=${JSON.stringify(axiosError.response?.data)}`);
       throw new BadGatewayException(axiosError.response?.data?.message || 'GHN request failed');
     }
   }
