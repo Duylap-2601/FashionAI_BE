@@ -627,6 +627,42 @@ export class OrdersService {
     return this.findOne(order.userId, order.id);
   }
 
+  async confirmDelivery(userId: string, id: string, note?: string) {
+    const order = await this.findOrderForOwner(userId, id);
+    if (order.status !== OrderStatus.DELIVERED) {
+      throw new BadRequestException('Chỉ có thể xác nhận đơn hàng đã được giao (status = DELIVERED).');
+    }
+
+    await this.prisma.$transaction(async (tx) => {
+      await tx.order.update({
+        where: { id: order.id },
+        data: { status: OrderStatus.COMPLETED, updatedAt: new Date() },
+      });
+      await this.createOrderEvent(tx, {
+        orderId: order.id,
+        type: 'DELIVERY_CONFIRMED',
+        source: 'USER',
+        actorId: userId,
+        fromStatus: OrderStatus.DELIVERED,
+        toStatus: OrderStatus.COMPLETED,
+        publicMessage: 'Khách hàng đã xác nhận nhận hàng thành công.',
+        internalNote: note,
+      });
+    });
+
+    this.notificationService
+      .create({
+        userId: order.userId,
+        type: 'ORDER_STATUS',
+        title: `Đơn hàng #${order.orderCode} đã hoàn thành`,
+        message: 'Cảm ơn bạn đã xác nhận nhận hàng. Đơn hàng của bạn đã hoàn thành.',
+        data: { orderId: order.id, orderCode: order.orderCode, status: OrderStatus.COMPLETED },
+      })
+      .catch(() => undefined);
+
+    return this.findOne(userId, order.id);
+  }
+
   async getTracking(userId: string, id: string) {
     const order = await this.findOrderForOwner(userId, id);
     const shipment = order.shipments?.[0];

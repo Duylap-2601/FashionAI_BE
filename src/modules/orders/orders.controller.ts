@@ -25,6 +25,7 @@ import { CreateMeasurementReviewDto, UpdateItemMeasurementDto } from './dto/meas
 import { RefundOrderDto } from './dto/refund-order.dto';
 import { CancelShipmentDto, CreateShipmentDto } from './dto/shipment.dto';
 import { UpdateOrderStatusDto } from './dto/update-order-status.dto';
+import { ConfirmDeliveryDto } from './dto/confirm-delivery.dto';
 import { OrdersService } from './orders.service';
 
 @ApiTags('Orders')
@@ -203,5 +204,18 @@ export class OrdersController {
   ) {
     const data = await this.ordersService.cancelShipment(id, dto, user.id);
     return buildApiResponse(req, 'ORDER_SHIPMENT_CANCELLED', 'Hủy vận đơn thành công', data);
+  }
+
+  @Post(':id/confirm-delivery')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'User xác nhận đã nhận hàng (chuyển từ DELIVERED → COMPLETED)' })
+  async confirmDelivery(
+    @Req() req: Request,
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id') id: string,
+    @Body() dto: ConfirmDeliveryDto,
+  ) {
+    const data = await this.ordersService.confirmDelivery(user.id, id, dto.note);
+    return buildApiResponse(req, 'ORDER_DELIVERY_CONFIRMED', 'Xác nhận nhận hàng thành công', data);
   }
 }
