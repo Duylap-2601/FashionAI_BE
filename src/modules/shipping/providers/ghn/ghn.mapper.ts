@@ -77,11 +77,13 @@ export class GhnMapper {
     };
   }
 
-  toCreateOrderRequest(input: CreateShipmentInput) {
+  toCreateOrderRequest(input: CreateShipmentInput, fromDistrictId?: number, fromWardCode?: string) {
     return {
       payment_type_id: 1,
       required_note: 'KHONGCHOXEMHANG',
       client_order_code: input.clientOrderCode,
+      ...(fromDistrictId ? { from_district_id: fromDistrictId } : {}),
+      ...(fromWardCode ? { from_ward_code: fromWardCode } : {}),
       to_name: input.receiver.name,
       to_phone: input.receiver.phone,
       to_address: input.receiver.address,
