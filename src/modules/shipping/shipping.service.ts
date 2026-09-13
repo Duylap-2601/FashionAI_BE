@@ -67,7 +67,18 @@ export class ShippingService {
     input: Parameters<ReturnType<ShippingProviderFactory['get']>['createShipment']>[0],
     idempotencyKey?: string,
   ) {
-    return this.factory.get(this.getConfiguredProvider()).createShipment(input, idempotencyKey);
+    const pickupSettings = await this.adminSettingsService.getGhnPickupSettings();
+    return this.factory.get(this.getConfiguredProvider()).createShipment(
+      {
+        ...input,
+        sender: {
+          ...input.sender,
+          districtId: input.sender.districtId ?? pickupSettings.districtId,
+          wardCode: input.sender.wardCode ?? pickupSettings.wardCode,
+        },
+      },
+      idempotencyKey,
+    );
   }
 
   async cancelShipment(provider: ShippingProviderType, providerOrderCode: string) {
