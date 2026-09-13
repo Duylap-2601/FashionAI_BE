@@ -750,6 +750,7 @@ export class PaymentsService {
     }
 
     // Enqueue outbox event để worker tạo shipment (không gọi provider trong transaction).
+    // Fire-and-forget để không block response - lỗi đã được log trong catch.
     this.outboxService
       .enqueueEvent({
         type: OUTBOX_EVENT_TYPE.SHIPMENT_CREATE_REQUESTED,
@@ -761,9 +762,8 @@ export class PaymentsService {
         this.logger.error(`Failed to enqueue SHIPMENT_CREATE_REQUESTED for order ${orderCode}: ${err?.message}`),
       );
 
-    // Gửi email xác nhận đơn hàng cho user. Không để lỗi email làm hỏng luồng
-    // thanh toán (đã ghi PAID thành công rồi).
-    await this.sendOrderConfirmationEmail(order.id).catch((err) =>
+    // Gửi email xác nhận đơn hàng cho user. Fire-and-forget để không block response.
+    this.sendOrderConfirmationEmail(order.id).catch((err) =>
       this.logger.error(
         `Không gửi được email xác nhận đơn #${orderCode}: ${err?.message}`,
       ),
