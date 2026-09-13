@@ -899,13 +899,13 @@ export class OrdersService {
     });
   }
 
-  private async notifyAdminsNewOrder(order: { id: string; orderCode: string; totalVnd: number }, customerName: string) {
+  private async notifyAdminsNewOrder(order: { id: string; orderCode: number; totalVnd: bigint | null }, customerName: string) {
     const admins = await this.prisma.user.findMany({
       where: { role: Role.ADMIN },
       select: { id: true },
     });
 
-    const totalAmount = (order.totalVnd / 1000).toFixed(0) + 'k';
+    const totalAmount = order.totalVnd ? (Number(order.totalVnd) / 1000).toFixed(0) + 'k' : '0k';
     for (const admin of admins) {
       await this.notificationService.create({
         userId: admin.id,
@@ -917,13 +917,13 @@ export class OrdersService {
     }
   }
 
-  private async notifyAdminOrderCancelled(order: { id: string; orderCode: string; totalVnd: number }, customerName: string) {
+  private async notifyAdminOrderCancelled(order: { id: string; orderCode: number; totalVnd: bigint | null }, customerName: string) {
     const admins = await this.prisma.user.findMany({
       where: { role: Role.ADMIN },
       select: { id: true },
     });
 
-    const totalAmount = (order.totalVnd / 1000).toFixed(0) + 'k';
+    const totalAmount = order.totalVnd ? (Number(order.totalVnd) / 1000).toFixed(0) + 'k' : '0k';
     for (const admin of admins) {
       await this.notificationService.create({
         userId: admin.id,

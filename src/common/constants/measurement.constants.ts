@@ -1,5 +1,8 @@
 import { GarmentCategory, GarmentType } from '@prisma/client';
 
+// Re-export GarmentType for use in DTOs and other modules
+export type { GarmentType } from '@prisma/client';
+
 /**
  * Số đo cơ thể bắt buộc để đặt may theo số đo (made-to-measure), theo từng loại
  * trang phục cụ thể (GarmentType). Đây là bộ tối thiểu người thợ cần để cắt may;
