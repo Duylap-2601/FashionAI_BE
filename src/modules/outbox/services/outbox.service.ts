@@ -100,6 +100,7 @@ export class OutboxService {
       },
     );
 
+    this.logger.log(`Outbox job enqueued: ${event.type} eventKey=${event.eventKey} aggregate=${event.aggregateType}:${event.aggregateId}`);
     return event;
   }
 }

@@ -758,6 +758,11 @@ export class PaymentsService {
         aggregateId: order.id,
         payload: { orderId: order.id, orderCode: order.orderCode, userId: order.userId },
       })
+      .then((event) =>
+        this.logger.log(
+          `Enqueued SHIPMENT_CREATE_REQUESTED | eventKey=${event.eventKey} | orderId=${order.id} | orderCode=${order.orderCode}`,
+        ),
+      )
       .catch((err) =>
         this.logger.error(`Failed to enqueue SHIPMENT_CREATE_REQUESTED for order ${orderCode}: ${err?.message}`),
       );
