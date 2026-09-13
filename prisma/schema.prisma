@@ -491,6 +491,11 @@ model Shipment {
   @@index([orderId])
   @@index([orderId, status])
   @@index([provider, status])
+  @@index([status, createdAt])
+  @@index([providerOrderCode])
+  @@index([lastSyncedAt])
+  @@index([expectedDeliveryTime])
+  @@index([rawStatus, createdAt])
   @@map("shipments")
 }
 

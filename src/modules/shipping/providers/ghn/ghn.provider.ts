@@ -1,12 +1,11 @@
 import { BadGatewayException, Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { ShipmentStatus } from '@prisma/client';
 import { ShippingProviderType } from '../../constants/shipping-provider.enum';
 import { IShippingProvider } from '../../interfaces/shipping-provider.interface';
 import { CalculateShippingFeeInput, CreateShipmentInput } from '../../types/shipping.types';
 import { getGhnConfig } from './ghn.config';
 import { GhnClient } from './ghn.client';
-import { GhnMapper, IGhnCreateOrderData, IGhnEnvelope, IGhnFeeData } from './ghn.mapper';
+import { GhnMapper, IGhnCreateOrderData, IGhnEnvelope, IGhnFeeData, IGhnTrackingData } from './ghn.mapper';
 
 @Injectable()
 export class GhnShippingProvider implements IShippingProvider {
@@ -39,11 +38,11 @@ export class GhnShippingProvider implements IShippingProvider {
   }
 
   async getTracking(providerOrderCode: string) {
-    const response = await this.client.post<IGhnEnvelope<{ status?: string; expected_delivery_time?: string }>>('/shiip/public-api/v2/shipping-order/detail', { order_code: providerOrderCode });
+    const response = await this.client.get<IGhnEnvelope<IGhnTrackingData>>('/shiip/public-api/v2/shipping-order/detail', { order_code: providerOrderCode });
     return this.mapper.toTracking(providerOrderCode, response);
   }
 
   mapWebhookStatus(status?: string | null) {
-    return this.mapper.mapStatus(status) || ShipmentStatus.PENDING;
+    return this.mapper.mapStatus(status);
   }
 }
