@@ -77,13 +77,15 @@ export class GhnMapper {
     };
   }
 
-  toCreateOrderRequest(input: CreateShipmentInput) {
+  toCreateOrderRequest(input: CreateShipmentInput, fromDistrictId?: number, fromWardCode?: string) {
+    const resolvedFromDistrictId = input.sender.districtId ?? fromDistrictId;
+    const resolvedFromWardCode = input.sender.wardCode ?? fromWardCode;
     return {
       payment_type_id: 1,
       required_note: 'KHONGCHOXEMHANG',
       client_order_code: input.clientOrderCode,
-      ...(input.sender.districtId ? { from_district_id: input.sender.districtId } : {}),
-      ...(input.sender.wardCode ? { from_ward_code: input.sender.wardCode } : {}),
+      ...(resolvedFromDistrictId ? { from_district_id: resolvedFromDistrictId } : {}),
+      ...(resolvedFromWardCode ? { from_ward_code: resolvedFromWardCode } : {}),
       to_name: input.receiver.name,
       to_phone: input.receiver.phone,
       to_address: input.receiver.address,

@@ -25,7 +25,8 @@ export class GhnShippingProvider implements IShippingProvider {
   }
 
   async createShipment(input: CreateShipmentInput) {
-    const response = await this.client.post<IGhnEnvelope<IGhnCreateOrderData>>('/shiip/public-api/v2/shipping-order/create', this.mapper.toCreateOrderRequest(input));
+    const config = getGhnConfig(this.configService);
+    const response = await this.client.post<IGhnEnvelope<IGhnCreateOrderData>>('/shiip/public-api/v2/shipping-order/create', this.mapper.toCreateOrderRequest(input, config.fromDistrictId, config.fromWardCode));
     const result = this.mapper.toCreateShipmentResult(response);
     if (!result.providerOrderCode) {
       throw new BadGatewayException('GHN did not return order_code');

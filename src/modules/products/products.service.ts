@@ -70,19 +70,64 @@ export class ProductsService {
       search,
       category,
       color,
+      subCategory,
       material,
       minPrice,
       maxPrice,
       status = ProductStatus.ACTIVE,
       page = 1,
       limit = 20,
+      sort = 'latest',
     } = query;
+    const colors = color
+      ?.split(',')
+      .map((item) => item.trim())
+      .filter(Boolean);
+    const subCategories = subCategory
+      ?.split(',')
+      .map((item) => item.trim())
+      .filter(Boolean);
+
+    const orderBy: Prisma.ProductOrderByWithRelationInput =
+      sort === 'price_asc'
+        ? { price: 'asc' }
+        : sort === 'price_desc'
+          ? { price: 'desc' }
+          : { createdAt: 'desc' };
+    const andFilters: Prisma.ProductWhereInput[] = [];
+
+    if (colors && colors.length > 0) {
+      andFilters.push({
+        OR: colors.map((item) => ({
+          color: { contains: item, mode: Prisma.QueryMode.insensitive },
+        })),
+      });
+    }
+
+    if (search) {
+      andFilters.push({
+        OR: [
+          { name: { contains: search, mode: Prisma.QueryMode.insensitive } },
+          { description: { contains: search, mode: Prisma.QueryMode.insensitive } },
+        ],
+      });
+    }
+
+    if (subCategories && subCategories.length > 0) {
+      andFilters.push(
+        ...subCategories.map((item) => ({
+          OR: [
+            { name: { contains: item, mode: Prisma.QueryMode.insensitive } },
+            { description: { contains: item, mode: Prisma.QueryMode.insensitive } },
+          ],
+        })),
+      );
+    }
 
     const where: Prisma.ProductWhereInput = {
       ...(status ? { status } : {}),
       ...(category ? { category } : {}),
-      ...(color ? { color: { contains: color, mode: 'insensitive' } } : {}),
-      ...(material ? { material: { contains: material, mode: 'insensitive' } } : {}),
+      ...(material ? { material: { contains: material, mode: Prisma.QueryMode.insensitive } } : {}),
       ...(minPrice !== undefined || maxPrice !== undefined
         ? {
             price: {
@@ -91,14 +136,7 @@ export class ProductsService {
             },
           }
         : {}),
-      ...(search
-        ? {
-            OR: [
-              { name: { contains: search, mode: 'insensitive' } },
-              { description: { contains: search, mode: 'insensitive' } },
-            ],
-          }
-        : {}),
+      ...(andFilters.length > 0 ? { AND: andFilters } : {}),
     };
 
     const skip = (page - 1) * limit;
@@ -108,7 +146,7 @@ export class ProductsService {
         where,
         skip,
         take: limit,
-        orderBy: { createdAt: 'desc' },
+        orderBy,
         include: { images: true },
       }),
       this.prisma.product.count({ where }),
