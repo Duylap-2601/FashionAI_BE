@@ -63,6 +63,8 @@ export interface ShipmentTracking {
   provider: ShippingProviderType;
   trackingCode: string;
   status: ShipmentStatus;
+  rawStatus?: string;
   expectedDeliveryTime?: Date;
+  providerEventAt?: Date;
   raw?: unknown;
 }

@@ -23,12 +23,19 @@ export interface IGhnCreateOrderData {
   expected_delivery_time?: string;
 }
 
+export interface IGhnTrackingData {
+  status?: string;
+  expected_delivery_time?: string;
+  updated_date?: string;
+  updated_at?: string;
+}
+
 @Injectable()
 export class GhnMapper {
   mapStatus(status?: string | null): ShipmentStatus {
     switch ((status || '').toLowerCase()) {
       case 'ready_to_pick':
-        return ShipmentStatus.CREATED;
+        return ShipmentStatus.READY_TO_PICK;
       case 'picking':
         return ShipmentStatus.PICKING;
       case 'picked':
@@ -44,6 +51,12 @@ export class GhnMapper {
       case 'delivery_fail':
       case 'waiting_to_return':
         return ShipmentStatus.DELIVERY_FAILED;
+      case 'return_fail':
+      case 'exception':
+      case 'lost':
+      case 'damage':
+      case 'scrap':
+        return ShipmentStatus.FAILED;
       case 'return':
       case 'return_transporting':
       case 'return_sorting':
@@ -55,7 +68,7 @@ export class GhnMapper {
       case 'cancelled':
         return ShipmentStatus.CANCELLED;
       default:
-        return ShipmentStatus.PENDING;
+        return ShipmentStatus.FAILED;
     }
   }
 
@@ -137,15 +150,23 @@ export class GhnMapper {
     };
   }
 
-  toTracking(providerOrderCode: string, response: IGhnEnvelope<{ status?: string; expected_delivery_time?: string }>): ShipmentTracking {
+  toTracking(providerOrderCode: string, response: IGhnEnvelope<IGhnTrackingData>): ShipmentTracking {
     const data = response.data ?? {};
     return {
       provider: ShippingProviderType.GHN,
       trackingCode: providerOrderCode,
       status: this.mapStatus(data.status),
+      rawStatus: data.status,
       expectedDeliveryTime: data.expected_delivery_time ? new Date(data.expected_delivery_time) : undefined,
+      providerEventAt: this.parseDate(data.updated_date ?? data.updated_at),
       raw: response,
     };
+  }
+
+  private parseDate(value?: string) {
+    if (!value) return undefined;
+    const parsed = new Date(value);
+    return Number.isNaN(parsed.getTime()) ? undefined : parsed;
   }
 
   private resolveServiceType(weight: number) {

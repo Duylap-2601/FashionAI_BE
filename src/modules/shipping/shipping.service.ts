@@ -173,6 +173,7 @@ export class ShippingService {
     const eventType = String(payload.Type ?? payload.type ?? 'status');
     const rawStatus = String(payload.Status ?? payload.status ?? '');
     const eventTime = String(payload.Time ?? payload.time ?? payload.UpdatedDate ?? payload.updated_date ?? Date.now());
+    const providerEventAt = this.parseProviderEventTime(payload.Time ?? payload.time ?? payload.UpdatedDate ?? payload.updated_date);
 
     if (!providerOrderCode) {
       throw new NotFoundException('Missing GHN order code');
@@ -189,6 +190,7 @@ export class ShippingService {
       eventKey,
       eventType,
       payload,
+      providerEventAt,
     });
   }
 
@@ -206,8 +208,9 @@ export class ShippingService {
     eventType?: string;
     payload?: Record<string, unknown>;
     source?: string;
+    providerEventAt?: Date;
   }) {
-    const { provider, providerOrderCode, shipmentId, shipmentStatus, rawStatus, eventKey, eventType, payload, source } = params;
+    const { provider, providerOrderCode, shipmentId, shipmentStatus, rawStatus, eventKey, eventType, payload, source, providerEventAt } = params;
 
     const shipment = await this.prisma.shipment.findFirst({
       where: shipmentId
@@ -216,16 +219,6 @@ export class ShippingService {
       include: { order: true },
     });
     if (!shipment) return { ignored: true };
-
-    // Transition guard: never regress terminal states
-    const terminalStatuses: ShipmentStatus[] = [
-      ShipmentStatus.DELIVERED,
-      ShipmentStatus.RETURNED,
-      ShipmentStatus.CANCELLED,
-    ];
-    if (terminalStatuses.includes(shipment.status)) {
-      return { ignored: true, reason: `Shipment already in terminal status ${shipment.status}` };
-    }
 
     return this.prisma.$transaction(async (tx) => {
       try {
@@ -248,6 +241,16 @@ export class ShippingService {
         throw error;
       }
 
+      // Keep the raw provider audit record, but never regress completed shipment state.
+      const terminalStatuses: ShipmentStatus[] = [
+        ShipmentStatus.DELIVERED,
+        ShipmentStatus.RETURNED,
+        ShipmentStatus.CANCELLED,
+      ];
+      if (terminalStatuses.includes(shipment.status)) {
+        return { ignored: true, reason: `Shipment already in terminal status ${shipment.status}` };
+      }
+
       const nextOrderStatus = this.mapShipmentToOrderStatus(shipmentStatus, shipment.order.status);
       await tx.shipment.update({
         where: { id: shipment.id },
@@ -255,7 +258,7 @@ export class ShippingService {
           status: shipmentStatus,
           rawStatus: rawStatus ?? shipmentStatus,
           trackingData: payload as Prisma.InputJsonValue,
-          providerEventAt: new Date(),
+          providerEventAt: providerEventAt ?? new Date(),
           lastSyncedAt: new Date(),
         },
       });
@@ -268,17 +271,26 @@ export class ShippingService {
         data: {
           orderId: shipment.orderId,
           shipmentId: shipment.id,
-          type: source === 'STAGING_SIMULATOR' ? 'SHIPMENT_SIMULATED' : 'SHIPMENT_WEBHOOK',
-          source: source === 'STAGING_SIMULATOR' ? 'STAGING' : 'SHIPPING',
+          type: source === 'STAGING_SIMULATOR' ? 'SHIPMENT_SIMULATED' : source === 'ADMIN_SYNC' ? 'SHIPMENT_SYNCED' : 'SHIPMENT_WEBHOOK',
+          source: source === 'STAGING_SIMULATOR' ? 'STAGING' : source === 'ADMIN_SYNC' ? 'ADMIN' : 'SHIPPING',
           fromStatus: shipment.order.status,
           toStatus: nextOrderStatus,
+          fromShipmentStatus: shipment.status,
+          toShipmentStatus: shipmentStatus,
           publicMessage: this.buildShipmentPublicMessage(shipmentStatus),
+          internalNote: this.buildShipmentInternalNote(rawStatus, payload),
           deduplicationKey: eventKey,
         },
       });
 
       return { processed: true, status: shipmentStatus };
     });
+  }
+
+  private parseProviderEventTime(value: unknown) {
+    if (!value) return new Date();
+    const parsed = new Date(String(value));
+    return Number.isNaN(parsed.getTime()) ? new Date() : parsed;
   }
 
   private verifyWebhookSecret(headers: Record<string, unknown>) {
@@ -323,7 +335,7 @@ export class ShippingService {
     }
 
     if (status === ShipmentStatus.DELIVERY_FAILED) return current;
-    if (status === ShipmentStatus.RETURNING) return OrderStatus.RETURNED;
+    if (status === ShipmentStatus.RETURNING) return OrderStatus.RETURNING;
     if (status === ShipmentStatus.RETURNED) return OrderStatus.RETURNED;
     if (status === ShipmentStatus.CANCELLED) return current;
 
@@ -348,5 +360,15 @@ export class ShippingService {
       default:
         return 'Trạng thái vận chuyển đã được cập nhật.';
     }
+  }
+
+  private buildShipmentInternalNote(rawStatus?: string, payload?: Record<string, unknown>) {
+    const reason = payload?.Reason ?? payload?.reason;
+    const reasonCode = payload?.ReasonCode ?? payload?.reasonCode;
+    return [
+      rawStatus ? `GHN status: ${rawStatus}` : null,
+      reason ? `Reason: ${String(reason)}` : null,
+      reasonCode ? `Reason code: ${String(reasonCode)}` : null,
+    ].filter(Boolean).join(' | ') || undefined;
   }
 }

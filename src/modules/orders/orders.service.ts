@@ -583,15 +583,16 @@ export class OrdersService {
       },
     });
 
-    const result = await this.shippingService.createShipment(this.buildShipmentInput(order));
+    const result = await this.shippingService.createShipment(this.buildShipmentInput(order), requestKey);
 
     const shipment = await this.prisma.$transaction(async (tx) => {
       const created = await tx.shipment.update({
         where: { id: pendingShipment.id },
         data: {
-          status: ShipmentStatus.CREATED,
+          status: result.status,
           providerOrderCode: result.providerOrderCode,
           shippingFee: new Prisma.Decimal(result.shippingFee),
+          shippingFeeVnd: BigInt(Math.round(result.shippingFee)),
           actualShippingFee: new Prisma.Decimal(result.shippingFee),
           expectedDeliveryTime: result.expectedDeliveryTime,
           trackingData: result.raw as Prisma.InputJsonValue,
@@ -599,7 +600,7 @@ export class OrdersService {
         },
       });
       await tx.order.update({ where: { id: order.id }, data: { status: OrderStatus.SHIPPING } });
-      await this.createOrderEvent(tx, { orderId: order.id, shipmentId: created.id, type: 'SHIPMENT_CREATED', source: 'ADMIN', actorId, fromStatus: OrderStatus.READY_TO_SHIP, toStatus: OrderStatus.SHIPPING, publicMessage: 'Vận đơn đã được tạo và đang chờ đơn vị vận chuyển xử lý.', deduplicationKey: `shipment:${requestKey}:created` });
+      await this.createOrderEvent(tx, { orderId: order.id, shipmentId: created.id, type: 'SHIPMENT_CREATED', source: 'ADMIN', actorId, fromStatus: OrderStatus.READY_TO_SHIP, toStatus: OrderStatus.SHIPPING, fromShipmentStatus: pendingShipment.status, toShipmentStatus: result.status, publicMessage: 'Vận đơn đã được tạo và đang chờ đơn vị vận chuyển xử lý.', deduplicationKey: `shipment:${requestKey}:created` });
       return created;
     });
 
@@ -853,6 +854,8 @@ export class OrdersService {
     actorId?: string;
     fromStatus?: OrderStatus;
     toStatus?: OrderStatus;
+    fromShipmentStatus?: ShipmentStatus;
+    toShipmentStatus?: ShipmentStatus;
     publicMessage?: string;
     internalNote?: string;
     deduplicationKey?: string;
@@ -867,6 +870,8 @@ export class OrdersService {
         actorId: data.actorId,
         fromStatus: data.fromStatus,
         toStatus: data.toStatus,
+        fromShipmentStatus: data.fromShipmentStatus,
+        toShipmentStatus: data.toShipmentStatus,
         publicMessage: data.publicMessage,
         internalNote: data.internalNote,
         deduplicationKey: data.deduplicationKey,
@@ -928,6 +933,8 @@ export class OrdersService {
             provider: order.shipments[0].provider,
             providerOrderCode: order.shipments[0].providerOrderCode,
             status: order.shipments[0].status,
+            rawStatus: order.shipments[0].rawStatus,
+            shippingFeeVnd: order.shipments[0].shippingFeeVnd === null || order.shipments[0].shippingFeeVnd === undefined ? null : Number(order.shipments[0].shippingFeeVnd),
             shippingFee: order.shipments[0].shippingFee === null || order.shipments[0].shippingFee === undefined ? null : Number(order.shipments[0].shippingFee),
             quotedShippingFee: order.shipments[0].quotedShippingFee === null || order.shipments[0].quotedShippingFee === undefined ? null : Number(order.shipments[0].quotedShippingFee),
             actualShippingFee: order.shipments[0].actualShippingFee === null || order.shipments[0].actualShippingFee === undefined ? null : Number(order.shipments[0].actualShippingFee),
