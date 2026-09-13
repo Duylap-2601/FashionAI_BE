@@ -12,6 +12,7 @@ import {
   Min,
   IsInt,
 } from 'class-validator';
+import { GarmentType } from '../../../common/constants/measurement.constants';
 
 // Khi gửi qua multipart/form-data, mảng được truyền dưới dạng chuỗi JSON.
 // Helper này parse chuỗi -> mảng; nếu không phải chuỗi (đã là mảng) thì giữ nguyên.
@@ -42,6 +43,16 @@ export class CreateProductDto {
   })
   @IsEnum(GarmentCategory)
   category!: GarmentCategory;
+
+  @ApiProperty({
+    enum: GarmentType,
+    description: 'Loại trang phục cụ thể (dùng để xác định số đo cần thiết khi đặt may)',
+    example: GarmentType.SHIRT,
+    required: false,
+  })
+  @IsEnum(GarmentType)
+  @IsOptional()
+  garmentType?: GarmentType;
 
   @ApiProperty({ description: 'Màu sắc', example: 'Trắng', required: false })
   @IsString()

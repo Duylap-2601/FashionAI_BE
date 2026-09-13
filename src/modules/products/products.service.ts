@@ -36,6 +36,7 @@ export class ProductsService {
       name: dto.name,
       description: dto.description,
       category: dto.category,
+      garmentType: dto.garmentType,
       color: dto.color,
       price: dto.price,
       originalPrice: dto.originalPrice,

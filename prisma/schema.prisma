@@ -34,6 +34,16 @@ enum GarmentCategory {
   FULL_BODY
 }
 
+enum GarmentType {
+  SHIRT
+  VEST
+  JACKET
+  PANTS
+  SKIRT
+  DRESS
+  JUMPSUIT
+}
+
 enum ProductStatus {
   DRAFT
   ACTIVE
@@ -244,6 +254,7 @@ model Product {
   name          String
   description   String?         @db.Text
   category      GarmentCategory @default(UPPER)
+  garmentType   GarmentType?    @map("garment_type")
   color         String?
   price         Decimal         @db.Decimal(10, 2)
   originalPrice Decimal?        @map("original_price") @db.Decimal(10, 2)

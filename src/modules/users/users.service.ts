@@ -8,7 +8,7 @@ import { UpdateUserAdminDto } from './dto/update-user-admin.dto';
 import {
   MEASUREMENT_LABELS,
   REQUIRED_MEASUREMENTS_BY_CATEGORY,
-  getMissingMeasurements,
+  getMissingMeasurementsByCategory,
 } from '../../common/constants/measurement.constants';
 import {
   AiActionName,
@@ -78,7 +78,7 @@ export class UsersService {
     const categories = Object.values(GarmentCategory);
     const byCategory = categories.map((category) => {
       const required = REQUIRED_MEASUREMENTS_BY_CATEGORY[category];
-      const missing = getMissingMeasurements(measurement as any, [category]);
+      const missing = getMissingMeasurementsByCategory(measurement as any, [category]);
       return {
         category,
         complete: missing.length === 0,

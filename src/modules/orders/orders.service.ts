@@ -87,16 +87,15 @@ export class OrdersService {
       }
     }
 
-    // Đặt may theo số đo: user phải điền đủ số đo cơ thể bắt buộc cho tất cả phân
-    // loại trang phục trong đơn thì mới đặt được. Chụp lại (snapshot) số đo lên
+    // Đặt may theo số đo: user phải điền đủ số đo cơ thể bắt buộc dựa trên loại
+    // trang phục cụ thể (garmentType) trong đơn. Chụp lại (snapshot) số đo lên
     // từng OrderItem để đóng băng tại thời điểm đặt.
     const measurement = await this.prisma.measurement.findUnique({
       where: { userId },
     });
-    const orderedCategories = new Set(products.map((p) => p.category));
     const missingFields = getMissingMeasurements(
       measurement as Partial<Record<MeasurementField, unknown>> | null,
-      orderedCategories,
+      products.map((p) => ({ category: p.category, garmentType: p.garmentType })),
     );
     if (missingFields.length > 0) {
       throw new BadRequestException({
