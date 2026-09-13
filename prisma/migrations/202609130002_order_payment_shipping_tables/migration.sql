@@ -1,53 +1,6 @@
--- Phase 1 foundation for Order -> Payment -> Shipment.
+-- Phase 1b: Add columns and tables (enum values from 202609130001 are now committed)
 
--- 1. Add new enum values FIRST (before any table/column uses them as defaults)
-ALTER TYPE "OrderStatus" ADD VALUE IF NOT EXISTS 'PENDING_PAYMENT';
-ALTER TYPE "OrderStatus" ADD VALUE IF NOT EXISTS 'PROCESSING';
-ALTER TYPE "OrderStatus" ADD VALUE IF NOT EXISTS 'COMPLETED';
-ALTER TYPE "OrderStatus" ADD VALUE IF NOT EXISTS 'RETURN_REQUESTED';
-ALTER TYPE "OrderStatus" ADD VALUE IF NOT EXISTS 'RETURN_APPROVED';
-ALTER TYPE "OrderStatus" ADD VALUE IF NOT EXISTS 'RETURNING';
-
-ALTER TYPE "PaymentStatus" ADD VALUE IF NOT EXISTS 'REFUND_REQUIRED';
-ALTER TYPE "PaymentStatus" ADD VALUE IF NOT EXISTS 'REFUND_PENDING';
-ALTER TYPE "PaymentStatus" ADD VALUE IF NOT EXISTS 'COD_COLLECTED';
-
-ALTER TYPE "RefundStatus" ADD VALUE IF NOT EXISTS 'PENDING';
-ALTER TYPE "RefundStatus" ADD VALUE IF NOT EXISTS 'FAILED';
-ALTER TYPE "RefundStatus" ADD VALUE IF NOT EXISTS 'CANCELLED';
-
-ALTER TYPE "ShipmentStatus" ADD VALUE IF NOT EXISTS 'READY_TO_PICK';
-ALTER TYPE "ShipmentStatus" ADD VALUE IF NOT EXISTS 'SHIPPING';
-ALTER TYPE "ShipmentStatus" ADD VALUE IF NOT EXISTS 'FAILED';
-
-DO $$
-BEGIN
-  IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'WebhookEventStatus') THEN
-    CREATE TYPE "WebhookEventStatus" AS ENUM (
-      'RECEIVED',
-      'PROCESSING',
-      'PROCESSED',
-      'FAILED_RETRYABLE',
-      'FAILED_DEAD',
-      'IGNORED_DUPLICATE'
-    );
-  END IF;
-END $$;
-
-DO $$
-BEGIN
-  IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'OutboxEventStatus') THEN
-    CREATE TYPE "OutboxEventStatus" AS ENUM (
-      'PENDING',
-      'PROCESSING',
-      'PROCESSED',
-      'FAILED_RETRYABLE',
-      'FAILED_DEAD'
-    );
-  END IF;
-END $$;
-
--- 2. Add columns to existing tables
+-- 1. Add columns to existing tables
 ALTER TABLE "orders"
   ADD COLUMN IF NOT EXISTS "items_subtotal_vnd" BIGINT,
   ADD COLUMN IF NOT EXISTS "shipping_fee_vnd" BIGINT,
@@ -108,7 +61,7 @@ ALTER TABLE "payments"
   ADD COLUMN IF NOT EXISTS "idempotency_key" TEXT,
   ADD COLUMN IF NOT EXISTS "updated_at" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP;
 
--- 3. Create refunds table WITHOUT enum default first, then ALTER to set it
+-- 2. Create refunds table (enum values are already committed from migration 1)
 CREATE TABLE IF NOT EXISTS "refunds" (
   "id" UUID NOT NULL,
   "order_id" UUID NOT NULL,
@@ -118,7 +71,7 @@ CREATE TABLE IF NOT EXISTS "refunds" (
   "amount_vnd" BIGINT NOT NULL,
   "currency" TEXT NOT NULL DEFAULT 'VND',
   "reason" TEXT,
-  "status" "RefundStatus" NOT NULL,
+  "status" "RefundStatus" NOT NULL DEFAULT 'PENDING',
   "idempotency_key" TEXT,
   "requested_at" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
   "processed_at" TIMESTAMP(3),
@@ -129,10 +82,7 @@ CREATE TABLE IF NOT EXISTS "refunds" (
   CONSTRAINT "refunds_pkey" PRIMARY KEY ("id")
 );
 
--- Now safe to set the default since enum values are committed
-ALTER TABLE "refunds" ALTER COLUMN "status" SET DEFAULT 'PENDING';
-
--- 4. Create outbox_events table
+-- 3. Create outbox_events table
 CREATE TABLE IF NOT EXISTS "outbox_events" (
   "id" UUID NOT NULL,
   "event_key" TEXT NOT NULL,
@@ -150,7 +100,7 @@ CREATE TABLE IF NOT EXISTS "outbox_events" (
   CONSTRAINT "outbox_events_pkey" PRIMARY KEY ("id")
 );
 
--- 5. Foreign keys
+-- 4. Foreign keys
 DO $$
 BEGIN
   IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'refunds_order_id_fkey') THEN
@@ -161,7 +111,7 @@ BEGIN
   END IF;
 END $$;
 
--- 6. Unique constraints
+-- 5. Unique constraints
 CREATE UNIQUE INDEX IF NOT EXISTS "webhook_events_provider_provider_event_id_key" ON "webhook_events"("provider", "provider_event_id");
 CREATE UNIQUE INDEX IF NOT EXISTS "payments_provider_provider_payment_id_key" ON "payments"("provider", "provider_payment_id");
 CREATE UNIQUE INDEX IF NOT EXISTS "payments_idempotency_key_key" ON "payments"("idempotency_key");
@@ -169,7 +119,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS "refunds_provider_provider_refund_id_key" ON "
 CREATE UNIQUE INDEX IF NOT EXISTS "refunds_idempotency_key_key" ON "refunds"("idempotency_key");
 CREATE UNIQUE INDEX IF NOT EXISTS "outbox_events_event_key_key" ON "outbox_events"("event_key");
 
--- 7. Indexes
+-- 6. Indexes
 CREATE INDEX IF NOT EXISTS "orders_user_id_created_at_idx" ON "orders"("user_id", "created_at");
 CREATE INDEX IF NOT EXISTS "orders_status_created_at_idx" ON "orders"("status", "created_at");
 CREATE INDEX IF NOT EXISTS "orders_payment_status_created_at_idx" ON "orders"("payment_status", "created_at");

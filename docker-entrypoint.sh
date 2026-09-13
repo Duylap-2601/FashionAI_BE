@@ -26,6 +26,11 @@ until npm run migrate:deploy; do
     exit 1
   fi
   echo "[entrypoint] Migration attempt $attempt failed, retrying in ${RETRY_DELAY}s..."
+
+  # On retry, resolve the migration again in case it just failed
+  echo "[entrypoint] Re-resolving migration before retry..."
+  npx prisma migrate resolve --rolled-back 202609130001_order_payment_shipping_foundation 2>&1 || true
+
   sleep "$RETRY_DELAY"
   attempt=$((attempt + 1))
   RETRY_DELAY=$((RETRY_DELAY + 5))
