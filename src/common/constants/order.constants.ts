@@ -10,4 +10,5 @@ export const PAID_STATUSES: OrderStatus[] = [
   OrderStatus.CONFIRMED,
   OrderStatus.SHIPPING,
   OrderStatus.DELIVERED,
+  OrderStatus.COMPLETED,
 ];
