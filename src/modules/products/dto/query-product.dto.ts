@@ -1,6 +1,6 @@
 import { ApiProperty } from '@nestjs/swagger';
 import { GarmentCategory, ProductStatus } from '@prisma/client';
-import { IsEnum, IsNumber, IsOptional, IsString, Min } from 'class-validator';
+import { IsEnum, IsIn, IsNumber, IsOptional, IsString, Min } from 'class-validator';
 import { Type } from 'class-transformer';
 
 export class QueryProductDto {
@@ -18,6 +18,11 @@ export class QueryProductDto {
   @IsString()
   @IsOptional()
   color?: string;
+
+  @ApiProperty({ required: false, description: 'Danh mục con, có thể truyền nhiều giá trị phân tách bằng dấu phẩy' })
+  @IsString()
+  @IsOptional()
+  subCategory?: string;
 
   @ApiProperty({ required: false, description: 'Lọc theo chất liệu vải (tìm kiếm tương đối)' })
   @IsString()
@@ -42,6 +47,11 @@ export class QueryProductDto {
   @IsEnum(ProductStatus)
   @IsOptional()
   status?: ProductStatus;
+
+  @ApiProperty({ required: false, enum: ['latest', 'price_asc', 'price_desc'], default: 'latest' })
+  @IsIn(['latest', 'price_asc', 'price_desc'])
+  @IsOptional()
+  sort?: 'latest' | 'price_asc' | 'price_desc' = 'latest';
 
   @ApiProperty({ required: false, default: 1 })
   @Type(() => Number)
