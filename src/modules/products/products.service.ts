@@ -73,6 +73,7 @@ export class ProductsService {
       color,
       subCategory,
       material,
+      garmentType,
       minPrice,
       maxPrice,
       status = ProductStatus.ACTIVE,
@@ -128,6 +129,7 @@ export class ProductsService {
     const where: Prisma.ProductWhereInput = {
       ...(status ? { status } : {}),
       ...(category ? { category } : {}),
+      ...(garmentType ? { garmentType } : {}),
       ...(material ? { material: { contains: material, mode: Prisma.QueryMode.insensitive } } : {}),
       ...(minPrice !== undefined || maxPrice !== undefined
         ? {
