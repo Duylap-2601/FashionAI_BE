@@ -50,6 +50,26 @@ enum ProductStatus {
   ARCHIVED
 }
 
+enum LiveTryOnCredentialStatus {
+  ISSUING
+  ISSUED
+  ISSUE_UNKNOWN
+  ISSUE_FAILED
+}
+
+enum LiveTryOnReservationStatus {
+  RESERVED
+  ALLOCATED
+  RELEASED
+}
+
+enum LiveTryOnSessionStatus {
+  ACTIVE
+  ENDED
+  EXPIRED
+  FAILED
+}
+
 enum OrderStatus {
   PENDING_PAYMENT
   PENDING
@@ -171,6 +191,9 @@ model User {
   rackItems               RackItem[]
   reviews                 Review[]
   reviewReplies           ReviewReply[]
+  liveTryOnSessions       LiveTryOnSession[]
+  liveTryOnBudgets        LiveTryOnBudget[]
+  liveTryOnLease          LiveTryOnLease?
 
   @@map("users")
 }
@@ -271,6 +294,7 @@ model Product {
 
   images         ProductImage[]
   tryOnResults   TryOnResult[]
+  liveTryOnSessions LiveTryOnSession[]
   stylistResults StylistResult[]
   orderItems     OrderItem[]
   rackItems      RackItem[]
@@ -366,6 +390,76 @@ model TryOnResult {
   @@index([cacheKey])
   @@index([expiresAt])
   @@map("try_on_results")
+}
+
+model LiveTryOnSession {
+  id                  String                     @id @default(uuid()) @db.Uuid
+  userId              String                     @map("user_id") @db.Uuid
+  productId           String                     @map("product_id") @db.Uuid
+  model               String
+  transport           String                     @default("direct")
+  status              LiveTryOnSessionStatus     @default(ACTIVE)
+  credentialStatus    LiveTryOnCredentialStatus  @default(ISSUING) @map("credential_status")
+  reservationStatus   LiveTryOnReservationStatus @default(RESERVED) @map("reservation_status")
+  idempotencyKey      String                     @map("idempotency_key")
+  idempotencyBodyHash String                     @map("idempotency_body_hash")
+  quotaDate           String                     @map("quota_date")
+  reservedSeconds     Int                        @map("reserved_seconds")
+  allocatedSeconds    Int                        @default(0) @map("allocated_seconds")
+  policyVersion       String                     @map("policy_version")
+  rateCreditsPerSecond Int                       @map("rate_credits_per_second")
+  tokenExpiresAt      DateTime?                  @map("token_expires_at")
+  issuedAt            DateTime?                  @map("issued_at")
+  blockedUntil        DateTime                   @map("blocked_until")
+  clientEndedAt       DateTime?                  @map("client_ended_at")
+  endedReason         String?                    @map("ended_reason")
+  providerSessionId   String?                    @map("provider_session_id")
+  providerMetadata    Json?                      @map("provider_metadata")
+  createdAt           DateTime                   @default(now()) @map("created_at")
+  updatedAt           DateTime                   @updatedAt @map("updated_at")
+  lease               LiveTryOnLease?
+
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  product Product @relation(fields: [productId], references: [id], onDelete: Restrict)
+
+  @@unique([userId, idempotencyKey])
+  @@index([userId, createdAt])
+  @@index([reservationStatus, blockedUntil])
+  @@index([credentialStatus, blockedUntil])
+  @@map("live_try_on_sessions")
+}
+
+model LiveTryOnBudget {
+  id               String   @id @default(uuid()) @db.Uuid
+  scopeKey         String   @map("scope_key")
+  date             String
+  limitSeconds     Int?     @map("limit_seconds")
+  reservedSeconds  Int      @default(0) @map("reserved_seconds")
+  allocatedSeconds Int      @default(0) @map("allocated_seconds")
+  createdAt        DateTime @default(now()) @map("created_at")
+  updatedAt        DateTime @updatedAt @map("updated_at")
+  userId           String?  @map("user_id") @db.Uuid
+
+  user User? @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([scopeKey, date])
+  @@index([userId, date])
+  @@map("live_try_on_budgets")
+}
+
+model LiveTryOnLease {
+  id        String   @id @default(uuid()) @db.Uuid
+  userId    String   @unique @map("user_id") @db.Uuid
+  sessionId String   @unique @map("session_id") @db.Uuid
+  expiresAt DateTime @map("expires_at")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  session LiveTryOnSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@index([expiresAt])
+  @@map("live_try_on_leases")
 }
 
 model StylistResult {
