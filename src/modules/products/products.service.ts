@@ -198,10 +198,12 @@ export class ProductsService {
       });
     } catch (err) {
       // FK RESTRICT: sản phẩm đã có đơn hàng tham chiếu (order_items) thì không xóa được.
-      if (
-        err instanceof Prisma.PrismaClientKnownRequestError &&
-        err.code === 'P2003'
-      ) {
+      // Prisma trả về P2003 cho standard FK violation, nhưng Postgres RESTRICT có thể trả về code 23001
+      const isFKViolation =
+        (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2003') ||
+        (err?.message?.includes('23001') && err?.message?.includes('order_items_product_id_fkey'));
+
+      if (isFKViolation) {
         throw new BadRequestException(
           'Không thể xóa sản phẩm vì đã có đơn hàng liên quan. Hãy chuyển trạng thái sản phẩm sang ARCHIVED thay vì xóa.',
         );
