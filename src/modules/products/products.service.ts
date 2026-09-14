@@ -201,7 +201,7 @@ export class ProductsService {
       // Prisma trả về P2003 cho standard FK violation, nhưng Postgres RESTRICT có thể trả về code 23001
       const isFKViolation =
         (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2003') ||
-        (err?.message?.includes('23001') && err?.message?.includes('order_items_product_id_fkey'));
+        (err instanceof Error && err.message?.includes('23001') && err.message?.includes('order_items_product_id_fkey'));
 
       if (isFKViolation) {
         throw new BadRequestException(
