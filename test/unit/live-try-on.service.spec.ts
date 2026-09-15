@@ -9,10 +9,14 @@ import {
   Role,
   UserTier,
 } from '@prisma/client';
+import axios from 'axios';
 import { PrismaService } from '../../src/database/prisma.service';
+import { AdminSettingsService } from '../../src/modules/admin/admin-settings.service';
 import { AuthenticatedUser } from '../../src/modules/auth/interfaces/authenticated-user.interface';
 import { DecartRealtimeService } from '../../src/modules/try-on/decart-realtime.service';
 import { LiveTryOnService } from '../../src/modules/try-on/live-try-on.service';
+
+jest.mock('axios');
 
 type MockTx = {
   liveTryOnLease: { count: jest.Mock; upsert: jest.Mock; deleteMany: jest.Mock };
@@ -32,6 +36,10 @@ type MockDecart = {
   model: string;
   getTokenTtlSeconds: jest.Mock;
   createClientToken: jest.Mock;
+};
+
+type MockAdminSettings = {
+  getLiveTryOnSettings: jest.Mock;
 };
 
 describe('LiveTryOnService', () => {
@@ -61,8 +69,45 @@ describe('LiveTryOnService', () => {
   let config: { get: jest.Mock };
   let prisma: MockPrisma;
   let decart: MockDecart;
+  let adminSettings: MockAdminSettings;
   let tx: MockTx;
   let service: LiveTryOnService;
+
+  it('resumes a paused session with another garment without reserving more quota', async () => {
+    const nextProduct = { ...product, id: '44444444-4444-4444-8444-444444444444' };
+    const paused = {
+      id: 'session-1', userId: user.id, productId: product.id, product,
+      status: LiveTryOnSessionStatus.PAUSED, reservedSeconds: 60, usedSeconds: 20,
+      activeStartedAt: null, pauseExpiresAt: new Date(Date.now() + 60000),
+      blockedUntil: new Date(Date.now() + 120000), revision: 1, model: decart.model,
+    };
+    prisma.liveTryOnSession.findUnique.mockResolvedValue(paused);
+    prisma.product.findUnique.mockResolvedValue(nextProduct);
+    prisma.liveTryOnSession.update.mockImplementation(({ data }) => Promise.resolve({ ...paused, ...data, product: nextProduct }));
+
+    const result = await service.resumeSession(user, paused.id, undefined, nextProduct.id);
+
+    expect(result.sessionId).toBe(paused.id);
+    expect(result.garment.productId).toBe(nextProduct.id);
+    expect(result.maxDurationSeconds).toBe(40);
+    expect(decart.createClientToken).toHaveBeenCalledWith({ origin: undefined, maxDurationSeconds: 40 });
+    expect(prisma.$transaction).not.toHaveBeenCalled();
+    expect(prisma.liveTryOnSession.update).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({ productId: nextProduct.id }),
+    }));
+  });
+
+  it('does not issue a resume credential when the selected garment is unavailable', async () => {
+    prisma.liveTryOnSession.findUnique.mockResolvedValue({
+      id: 'session-1', userId: user.id, productId: product.id, product,
+      status: LiveTryOnSessionStatus.PAUSED, reservedSeconds: 60, usedSeconds: 20,
+      activeStartedAt: null, pauseExpiresAt: new Date(Date.now() + 60000),
+    });
+    prisma.product.findUnique.mockResolvedValue(null);
+    await expect(service.resumeSession(user, 'session-1', undefined, product.id)).rejects.toThrow();
+    expect(decart.createClientToken).not.toHaveBeenCalled();
+    expect(prisma.liveTryOnSession.update).not.toHaveBeenCalled();
+  });
 
   beforeEach(() => {
     jest.clearAllMocks();
@@ -90,6 +135,24 @@ describe('LiveTryOnService', () => {
         clientToken: 'client-token',
         tokenExpiresAt: new Date('2026-01-01T00:02:00.000Z'),
         raw: { requestId: 'req-1' },
+      }),
+    };
+    jest.mocked(axios.get).mockResolvedValue({ headers: { 'content-type': 'image/png' } });
+    adminSettings = {
+      getLiveTryOnSettings: jest.fn().mockResolvedValue({
+        enabled: true,
+        globalDailyCredits: 12000,
+        maxConcurrentSessions: 2,
+        pauseTimeoutSeconds: 300,
+        allowedCategories: [GarmentCategory.UPPER],
+        betaUserIds: [],
+        betaProductIds: [],
+        version: 1,
+        tiers: {
+          FREE: { liveEnabled: true, dailySeconds: 120, maxSessionSeconds: 30 },
+          MEMBER: { liveEnabled: true, dailySeconds: 300, maxSessionSeconds: 60 },
+          VIP: { liveEnabled: true, dailySeconds: 600, maxSessionSeconds: 120 },
+        },
       }),
     };
     tx = {
@@ -126,11 +189,26 @@ describe('LiveTryOnService', () => {
       config as unknown as ConfigService,
       prisma as unknown as PrismaService,
       decart as unknown as DecartRealtimeService,
+      adminSettings as unknown as AdminSettingsService,
     );
   });
 
   it('returns disabled quota without using image quota semantics', async () => {
-    config.get.mockImplementation((key: string) => key === 'DECART_LIVE_TRYON_ENABLED' ? 'false' : undefined);
+    adminSettings.getLiveTryOnSettings.mockResolvedValueOnce({
+      enabled: false,
+      globalDailyCredits: 12000,
+      maxConcurrentSessions: 2,
+      pauseTimeoutSeconds: 300,
+      allowedCategories: [GarmentCategory.UPPER],
+      betaUserIds: [],
+      betaProductIds: [],
+      version: 1,
+      tiers: {
+        FREE: { liveEnabled: true, dailySeconds: 120, maxSessionSeconds: 30 },
+        MEMBER: { liveEnabled: true, dailySeconds: 300, maxSessionSeconds: 60 },
+        VIP: { liveEnabled: true, dailySeconds: 600, maxSessionSeconds: 120 },
+      },
+    });
     const quota = await service.getQuota(user);
     expect(quota.enabled).toBe(false);
     expect(quota.unit).toBe('seconds');
@@ -185,6 +263,8 @@ describe('LiveTryOnService', () => {
       reservationStatus: LiveTryOnReservationStatus.RESERVED,
       quotaDate: '2026-01-01',
       reservedSeconds: 60,
+      usedSeconds: 60,
+      activeStartedAt: null,
       blockedUntil: new Date(Date.now() - 1000),
     };
     prisma.liveTryOnSession.findMany.mockResolvedValue([expired]);

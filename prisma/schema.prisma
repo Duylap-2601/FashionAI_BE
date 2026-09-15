@@ -65,6 +65,10 @@ enum LiveTryOnReservationStatus {
 
 enum LiveTryOnSessionStatus {
   ACTIVE
+  PAUSING
+  PAUSED
+  RESUMING
+  ENDING
   ENDED
   EXPIRED
   FAILED
@@ -194,6 +198,7 @@ model User {
   liveTryOnSessions       LiveTryOnSession[]
   liveTryOnBudgets        LiveTryOnBudget[]
   liveTryOnLease          LiveTryOnLease?
+  liveTryOnPolicyAudits   LiveTryOnPolicyAudit[]
 
   @@map("users")
 }
@@ -406,15 +411,21 @@ model LiveTryOnSession {
   quotaDate           String                     @map("quota_date")
   reservedSeconds     Int                        @map("reserved_seconds")
   allocatedSeconds    Int                        @default(0) @map("allocated_seconds")
+  usedSeconds         Int                        @default(0) @map("used_seconds")
+  tier                UserTier                   @default(FREE)
   policyVersion       String                     @map("policy_version")
   rateCreditsPerSecond Int                       @map("rate_credits_per_second")
   tokenExpiresAt      DateTime?                  @map("token_expires_at")
   issuedAt            DateTime?                  @map("issued_at")
+  activeStartedAt     DateTime?                  @map("active_started_at")
+  pausedAt            DateTime?                  @map("paused_at")
+  pauseExpiresAt      DateTime?                  @map("pause_expires_at")
   blockedUntil        DateTime                   @map("blocked_until")
   clientEndedAt       DateTime?                  @map("client_ended_at")
   endedReason         String?                    @map("ended_reason")
   providerSessionId   String?                    @map("provider_session_id")
   providerMetadata    Json?                      @map("provider_metadata")
+  revision            Int                        @default(1)
   createdAt           DateTime                   @default(now()) @map("created_at")
   updatedAt           DateTime                   @updatedAt @map("updated_at")
   lease               LiveTryOnLease?
@@ -460,6 +471,20 @@ model LiveTryOnLease {
 
   @@index([expiresAt])
   @@map("live_try_on_leases")
+}
+
+model LiveTryOnPolicyAudit {
+  id        String   @id @default(uuid()) @db.Uuid
+  actorId   String?  @map("actor_id") @db.Uuid
+  before    Json?
+  after     Json
+  reason    String?  @db.Text
+  createdAt DateTime @default(now()) @map("created_at")
+
+  actor User? @relation(fields: [actorId], references: [id], onDelete: SetNull)
+
+  @@index([actorId, createdAt])
+  @@map("live_try_on_policy_audits")
 }
 
 model StylistResult {

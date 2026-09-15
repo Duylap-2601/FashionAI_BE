@@ -21,6 +21,7 @@ import {
 } from '@prisma/client';
 import * as crypto from 'crypto';
 import { PrismaService } from '../../database/prisma.service';
+import { AdminSettingsService } from '../admin/admin-settings.service';
 import { AuthenticatedUser } from '../auth/interfaces/authenticated-user.interface';
 import { CreateLiveSessionDto } from './dto/create-live-session.dto';
 import { DecartRealtimeService } from './decart-realtime.service';
@@ -40,6 +41,8 @@ interface LiveTryOnPolicy {
   betaUserIds: Set<string>;
   betaProductIds: Set<string>;
   allowedCategories: Set<GarmentCategory>;
+  pauseTimeoutSeconds: number;
+  tier: UserTier;
 }
 
 @Injectable()
@@ -51,10 +54,11 @@ export class LiveTryOnService {
     private readonly config: ConfigService,
     private readonly prisma: PrismaService,
     private readonly decart: DecartRealtimeService,
+    private readonly adminSettings: AdminSettingsService,
   ) {}
 
   async getQuota(user: AuthenticatedUser) {
-    const policy = this.getPolicy();
+    const policy = await this.getPolicy(user.tier);
     const eligibility = this.getEligibility(user, policy);
     const quotaDate = utcDateKey(new Date());
     const budget = await this.prisma.liveTryOnBudget.findUnique({
@@ -83,15 +87,17 @@ export class LiveTryOnService {
       activeSession: activeSession
         ? {
             sessionId: activeSession.id,
+            productId: activeSession.productId,
             status: activeSession.status,
             blockedUntil: activeSession.blockedUntil.toISOString(),
+            remainingSeconds: this.computeRemainingSeconds(activeSession, new Date()),
           }
         : null,
     };
   }
 
   async getGarment(user: AuthenticatedUser, productId: string) {
-    const policy = this.getPolicy();
+    const policy = await this.getPolicy(user.tier);
     this.assertEnabledAndEligible(user, policy);
     if (!isUuid(productId)) {
       throw new BadRequestException({ code: 'INVALID_PRODUCT_ID', message: 'productId must be a UUID' });
@@ -102,7 +108,7 @@ export class LiveTryOnService {
   }
 
   async createSession(user: AuthenticatedUser, dto: CreateLiveSessionDto, idempotencyKey: string, origin?: string) {
-    const policy = this.getPolicy();
+    const policy = await this.getPolicy(user.tier);
     this.assertEnabledAndEligible(user, policy);
     if (!idempotencyKey || !isUuid(idempotencyKey)) {
       throw new BadRequestException({ code: 'INVALID_IDEMPOTENCY_KEY', message: 'Idempotency-Key must be a UUID' });
@@ -136,18 +142,19 @@ export class LiveTryOnService {
     await this.assertGarmentUrlReadable(product.garmentUrl);
     const now = new Date();
     const quotaDate = utcDateKey(now);
-    const blockedUntil = new Date(now.getTime() + (policy.tokenTtlSeconds + policy.maxDurationSeconds + policy.graceSeconds) * 1000);
+    const blockedUntil = new Date(now.getTime() + (policy.tokenTtlSeconds + policy.maxDurationSeconds + policy.graceSeconds + policy.pauseTimeoutSeconds) * 1000);
 
     const session = await this.reserveSession(user.id, product.id, idempotencyKey, bodyHash, quotaDate, blockedUntil, policy);
 
     try {
-      const token = await this.decart.createClientToken({ origin, maxDurationSeconds: policy.maxDurationSeconds });
+      const token = await this.decart.createClientToken({ origin, maxDurationSeconds: session.reservedSeconds });
       await this.prisma.liveTryOnSession.update({
         where: { id: session.id },
         data: {
           credentialStatus: LiveTryOnCredentialStatus.ISSUED,
           issuedAt: now,
           tokenExpiresAt: token.tokenExpiresAt,
+          activeStartedAt: now,
           providerMetadata: token.raw ? (token.raw as Prisma.InputJsonValue) : Prisma.JsonNull,
         },
       });
@@ -162,13 +169,102 @@ export class LiveTryOnService {
         serverNow: new Date().toISOString(),
         blockedUntil: session.blockedUntil.toISOString(),
         model: session.model,
-        maxDurationSeconds: policy.maxDurationSeconds,
+        maxDurationSeconds: session.reservedSeconds,
+        remainingSeconds: session.reservedSeconds,
+        status: LiveTryOnSessionStatus.ACTIVE,
+        revision: session.revision,
         garment: this.mapGarment(product),
       };
     } catch (error) {
-      await this.releaseFailedReservation(session.id, user.id, quotaDate, policy.maxDurationSeconds);
+      await this.releaseFailedReservation(session.id, user.id, quotaDate, session.reservedSeconds);
       throw error;
     }
+  }
+
+  async getSession(user: AuthenticatedUser, sessionId: string) {
+    const session = await this.prisma.liveTryOnSession.findUnique({ where: { id: sessionId }, include: { product: true } });
+    if (!session || session.userId !== user.id) {
+      throw new NotFoundException({ code: 'LIVE_SESSION_NOT_FOUND', message: 'Live Try-On session not found' });
+    }
+    return this.mapSessionStatus(session);
+  }
+
+  async pauseSession(user: AuthenticatedUser, sessionId: string, reason?: string) {
+    const session = await this.prisma.liveTryOnSession.findUnique({ where: { id: sessionId }, include: { product: true } });
+    if (!session || session.userId !== user.id) {
+      throw new NotFoundException({ code: 'LIVE_SESSION_NOT_FOUND', message: 'Live Try-On session not found' });
+    }
+    if (session.status !== LiveTryOnSessionStatus.ACTIVE) return this.mapSessionStatus(session);
+
+    const policy = await this.getPolicy(user.tier);
+    const now = new Date();
+    const usedSeconds = this.computeUsedSeconds(session, now);
+    const updated = await this.prisma.liveTryOnSession.update({
+      where: { id: session.id },
+      data: {
+        status: LiveTryOnSessionStatus.PAUSED,
+        usedSeconds,
+        activeStartedAt: null,
+        pausedAt: now,
+        pauseExpiresAt: new Date(now.getTime() + policy.pauseTimeoutSeconds * 1000),
+        revision: { increment: 1 },
+        endedReason: reason ?? session.endedReason,
+      },
+      include: { product: true },
+    });
+    return this.mapSessionStatus(updated);
+  }
+
+  async resumeSession(user: AuthenticatedUser, sessionId: string, origin?: string, productId?: string) {
+    const session = await this.prisma.liveTryOnSession.findUnique({ where: { id: sessionId }, include: { product: true } });
+    if (!session || session.userId !== user.id) {
+      throw new NotFoundException({ code: 'LIVE_SESSION_NOT_FOUND', message: 'Live Try-On session not found' });
+    }
+    const policy = await this.getPolicy(user.tier);
+    this.assertEnabledAndEligible(user, policy);
+    if (session.status !== LiveTryOnSessionStatus.PAUSED) {
+      throw new ConflictException({ code: 'LIVE_SESSION_NOT_PAUSED', message: 'Live session is not paused' });
+    }
+    if (session.pauseExpiresAt && session.pauseExpiresAt.getTime() <= Date.now()) {
+      throw new ConflictException({ code: 'LIVE_PAUSE_EXPIRED', message: 'Paused Live session expired' });
+    }
+
+    const remainingSeconds = this.computeRemainingSeconds(session, new Date());
+    if (remainingSeconds <= 0) {
+      throw new ConflictException({ code: 'LIVE_SESSION_EXHAUSTED', message: 'Live session has no remaining seconds' });
+    }
+
+    const product = await this.resolveLiveProduct(productId ?? session.productId, policy);
+    await this.assertGarmentUrlReadable(product.garmentUrl);
+    const token = await this.decart.createClientToken({ origin, maxDurationSeconds: remainingSeconds });
+    const now = new Date();
+    const updated = await this.prisma.liveTryOnSession.update({
+      where: { id: session.id },
+      data: {
+        status: LiveTryOnSessionStatus.ACTIVE,
+        credentialStatus: LiveTryOnCredentialStatus.ISSUED,
+        issuedAt: now,
+        tokenExpiresAt: token.tokenExpiresAt,
+        activeStartedAt: now,
+        pausedAt: null,
+        productId: product.id,
+        revision: { increment: 1 },
+        providerMetadata: token.raw ? (token.raw as Prisma.InputJsonValue) : Prisma.JsonNull,
+      },
+      include: { product: true },
+    });
+
+    return {
+      ...this.mapSessionStatus(updated),
+      transport: policy.transport,
+      connection: {
+        clientToken: token.clientToken,
+        tokenExpiresAt: token.tokenExpiresAt.toISOString(),
+      },
+      model: updated.model,
+      maxDurationSeconds: remainingSeconds,
+      garment: this.mapGarment(updated.product),
+    };
   }
 
   async endSession(user: AuthenticatedUser, sessionId: string, reason?: string) {
@@ -178,34 +274,100 @@ export class LiveTryOnService {
     }
 
     const now = new Date();
-    const clientEndGraceSeconds = Number(this.config.get<string>('DECART_LIVE_CLIENT_END_GRACE_SECONDS') ?? '15');
-    const shortenedBlockedUntil = new Date(now.getTime() + clientEndGraceSeconds * 1000);
-    const blockedUntil = shortenedBlockedUntil < session.blockedUntil ? shortenedBlockedUntil : session.blockedUntil;
+    const usedSeconds = this.computeUsedSeconds(session, now);
+    const blockedUntil = now;
 
     const updated = await this.prisma.liveTryOnSession.update({
       where: { id: session.id },
       data: {
         status: LiveTryOnSessionStatus.ENDED,
+        reservationStatus: LiveTryOnReservationStatus.ALLOCATED,
+        usedSeconds,
+        allocatedSeconds: usedSeconds,
+        activeStartedAt: null,
         clientEndedAt: session.clientEndedAt ?? now,
         endedReason: session.endedReason ?? reason ?? 'client_end',
         blockedUntil,
+        revision: { increment: 1 },
       },
     });
-    await this.prisma.liveTryOnLease.updateMany({
-      where: { userId: user.id, sessionId: session.id, expiresAt: { gt: blockedUntil } },
-      data: { expiresAt: blockedUntil },
-    });
+
+    if (session.reservationStatus === LiveTryOnReservationStatus.RESERVED) {
+      await this.prisma.$transaction(async (tx) => {
+        await tx.liveTryOnBudget.update({
+          where: { scopeKey_date: { scopeKey: `user:${user.id}`, date: session.quotaDate } },
+          data: {
+            reservedSeconds: { decrement: session.reservedSeconds },
+            allocatedSeconds: { increment: usedSeconds },
+          },
+        });
+        await tx.liveTryOnBudget.updateMany({
+          where: { scopeKey: 'global', date: session.quotaDate },
+          data: {
+            reservedSeconds: { decrement: session.reservedSeconds },
+            allocatedSeconds: { increment: usedSeconds },
+          },
+        });
+        await tx.liveTryOnLease.deleteMany({ where: { userId: user.id, sessionId: session.id } });
+      });
+    }
 
     return {
       sessionId: updated.id,
       status: updated.status,
       blockedUntil: updated.blockedUntil.toISOString(),
+      remainingSeconds: Math.max(0, updated.reservedSeconds - usedSeconds),
+      revision: updated.revision,
     };
+  }
+
+  private mapSessionStatus(session: { id: string; status: LiveTryOnSessionStatus; reservedSeconds: number; usedSeconds: number; activeStartedAt: Date | null; blockedUntil: Date; pauseExpiresAt: Date | null; revision: number; product: Product }) {
+    const now = new Date();
+    return {
+      sessionId: session.id,
+      status: session.status,
+      remainingSeconds: this.computeRemainingSeconds(session, now),
+      serverNow: now.toISOString(),
+      activeStartedAt: session.activeStartedAt?.toISOString() ?? null,
+      blockedUntil: session.blockedUntil.toISOString(),
+      pauseExpiresAt: session.pauseExpiresAt?.toISOString() ?? null,
+      revision: session.revision,
+      garment: this.mapGarment(session.product),
+    };
+  }
+
+  private computeUsedSeconds(session: { reservedSeconds: number; usedSeconds: number; activeStartedAt: Date | null }, now: Date) {
+    const activeSeconds = session.activeStartedAt ? Math.max(0, Math.ceil((now.getTime() - session.activeStartedAt.getTime()) / 1000)) : 0;
+    return Math.min(session.reservedSeconds, session.usedSeconds + activeSeconds);
+  }
+
+  private computeRemainingSeconds(session: { reservedSeconds: number; usedSeconds: number; activeStartedAt: Date | null }, now: Date) {
+    return Math.max(0, session.reservedSeconds - this.computeUsedSeconds(session, now));
+  }
+
+  private async settleSessionUsage(tx: Prisma.TransactionClient, session: { userId: string; id: string; quotaDate: string; reservedSeconds: number; usedSeconds: number; activeStartedAt: Date | null }) {
+    const allocatedSeconds = this.computeUsedSeconds(session, new Date());
+    await tx.liveTryOnBudget.update({
+      where: { scopeKey_date: { scopeKey: `user:${session.userId}`, date: session.quotaDate } },
+      data: {
+        reservedSeconds: { decrement: session.reservedSeconds },
+        allocatedSeconds: { increment: allocatedSeconds },
+      },
+    });
+    await tx.liveTryOnBudget.updateMany({
+      where: { scopeKey: 'global', date: session.quotaDate },
+      data: {
+        reservedSeconds: { decrement: session.reservedSeconds },
+        allocatedSeconds: { increment: allocatedSeconds },
+      },
+    });
+    await tx.liveTryOnLease.deleteMany({ where: { userId: session.userId, sessionId: session.id } });
+    return allocatedSeconds;
   }
 
   @Cron(CronExpression.EVERY_MINUTE, { name: 'live-try-on-session-reconcile' })
   async reconcileExpiredSessions() {
-    if (!this.getPolicy().enabled) return;
+    if (!(await this.getPolicy()).enabled) return;
 
     const now = new Date();
     try {
@@ -283,7 +445,7 @@ export class LiveTryOnService {
         update: {},
       });
       const remaining = policy.userDailySeconds - budget.reservedSeconds - budget.allocatedSeconds;
-      if (remaining < policy.maxDurationSeconds) {
+      if (remaining <= 0) {
         throw new ForbiddenException({ code: 'LIVE_QUOTA_EXCEEDED', message: 'Live Try-On quota exceeded', remaining });
       }
 
@@ -295,8 +457,13 @@ export class LiveTryOnService {
         update: {},
       });
       const globalRemaining = globalLimitSeconds - globalBudget.reservedSeconds - globalBudget.allocatedSeconds;
-      if (globalRemaining < policy.maxDurationSeconds) {
+      if (globalRemaining <= 0) {
         throw new ForbiddenException({ code: 'LIVE_GLOBAL_BUDGET_EXCEEDED', message: 'Live Try-On global budget exceeded', remaining: globalRemaining });
+      }
+      const sessionBudgetSeconds = Math.min(policy.maxDurationSeconds, remaining, globalRemaining);
+      const minSessionSeconds = Number(this.config.get<string>('DECART_LIVE_MIN_SESSION_SECONDS') ?? '5');
+      if (sessionBudgetSeconds < minSessionSeconds) {
+        throw new ForbiddenException({ code: 'LIVE_SESSION_BUDGET_TOO_LOW', message: 'Live Try-On remaining seconds are below the minimum session duration', remaining: sessionBudgetSeconds });
       }
 
       const session = await tx.liveTryOnSession.create({
@@ -305,10 +472,11 @@ export class LiveTryOnService {
           productId,
           model: this.decart.model,
           transport: policy.transport,
+          tier: policy.tier,
           idempotencyKey,
           idempotencyBodyHash: bodyHash,
           quotaDate,
-          reservedSeconds: policy.maxDurationSeconds,
+          reservedSeconds: sessionBudgetSeconds,
           policyVersion: policy.policyVersion,
           rateCreditsPerSecond: policy.rateCreditsPerSecond,
           blockedUntil,
@@ -317,11 +485,11 @@ export class LiveTryOnService {
 
       await tx.liveTryOnBudget.update({
         where: { id: budget.id },
-        data: { reservedSeconds: { increment: policy.maxDurationSeconds } },
+        data: { reservedSeconds: { increment: sessionBudgetSeconds } },
       });
       await tx.liveTryOnBudget.update({
         where: { id: globalBudget.id },
-        data: { reservedSeconds: { increment: policy.maxDurationSeconds } },
+        data: { reservedSeconds: { increment: sessionBudgetSeconds } },
       });
       await tx.liveTryOnLease.upsert({
         where: { userId },
@@ -360,7 +528,7 @@ export class LiveTryOnService {
       if (!session || session.reservationStatus !== LiveTryOnReservationStatus.RESERVED) return;
       if (session.blockedUntil > new Date()) return;
 
-      const allocatedSeconds = session.reservedSeconds;
+      const allocatedSeconds = await this.settleSessionUsage(tx, session);
       await tx.liveTryOnSession.update({
         where: { id: session.id },
         data: {
@@ -370,23 +538,10 @@ export class LiveTryOnService {
             : session.credentialStatus,
           reservationStatus: LiveTryOnReservationStatus.ALLOCATED,
           allocatedSeconds,
+          usedSeconds: allocatedSeconds,
+          activeStartedAt: null,
         },
       });
-      await tx.liveTryOnBudget.update({
-        where: { scopeKey_date: { scopeKey: `user:${session.userId}`, date: session.quotaDate } },
-        data: {
-          reservedSeconds: { decrement: session.reservedSeconds },
-          allocatedSeconds: { increment: allocatedSeconds },
-        },
-      });
-      await tx.liveTryOnBudget.updateMany({
-        where: { scopeKey: 'global', date: session.quotaDate },
-        data: {
-          reservedSeconds: { decrement: session.reservedSeconds },
-          allocatedSeconds: { increment: allocatedSeconds },
-        },
-      });
-      await tx.liveTryOnLease.deleteMany({ where: { userId: session.userId, sessionId: session.id } });
     });
   }
 
@@ -462,30 +617,35 @@ export class LiveTryOnService {
     return { eligible: true };
   }
 
-  private getPolicy(): LiveTryOnPolicy {
-    const enabled = this.config.get<string>('DECART_LIVE_TRYON_ENABLED') === 'true';
+  private async getPolicy(tier: UserTier = UserTier.MEMBER): Promise<LiveTryOnPolicy> {
+    const settings = await this.adminSettings.getLiveTryOnSettings();
+    const tierPolicy = settings.tiers[tier] ?? settings.tiers.FREE;
+    const enabled = settings.enabled && tierPolicy.liveEnabled;
     return {
       enabled,
       transport: 'direct',
-      disabledReason: enabled ? undefined : 'feature_disabled',
-      maxDurationSeconds: Number(this.config.get<string>('DECART_LIVE_MAX_DURATION_SECONDS') ?? '60'),
+      disabledReason: enabled ? undefined : settings.enabled ? 'tier_not_allowed' : 'feature_disabled',
+      maxDurationSeconds: tierPolicy.maxSessionSeconds,
       tokenTtlSeconds: this.decart.getTokenTtlSeconds(),
       graceSeconds: Number(this.config.get<string>('DECART_LIVE_GRACE_SECONDS') ?? '30'),
-      userDailySeconds: Number(this.config.get<string>('DECART_LIVE_USER_DAILY_SECONDS') ?? '300'),
-      globalDailyCredits: Number(this.config.get<string>('DECART_LIVE_GLOBAL_DAILY_CREDITS') ?? '12000'),
-      maxConcurrentSessions: Number(this.config.get<string>('DECART_LIVE_MAX_CONCURRENT_SESSIONS') ?? '5'),
+      userDailySeconds: tierPolicy.dailySeconds,
+      globalDailyCredits: settings.globalDailyCredits,
+      maxConcurrentSessions: settings.maxConcurrentSessions,
       rateCreditsPerSecond: Number(this.config.get<string>('DECART_LIVE_RATE_CREDITS_PER_SECOND') ?? '2'),
-      policyVersion: this.config.get<string>('DECART_LIVE_POLICY_VERSION') ?? 'live-v1',
-      betaUserIds: csvSet(this.config.get<string>('DECART_LIVE_BETA_USER_IDS')),
-      betaProductIds: csvSet(this.config.get<string>('DECART_LIVE_BETA_PRODUCT_IDS')),
-      allowedCategories: categorySet(this.config.get<string>('DECART_LIVE_ALLOWED_CATEGORIES') ?? 'UPPER'),
+      policyVersion: `live-v${settings.version}`,
+      betaUserIds: new Set(settings.betaUserIds),
+      betaProductIds: new Set(settings.betaProductIds),
+      allowedCategories: new Set(settings.allowedCategories),
+      pauseTimeoutSeconds: settings.pauseTimeoutSeconds,
+      tier,
     };
   }
 }
 
 function buildPrompt(product: Product) {
-  const maxPromptLength = 858;
-  const instruction = 'Virtual try-on. Preserve garment color, pattern, silhouette, and construction details.';
+  // Leave room below the provider's reported prompt limit.
+  const maxPromptLength = 700;
+  const instruction = 'Try on the reference garment. Match its color, pattern, fabric and fit.';
   const details = [product.color, product.material, product.name, product.description]
     .filter(Boolean)
     .join(' ')
@@ -496,19 +656,6 @@ function buildPrompt(product: Product) {
     ? `${details.slice(0, availableLength - 3).trimEnd()}...`
     : details;
   return [instruction, shortenedDetails].filter(Boolean).join(' ');
-}
-
-function csvSet(value?: string) {
-  return new Set((value ?? '').split(',').map((item) => item.trim()).filter(Boolean));
-}
-
-function categorySet(value: string) {
-  const categories = new Set<GarmentCategory>();
-  for (const item of value.split(',')) {
-    const key = item.trim().toUpperCase();
-    if (key in GarmentCategory) categories.add(GarmentCategory[key as keyof typeof GarmentCategory]);
-  }
-  return categories.size > 0 ? categories : new Set([GarmentCategory.UPPER]);
 }
 
 function hashJson(value: unknown) {

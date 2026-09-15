@@ -6,6 +6,7 @@ import { buildApiResponse } from '../../common/utils/api-response.util';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { AuthenticatedUser } from '../auth/interfaces/authenticated-user.interface';
 import { CreateLiveSessionDto } from './dto/create-live-session.dto';
+import { ResumeLiveSessionDto } from './dto/resume-live-session.dto';
 import { EndLiveSessionDto } from './dto/end-live-session.dto';
 import { LiveTryOnService } from './live-try-on.service';
 
@@ -46,6 +47,44 @@ export class LiveTryOnController {
   ) {
     const data = await this.liveTryOnService.createSession(user, dto, idempotencyKey, origin);
     return buildApiResponse(req, 'LIVE_TRYON_SESSION_CREATED', 'Tạo phiên Live Try-On thành công', data);
+  }
+
+  @Get('sessions/:id')
+  @ApiOperation({ summary: 'Lấy trạng thái phiên Live Try-On' })
+  async getSession(
+    @Req() req: Request,
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id') id: string,
+  ) {
+    const data = await this.liveTryOnService.getSession(user, id);
+    return buildApiResponse(req, 'LIVE_TRYON_SESSION_FETCHED', 'Lấy trạng thái phiên Live Try-On thành công', data);
+  }
+
+  @Post('sessions/:id/pause')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Tạm dừng phiên Live Try-On' })
+  async pauseSession(
+    @Req() req: Request,
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id') id: string,
+    @Body() dto: EndLiveSessionDto,
+  ) {
+    const data = await this.liveTryOnService.pauseSession(user, id, dto.reason);
+    return buildApiResponse(req, 'LIVE_TRYON_SESSION_PAUSED', 'Tạm dừng phiên Live Try-On thành công', data);
+  }
+
+  @Post('sessions/:id/resume')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Tiếp tục phiên Live Try-On' })
+  async resumeSession(
+    @Req() req: Request,
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id') id: string,
+    @Body() dto: ResumeLiveSessionDto,
+    @Headers('origin') origin?: string,
+  ) {
+    const data = await this.liveTryOnService.resumeSession(user, id, origin, dto.productId);
+    return buildApiResponse(req, 'LIVE_TRYON_SESSION_RESUMED', 'Tiếp tục phiên Live Try-On thành công', data);
   }
 
   @Post('sessions/:id/end')
