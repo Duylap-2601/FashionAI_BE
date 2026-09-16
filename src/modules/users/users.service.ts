@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { Injectable, NotFoundException, BadRequestException } from '@nestjs/common';
 import { GarmentCategory, UserTier } from '@prisma/client';
 import { PrismaService } from '../../database/prisma.service';
 import { PAID_STATUSES } from '../../common/constants/order.constants';
@@ -162,9 +162,27 @@ export class UsersService {
     };
   }
 
-  async updateByAdmin(id: string, dto: UpdateUserAdminDto) {
+  async updateByAdmin(id: string, dto: UpdateUserAdminDto, currentUserId: string) {
     const user = await this.prisma.user.findUnique({ where: { id } });
     if (!user) throw new NotFoundException('Không tìm thấy người dùng');
+
+    // Ngăn admin tự thay đổi role của chính họ
+    if (id === currentUserId && dto.role !== undefined) {
+      throw new BadRequestException('Bạn không thể thay đổi quyền của chính mình');
+    }
+
+    // Nếu đang hạ cấp một admin, kiểm tra xem còn admin nào khác không
+    if (dto.role && dto.role !== user.role && user.role === 'ADMIN') {
+      const adminCount = await this.prisma.user.count({
+        where: { role: 'ADMIN' },
+      });
+
+      if (adminCount <= 1) {
+        throw new BadRequestException(
+          'Không thể hạ cấp admin cuối cùng. Phải có ít nhất một admin trong hệ thống.',
+        );
+      }
+    }
 
     return this.prisma.user.update({
       where: { id },

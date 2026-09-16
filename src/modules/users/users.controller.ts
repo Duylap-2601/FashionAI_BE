@@ -141,10 +141,11 @@ export class UsersController {
   @ApiOperation({ summary: 'Cập nhật thông tin người dùng (Admin Only)' })
   async updateByAdmin(
     @Req() req: Request,
+    @CurrentUser() currentUser: RequestUser,
     @Param('id') id: string,
     @Body() dto: UpdateUserAdminDto,
   ) {
-    const data = await this.usersService.updateByAdmin(id, dto);
+    const data = await this.usersService.updateByAdmin(id, dto, currentUser.id);
     return buildApiResponse(
       req,
       'ADMIN_USER_UPDATED',
