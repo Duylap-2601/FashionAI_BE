@@ -88,6 +88,12 @@ Existing ownership boundaries:
 - `realtime`: Socket.IO gateway/auth/emitter plumbing. Business modules should
   emit through exported services instead of depending directly on gateways.
 - `try-on`, `stylist`, `chat`: AI workflows and prompt/provider orchestration.
+- `outbox`: transactional outbox pattern (`OutboxEvent` + BullMQ). Business
+  modules write an outbox event inside the same DB transaction as their state
+  change via `OutboxService.createEvent`, or enqueue post-commit via
+  `enqueueEvent` (e.g. webhook handlers). The `OutboxProcessor` worker performs
+  the actual side effect (currently shipping/GHN calls) asynchronously with
+  retry/backoff.
 - `storage`, `mail`, `health`, `admin`, `maintenance`, `rack`, `collections`:
   keep their current domain responsibilities.
 
@@ -155,12 +161,17 @@ Use the existing Prisma schema as the source of truth before designing new table
 or fields. Prefer extending current models when they already represent the
 domain:
 
-- Orders: `Order`, `OrderItem`, `OrderEvent`, `Payment`, `Shipment`.
-- Users and sizing: `User`, `Measurement`.
+- Orders: `Order`, `OrderItem`, `OrderEvent`, `Payment`, `Refund`, `Shipment`.
+- Users, auth, and sizing: `User`, `Measurement`, `RefreshToken`,
+  `PasswordResetToken`, `EmailVerificationToken`.
 - Products and merchandising: `Product`, `ProductImage`, `Collection`,
   `ProductCollection`, `RackItem`, `Review`, `ReviewReply`.
 - Subscription and AI usage: `Subscription`, `DailyUsage`, `TryOnResult`,
   `StylistResult`, `ChatSession`, `ChatMessage`.
+- Live try-on: `LiveTryOnSession`, `LiveTryOnBudget`, `LiveTryOnLease`,
+  `LiveTryOnPolicyAudit`.
+- Async/webhook infra: `OutboxEvent`, `WebhookEvent`, `WebhookFailure`.
+- Admin/config: `AppSetting`.
 - Notifications: `Notification`.
 
 When schema changes are required:
