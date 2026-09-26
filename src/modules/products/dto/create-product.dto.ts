@@ -10,7 +10,6 @@ import {
   IsString,
   IsUrl,
   Min,
-  IsInt,
 } from 'class-validator';
 import { GarmentType } from '../../../common/constants/measurement.constants';
 
