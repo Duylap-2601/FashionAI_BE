@@ -28,6 +28,7 @@ import { OutboxModule } from './modules/outbox/outbox.module';
 import { RequestIdMiddleware } from './common/middleware/request-id.middleware';
 import { RateLimitGuard } from './common/guards/rate-limit.guard';
 import { RedisModule } from './common/redis/redis.module';
+import { AppLoggingModule } from './common/logging/app-logging.module';
 
 @Module({
   imports: [
@@ -35,6 +36,7 @@ import { RedisModule } from './common/redis/redis.module';
       isGlobal: true,
       envFilePath: '.env',
     }),
+    AppLoggingModule,
     BullModule.forRootAsync({
       inject: [ConfigService],
       useFactory: (configService: ConfigService) => {

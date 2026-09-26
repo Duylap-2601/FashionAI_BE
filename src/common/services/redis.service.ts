@@ -65,7 +65,7 @@ export class RedisService implements OnModuleInit, OnModuleDestroy {
       try {
         return await this.client.get(key);
       } catch (e) {
-        this.logger.warn(`Redis get failed for key ${key}`);
+        this.logger.warn(`Redis operation failed | operation=get | namespace=${this.getKeyNamespace(key)}`);
       }
     }
 
@@ -88,7 +88,7 @@ export class RedisService implements OnModuleInit, OnModuleDestroy {
         }
         return;
       } catch (e) {
-        this.logger.warn(`Redis set failed for key ${key}`);
+        this.logger.warn(`Redis operation failed | operation=set | namespace=${this.getKeyNamespace(key)}`);
       }
     }
 
@@ -105,7 +105,7 @@ export class RedisService implements OnModuleInit, OnModuleDestroy {
         }
         return val;
       } catch (e) {
-        this.logger.warn(`Redis incr failed for key ${key}`);
+        this.logger.warn(`Redis operation failed | operation=incr | namespace=${this.getKeyNamespace(key)}`);
       }
     }
 
@@ -124,7 +124,7 @@ export class RedisService implements OnModuleInit, OnModuleDestroy {
         }
         return val;
       } catch (e) {
-        this.logger.warn(`Redis incrby failed for key ${key}`);
+        this.logger.warn(`Redis operation failed | operation=incrby | namespace=${this.getKeyNamespace(key)}`);
       }
     }
 
@@ -140,7 +140,7 @@ export class RedisService implements OnModuleInit, OnModuleDestroy {
         const res = await this.client.set(lockKey, 'locked', 'EX', ttlSeconds, 'NX');
         return res === 'OK';
       } catch (e) {
-        this.logger.warn(`Redis lock failed for key ${lockKey}`);
+        this.logger.warn(`Redis operation failed | operation=lock | namespace=${this.getKeyNamespace(lockKey)}`);
       }
     }
 
@@ -156,7 +156,7 @@ export class RedisService implements OnModuleInit, OnModuleDestroy {
         await this.client.del(lockKey);
         return;
       } catch (e) {
-        this.logger.warn(`Redis release lock failed for key ${lockKey}`);
+        this.logger.warn(`Redis operation failed | operation=release_lock | namespace=${this.getKeyNamespace(lockKey)}`);
       }
     }
     this.inMemoryStore.delete(lockKey);
@@ -168,7 +168,7 @@ export class RedisService implements OnModuleInit, OnModuleDestroy {
         await this.client.del(key);
         return;
       } catch (e) {
-        this.logger.warn(`Redis del failed for key ${key}`);
+        this.logger.warn(`Redis operation failed | operation=del | namespace=${this.getKeyNamespace(key)}`);
       }
     }
     this.inMemoryStore.delete(key);
@@ -197,5 +197,9 @@ export class RedisService implements OnModuleInit, OnModuleDestroy {
     if (this.client) {
       this.client.disconnect();
     }
+  }
+
+  private getKeyNamespace(key: string): string {
+    return key.split(':', 1)[0] || 'unknown';
   }
 }
