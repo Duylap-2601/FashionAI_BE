@@ -96,13 +96,6 @@ export const ORDER_STATUS_TRANSITIONS: Record<OrderStatus, OrderStatus[]> = {
   [OrderStatus.FAILED]: [],
 };
 
-export const STOCK_DECREMENTED_STATES: OrderStatus[] = [
-  OrderStatus.PAID,
-  OrderStatus.CONFIRMED,
-  OrderStatus.SHIPPING,
-  OrderStatus.DELIVERED,
-];
-
 export const STATUS_NOTIFY_EMAIL: OrderStatus[] = [
   OrderStatus.CONFIRMED,
   OrderStatus.CANCELLED,

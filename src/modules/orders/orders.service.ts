@@ -17,7 +17,6 @@ import {
   ORDER_STATUS_MESSAGE,
   ORDER_STATUS_TRANSITIONS,
   STATUS_NOTIFY_EMAIL,
-  STOCK_DECREMENTED_STATES,
   UUID_REGEX,
 } from './constants/order-flow.constants';
 import { CreateMeasurementReviewDto, UpdateItemMeasurementDto } from './dto/measurement-review.dto';
@@ -75,16 +74,6 @@ export class OrdersService {
       throw new BadRequestException(
         `Sản phẩm không tồn tại hoặc chưa active: ${missingIds.join(', ')}`,
       );
-    }
-
-    // Kiểm tra tồn kho (stock là Int NOT NULL nên luôn có giá trị).
-    for (const item of dto.items) {
-      const product = productMap.get(item.productId)!;
-      if (product.stock < item.quantity) {
-        throw new BadRequestException(
-          `Sản phẩm "${product.name}" chỉ còn ${product.stock} trong kho`,
-        );
-      }
     }
 
     // Đặt may theo số đo: user phải điền đủ số đo cơ thể bắt buộc dựa trên loại
@@ -366,10 +355,6 @@ export class OrdersService {
       );
     }
 
-    // Đơn nâng cấp gói (subscription) có targetTier và không có item sản phẩm nên
-    // bỏ qua toàn bộ logic tồn kho.
-    const isProductOrder = order.targetTier === null;
-
     const verifiedOnlyStatuses: OrderStatus[] = [OrderStatus.SHIPPING, OrderStatus.DELIVERED, OrderStatus.PAID];
     if (isNewFlow && verifiedOnlyStatuses.includes(status)) {
       throw new BadRequestException('Trạng thái này phải do thanh toán hoặc vận chuyển đã xác minh cập nhật.');
@@ -379,65 +364,13 @@ export class OrdersService {
       await this.assertNoOpenMeasurementReviews(order.id);
     }
 
-    // Đơn COD trừ kho tại CONFIRMED (đơn online đã trừ ở PAID qua webhook). Kiểm
-    // tra tồn đủ trước khi trừ, thiếu thì báo lỗi để admin biết mà xử lý.
-    const shouldDecrement =
-      isProductOrder &&
-      status === OrderStatus.CONFIRMED &&
-      order.status === OrderStatus.PENDING;
-
-    // Hoàn tồn kho khi đơn ĐÃ trừ kho bị hủy hoặc hoàn hàng. Đơn PENDING chưa trừ
-    // kho nên không cần hoàn.
-    const shouldRestock =
-      isProductOrder &&
-      (status === OrderStatus.CANCELLED || status === OrderStatus.RETURNED) &&
-      STOCK_DECREMENTED_STATES.includes(order.status);
-
-    if (shouldDecrement) {
-      const items = await this.prisma.orderItem.findMany({
-        where: { orderId: order.id },
-        include: { product: { select: { name: true, stock: true } } },
+    await this.prisma.$transaction(async (tx) => {
+      await tx.order.update({
+        where: { id: order.id },
+        data: { status, ...(status === OrderStatus.CANCELLED && order.paymentStatus === PaymentStatus.PAID ? { refundStatus: RefundStatus.REQUIRED } : {}) },
       });
-      for (const item of items) {
-        if (item.product.stock < item.quantity) {
-          throw new BadRequestException(
-            `Sản phẩm "${item.product.name}" chỉ còn ${item.product.stock} trong kho, không đủ để xác nhận đơn`,
-          );
-        }
-      }
-      await this.prisma.$transaction(async (tx) => {
-        await tx.order.update({ where: { id: order.id }, data: { status } });
-        for (const item of items) {
-          await tx.product.update({
-            where: { id: item.productId },
-            data: { stock: { decrement: item.quantity } },
-          });
-        }
-        await this.createOrderEvent(tx, { orderId: order.id, type: 'STATUS_CHANGED', source: 'ADMIN', actorId, fromStatus: order.status, toStatus: status, publicMessage: dto.publicMessage ?? ORDER_STATUS_MESSAGE[status], internalNote: dto.internalNote });
-      });
-    } else if (shouldRestock) {
-      const items = await this.prisma.orderItem.findMany({
-        where: { orderId: order.id },
-      });
-      await this.prisma.$transaction(async (tx) => {
-        await tx.order.update({ where: { id: order.id }, data: { status, ...(status === OrderStatus.CANCELLED && order.paymentStatus === PaymentStatus.PAID ? { refundStatus: RefundStatus.REQUIRED } : {}) } });
-        for (const item of items) {
-          await tx.product.update({
-            where: { id: item.productId },
-            data: { stock: { increment: item.quantity } },
-          });
-        }
-        await this.createOrderEvent(tx, { orderId: order.id, type: 'STATUS_CHANGED', source: 'ADMIN', actorId, fromStatus: order.status, toStatus: status, publicMessage: dto.publicMessage ?? ORDER_STATUS_MESSAGE[status], internalNote: dto.internalNote });
-      });
-    } else {
-      await this.prisma.$transaction(async (tx) => {
-        await tx.order.update({
-          where: { id: order.id },
-          data: { status, ...(status === OrderStatus.CANCELLED && order.paymentStatus === PaymentStatus.PAID ? { refundStatus: RefundStatus.REQUIRED } : {}) },
-        });
-        await this.createOrderEvent(tx, { orderId: order.id, type: 'STATUS_CHANGED', source: 'ADMIN', actorId, fromStatus: order.status, toStatus: status, publicMessage: dto.publicMessage ?? ORDER_STATUS_MESSAGE[status], internalNote: dto.internalNote });
-      });
-    }
+      await this.createOrderEvent(tx, { orderId: order.id, type: 'STATUS_CHANGED', source: 'ADMIN', actorId, fromStatus: order.status, toStatus: status, publicMessage: dto.publicMessage ?? ORDER_STATUS_MESSAGE[status], internalNote: dto.internalNote });
+    });
 
     // Gửi email thông báo cho user; lỗi email không được làm hỏng luồng cập nhật.
     if (STATUS_NOTIFY_EMAIL.includes(status) && order.user?.email) {

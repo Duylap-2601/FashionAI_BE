@@ -70,12 +70,6 @@ export class CreateProductDto {
   @IsOptional()
   originalPrice?: number;
 
-  @ApiProperty({ description: 'Số lượng tồn kho', required: false, example: 100, default: 0 })
-  @IsInt()
-  @Min(0)
-  @IsOptional()
-  stock?: number;
-
   @ApiProperty({ description: 'Thương hiệu', required: false, example: 'StAle. SIGNATURE' })
   @IsString()
   @IsOptional()

@@ -286,7 +286,6 @@ model Product {
   color         String?
   price         Decimal         @db.Decimal(10, 2)
   originalPrice Decimal?        @map("original_price") @db.Decimal(10, 2)
-  stock         Int             @default(0)
   brand         String?         @default("StAle. SIGNATURE")
   garmentUrl    String          @map("garment_url")
   status        ProductStatus   @default(ACTIVE)

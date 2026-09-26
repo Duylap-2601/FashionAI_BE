@@ -676,15 +676,6 @@ export class PaymentsService {
             tx,
           );
           subscriptionMode = result.mode;
-        } else {
-          // Đơn sản phẩm: trừ tồn kho khi đã xác nhận thanh toán. Trừ tại đây (không
-          // phải lúc tạo đơn PENDING) để đơn bỏ dở không giữ chỗ hàng vô thời hạn.
-          for (const item of order.items ?? []) {
-            await tx.product.update({
-              where: { id: item.productId },
-              data: { stock: { decrement: item.quantity } },
-            });
-          }
         }
 
         return { success: true, subscriptionMode };

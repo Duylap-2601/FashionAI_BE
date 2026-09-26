@@ -40,7 +40,6 @@ export class ProductsService {
       color: dto.color,
       price: dto.price,
       originalPrice: dto.originalPrice,
-      stock: dto.stock ?? 0,
       brand: dto.brand ?? 'StAle. SIGNATURE',
       garmentUrl,
       status: dto.status ?? ProductStatus.ACTIVE,
