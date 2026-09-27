@@ -1,11 +1,10 @@
-import { Injectable, NotFoundException, UnauthorizedException } from '@nestjs/common';
+import { BadRequestException, Injectable, NotFoundException, UnauthorizedException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { OrderStatus, Prisma, ShipmentStatus } from '@prisma/client';
+import { GhnLocationLevel, OrderStatus, Prisma, ShipmentStatus } from '@prisma/client';
 import { PrismaService } from '../../database/prisma.service';
 import { CalculateShippingFeeDto } from './dto/calculate-shipping-fee.dto';
 import { ShippingProviderType } from './constants/shipping-provider.enum';
 import { ShippingProviderFactory } from './shipping-provider.factory';
-import { GhnClient } from './providers/ghn/ghn.client';
 import { GhnShippingProvider } from './providers/ghn/ghn.provider';
 import { AdminSettingsService } from '../admin/admin-settings.service';
 
@@ -34,7 +33,6 @@ export class ShippingService {
     private readonly configService: ConfigService,
     private readonly prisma: PrismaService,
     private readonly factory: ShippingProviderFactory,
-    private readonly ghnClient: GhnClient,
     private readonly ghnProvider: GhnShippingProvider,
     private readonly adminSettingsService: AdminSettingsService,
   ) {}
@@ -94,44 +92,46 @@ export class ShippingService {
   }
 
   async getProvinces() {
-    const response = await this.ghnClient.post<{ data?: unknown[] }>('/shiip/public-api/master-data/province', {});
-    return (response.data ?? [])
-      .map((item) => this.normalizeLegacyLocation(item, 'ProvinceID', 'ProvinceName'))
-      .filter((item): item is { id: number; name: string } => Boolean(item));
+    const provinces = await this.prisma.ghnLocation.findMany({
+      where: { level: GhnLocationLevel.PROVINCE, isActive: true },
+      orderBy: { name: 'asc' },
+    });
+    return provinces.map((item) => ({ id: Number(item.code), name: item.name })).filter((item) => Number.isFinite(item.id));
   }
 
   async getDistricts(provinceId: number) {
-    const response = await this.ghnClient.post<{ data?: unknown[] }>('/shiip/public-api/master-data/district', { province_id: provinceId });
-    return (response.data ?? [])
-      .map((item) => this.normalizeLegacyLocation(item, 'DistrictID', 'DistrictName'))
-      .filter((item): item is { id: number; name: string } => Boolean(item));
+    const districts = await this.prisma.ghnLocation.findMany({
+      where: { level: GhnLocationLevel.DISTRICT, parentCode: String(provinceId), isActive: true },
+      orderBy: { name: 'asc' },
+    });
+    return districts.map((item) => ({ id: Number(item.code), name: item.name })).filter((item) => Number.isFinite(item.id));
   }
 
   async getWards(districtId: number) {
-    const response = await this.ghnClient.post<{ data?: unknown[] }>('/shiip/public-api/master-data/ward', { district_id: districtId });
-    return (response.data ?? [])
-      .map((item) => this.normalizeLegacyWard(item))
-      .filter((item): item is { code: string; name: string } => Boolean(item));
+    const wards = await this.prisma.ghnLocation.findMany({
+      where: { level: GhnLocationLevel.WARD, parentCode: String(districtId), isActive: true },
+      orderBy: { name: 'asc' },
+    });
+    return wards.map((item) => ({ code: item.code, name: item.name }));
   }
 
-  private normalizeLegacyLocation(value: unknown, idKey: string, nameKey: string) {
-    if (!value || typeof value !== 'object') return null;
-    const record = value as Record<string, unknown>;
-    const id = Number(record[idKey]);
-    const name = record[nameKey];
-    return Number.isFinite(id) && id > 0 && typeof name === 'string' && name.trim()
-      ? { id, name: name.trim() }
-      : null;
-  }
-
-  private normalizeLegacyWard(value: unknown) {
-    if (!value || typeof value !== 'object') return null;
-    const record = value as Record<string, unknown>;
-    const code = record.WardCode;
-    const name = record.WardName;
-    return typeof code === 'string' && code.trim() && typeof name === 'string' && name.trim()
-      ? { code: code.trim(), name: name.trim() }
-      : null;
+  async validateGhnLocation(provinceId: number, districtId: number, wardCode: string) {
+    const [province, district, ward] = await Promise.all([
+      this.prisma.ghnLocation.findFirst({ where: { level: GhnLocationLevel.PROVINCE, code: String(provinceId), isActive: true } }),
+      this.prisma.ghnLocation.findFirst({ where: { level: GhnLocationLevel.DISTRICT, code: String(districtId), parentCode: String(provinceId), isActive: true } }),
+      this.prisma.ghnLocation.findFirst({ where: { level: GhnLocationLevel.WARD, code: wardCode, parentCode: String(districtId), isActive: true } }),
+    ]);
+    if (!province) throw new BadRequestException({ code: 'ADDRESS_INVALID', message: 'Tỉnh/Thành không hợp lệ.' });
+    if (!district) throw new BadRequestException({ code: 'ADDRESS_INVALID', message: 'Quận/Huyện không thuộc Tỉnh/Thành đã chọn.' });
+    if (!ward) throw new BadRequestException({ code: 'ADDRESS_INVALID', message: 'Phường/Xã không thuộc Quận/Huyện đã chọn.' });
+    return {
+      ghnProvinceId: Number(province.code),
+      ghnDistrictId: Number(district.code),
+      ghnWardCode: ward.code,
+      provinceName: province.name,
+      districtName: district.name,
+      wardName: ward.name,
+    };
   }
 
   async getLocations() {

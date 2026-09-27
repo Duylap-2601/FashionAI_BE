@@ -112,7 +112,34 @@ export class CreateOrderDto {
   @ApiProperty({ type: ShippingInfoDto })
   @ValidateNested()
   @Type(() => ShippingInfoDto)
-  shippingInfo!: ShippingInfoDto;
+  @IsOptional()
+  shippingInfo?: ShippingInfoDto;
+
+  @ApiProperty({ description: 'ID địa chỉ trong sổ địa chỉ', required: false })
+  @IsUUID('4')
+  @IsOptional()
+  shippingAddressId?: string;
+
+  @ApiProperty({ description: 'Version địa chỉ khách đã xác nhận', required: false })
+  @IsInt()
+  @Min(1)
+  @IsOptional()
+  addressVersion?: number;
+
+  @ApiProperty({ description: 'Ghi chú giao hàng', required: false })
+  @IsString()
+  @IsOptional()
+  shippingNote?: string;
+
+  @ApiProperty({ description: 'Quote token trả về từ /orders/quote', required: false })
+  @IsString()
+  @IsOptional()
+  quoteToken?: string;
+
+  @ApiProperty({ description: 'Idempotency key cho lượt xác nhận đặt hàng', required: false })
+  @IsString()
+  @IsOptional()
+  idempotencyKey?: string;
 
   @ApiProperty({ description: 'Phương thức thanh toán online cho đơn may đo mới', enum: ONLINE_PAYMENT_METHODS, example: 'BANK_TRANSFER', required: false })
   @IsString()

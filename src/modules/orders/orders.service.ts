@@ -5,6 +5,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { NotificationType, OrderStatus, PaymentStatus, Prisma, Product, RefundStatus, Role, ShipmentStatus } from '@prisma/client';
+import { createHash, createHmac, timingSafeEqual } from 'crypto';
 import { PrismaService } from '../../database/prisma.service';
 import { MailQueueService } from '../mail/mail-queue.service';
 import { NotificationService } from '../notification/notification.service';
@@ -24,6 +25,7 @@ import { RefundOrderDto } from './dto/refund-order.dto';
 import { CancelShipmentDto, CreateShipmentDto } from './dto/shipment.dto';
 import { ShippingProviderType } from '../shipping/constants/shipping-provider.enum';
 import { ShippingService } from '../shipping/shipping.service';
+import { UserAddressesService } from '../users/user-addresses.service';
 import {
   MEASUREMENT_LABELS,
   MeasurementField,
@@ -35,6 +37,21 @@ type IOrderWithRelations = Prisma.OrderGetPayload<{
 }> & { user?: unknown };
 
 type IOrderProduct = Product;
+type ResolvedCreateOrderDto = CreateOrderDto & { shippingInfo: NonNullable<CreateOrderDto['shippingInfo']> };
+type QuotePayload = {
+  userId: string;
+  fingerprint: string;
+  shippingAddressId?: string;
+  addressVersion?: number;
+  pricing: {
+    itemsTotal: number;
+    shippingFee: number;
+    discountAmount: number;
+    total: number;
+    couponCode?: string;
+  };
+  expiresAt: string;
+};
 
 @Injectable()
 export class OrdersService {
@@ -43,11 +60,28 @@ export class OrdersService {
     private readonly mailQueueService: MailQueueService,
     private readonly notificationService: NotificationService,
     private readonly shippingService: ShippingService,
+    private readonly userAddressesService: UserAddressesService,
   ) {}
 
   async quote(userId: string, dto: CreateOrderDto) {
+    const resolvedDto = await this.resolveOrderAddress(userId, dto);
     const products = await this.getActiveOrderProducts(dto);
-    const pricing = await this.buildOrderPricing(dto, products);
+    const pricing = await this.buildOrderPricing(resolvedDto, products);
+    const fingerprint = this.buildOrderFingerprint(userId, resolvedDto);
+    const quoteToken = this.signQuote({
+      userId,
+      fingerprint,
+      shippingAddressId: resolvedDto.shippingAddressId,
+      addressVersion: resolvedDto.addressVersion,
+      pricing: {
+        itemsTotal: pricing.itemsTotal,
+        shippingFee: pricing.shippingFee,
+        discountAmount: pricing.discountAmount,
+        total: pricing.total,
+        couponCode: pricing.couponCode,
+      },
+      expiresAt: new Date(Date.now() + 5 * 60 * 1000).toISOString(),
+    });
     return {
       userId,
       itemsTotal: pricing.itemsTotal,
@@ -56,6 +90,8 @@ export class OrdersService {
       couponCode: pricing.couponCode,
       totalAmount: pricing.total,
       shippingQuote: pricing.shippingQuote,
+      quoteToken,
+      expiresAt: new Date(Date.now() + 5 * 60 * 1000).toISOString(),
     };
   }
 
@@ -65,8 +101,20 @@ export class OrdersService {
       throw new BadRequestException('Đơn may đo mới chỉ hỗ trợ thanh toán online, không hỗ trợ COD.');
     }
 
-    const productIds = dto.items.map((item) => item.productId);
-    const products = await this.getActiveOrderProducts(dto);
+    const resolvedDto = await this.resolveOrderAddress(userId, dto);
+    const requestFingerprint = this.buildOrderFingerprint(userId, resolvedDto);
+    if (dto.idempotencyKey) {
+      const existing = await this.prisma.orderIdempotencyKey.findUnique({
+        where: { userId_key: { userId, key: dto.idempotencyKey } },
+      });
+      if (existing?.orderId) return this.findOne(userId, existing.orderId);
+      if (existing && existing.fingerprint !== requestFingerprint) {
+        throw new ConflictException({ code: 'IDEMPOTENCY_CONFLICT', message: 'Idempotency key đã được dùng cho payload khác.' });
+      }
+    }
+
+    const productIds = resolvedDto.items.map((item) => item.productId);
+    const products = await this.getActiveOrderProducts(resolvedDto);
 
     const productMap = new Map(products.map((product) => [product.id, product]));
     const missingIds = productIds.filter((id) => !productMap.has(id));
@@ -104,7 +152,11 @@ export class OrdersService {
     // Luôn dùng giá trong DB, KHÔNG tin item.price do client gửi lên, tránh gian
     // lận giá (client không thể tự đặt giá sản phẩm).
     const { itemsTotal, shippingFee, discountAmount, total, couponCode, shippingQuote } =
-      await this.buildOrderPricing(dto, products);
+      await this.buildOrderPricing(resolvedDto, products);
+
+    if (dto.quoteToken) {
+      this.assertQuoteToken(dto.quoteToken, userId, requestFingerprint, total);
+    }
 
     // Chặn việc dùng giảm giá để đưa đơn về 0 đồng.
     if (discountAmount > itemsTotal + shippingFee) {
@@ -116,18 +168,27 @@ export class OrdersService {
     }
 
     // totalAmount giờ là double-check thực sự: FE phải khớp tổng BE tính từ giá server.
-    if (dto.totalAmount !== undefined && dto.totalAmount !== total) {
-      throw new BadRequestException(`Tổng tiền không khớp: FE gửi ${dto.totalAmount}, BE tính ${total}`);
+    if (resolvedDto.totalAmount !== undefined && resolvedDto.totalAmount !== total) {
+      throw new BadRequestException(`Tổng tiền không khớp: FE gửi ${resolvedDto.totalAmount}, BE tính ${total}`);
     }
 
     // Prepare shipping info with note/notes compatibility
     const shippingInfo = {
-      ...dto.shippingInfo,
-      note: dto.shippingInfo.note ?? dto.shippingInfo.notes ?? '',
+      ...resolvedDto.shippingInfo,
+      note: resolvedDto.shippingInfo.note ?? resolvedDto.shippingInfo.notes ?? '',
     };
 
     const order = await createWithUniqueOrderCode((orderCode) =>
       this.prisma.$transaction(async (tx) => {
+        if (resolvedDto.shippingAddressId) {
+          const addressAtCommit = await tx.userAddress.findFirst({
+            where: { id: resolvedDto.shippingAddressId, userId, version: resolvedDto.addressVersion },
+          });
+          if (!addressAtCommit) {
+            throw new ConflictException({ code: 'ADDRESS_VERSION_CONFLICT', message: 'Địa chỉ đã được sửa hoặc xóa. Vui lòng kiểm tra lại trước khi đặt hàng.' });
+          }
+        }
+
         const created = await tx.order.create({
           data: {
             orderCode,
@@ -151,7 +212,7 @@ export class OrdersService {
             discountAmount: new Prisma.Decimal(discountAmount),
             couponCode,
             items: {
-              create: dto.items.map((item) => {
+              create: resolvedDto.items.map((item) => {
                 const product = productMap.get(item.productId)!;
                 return {
                   productId: item.productId,
@@ -194,6 +255,14 @@ export class OrdersService {
           publicMessage: 'Đơn hàng đã được tạo và đang chờ thanh toán.',
           deduplicationKey: `order:${created.id}:created`,
         });
+
+        if (dto.idempotencyKey) {
+          await tx.orderIdempotencyKey.upsert({
+            where: { userId_key: { userId, key: dto.idempotencyKey } },
+            create: { userId, key: dto.idempotencyKey, fingerprint: requestFingerprint, orderId: created.id },
+            update: { orderId: created.id },
+          });
+        }
 
         return created;
       }),
@@ -641,6 +710,95 @@ export class OrdersService {
     };
   }
 
+  private async resolveOrderAddress(userId: string, dto: CreateOrderDto): Promise<ResolvedCreateOrderDto> {
+    if (dto.shippingAddressId && dto.shippingInfo) {
+      throw new BadRequestException({ code: 'ADDRESS_INVALID', message: 'Chỉ gửi một trong hai: shippingAddressId hoặc shippingInfo.' });
+    }
+
+    if (dto.shippingAddressId) {
+      const address = await this.userAddressesService.findOwned(userId, dto.shippingAddressId);
+      if (dto.addressVersion !== undefined && address.version !== dto.addressVersion) {
+        throw new ConflictException({ code: 'ADDRESS_VERSION_CONFLICT', message: 'Địa chỉ đã thay đổi. Vui lòng kiểm tra lại trước khi đặt hàng.' });
+      }
+      return {
+        ...dto,
+        addressVersion: address.version,
+        shippingInfo: this.userAddressesService.toShippingInfo(address, dto.shippingNote),
+      };
+    }
+
+    if (!dto.shippingInfo) {
+      throw new BadRequestException({ code: 'ADDRESS_REQUIRED', message: 'Vui lòng chọn địa chỉ giao hàng.' });
+    }
+
+    const normalizedLocation = await this.shippingService.validateGhnLocation(
+      dto.shippingInfo.ghnProvinceId ?? 0,
+      dto.shippingInfo.ghnDistrictId ?? 0,
+      dto.shippingInfo.ghnWardCode ?? '',
+    );
+    return {
+      ...dto,
+      shippingInfo: {
+        ...dto.shippingInfo,
+        ...normalizedLocation,
+        note: dto.shippingInfo.note ?? dto.shippingInfo.notes ?? dto.shippingNote ?? '',
+        notes: dto.shippingInfo.notes ?? dto.shippingInfo.note ?? dto.shippingNote ?? '',
+      },
+    };
+  }
+
+  private buildOrderFingerprint(userId: string, dto: ResolvedCreateOrderDto) {
+    const payload = {
+      userId,
+      items: dto.items.map((item) => ({ productId: item.productId, quantity: item.quantity, color: item.color ?? null })).sort((a, b) => `${a.productId}:${a.color ?? ''}`.localeCompare(`${b.productId}:${b.color ?? ''}`)),
+      couponCode: dto.couponCode?.trim().toUpperCase() ?? null,
+      shippingAddressId: dto.shippingAddressId ?? null,
+      addressVersion: dto.addressVersion ?? null,
+      shippingInfo: dto.shippingAddressId ? null : {
+        ghnProvinceId: dto.shippingInfo.ghnProvinceId,
+        ghnDistrictId: dto.shippingInfo.ghnDistrictId,
+        ghnWardCode: dto.shippingInfo.ghnWardCode,
+        address: dto.shippingInfo.address,
+        phone: dto.shippingInfo.phone,
+      },
+      shippingNote: dto.shippingNote ?? dto.shippingInfo.note ?? dto.shippingInfo.notes ?? '',
+    };
+    return createHash('sha256').update(JSON.stringify(payload)).digest('hex');
+  }
+
+  private signQuote(payload: QuotePayload) {
+    const body = Buffer.from(JSON.stringify(payload)).toString('base64url');
+    const signature = createHmac('sha256', this.quoteSecret()).update(body).digest('base64url');
+    return `${body}.${signature}`;
+  }
+
+  private assertQuoteToken(token: string, userId: string, fingerprint: string, total: number) {
+    const [body, signature] = token.split('.');
+    if (!body || !signature) throw new BadRequestException({ code: 'QUOTE_EXPIRED', message: 'Báo giá không hợp lệ hoặc đã hết hạn.' });
+    const expected = createHmac('sha256', this.quoteSecret()).update(body).digest('base64url');
+    if (!this.safeEqual(signature, expected)) throw new BadRequestException({ code: 'QUOTE_EXPIRED', message: 'Báo giá không hợp lệ hoặc đã hết hạn.' });
+    const payload = JSON.parse(Buffer.from(body, 'base64url').toString('utf8')) as QuotePayload;
+    if (payload.userId !== userId || payload.fingerprint !== fingerprint) {
+      throw new ConflictException({ code: 'QUOTE_CHANGED', message: 'Thông tin đơn hàng hoặc địa chỉ đã thay đổi. Vui lòng xác nhận lại báo giá.' });
+    }
+    if (new Date(payload.expiresAt).getTime() < Date.now()) {
+      throw new BadRequestException({ code: 'QUOTE_EXPIRED', message: 'Báo giá đã hết hạn. Vui lòng thử lại.' });
+    }
+    if (payload.pricing.total !== total) {
+      throw new ConflictException({ code: 'QUOTE_CHANGED', message: 'Tổng tiền đã thay đổi. Vui lòng xác nhận lại trước khi đặt hàng.' });
+    }
+  }
+
+  private safeEqual(a: string, b: string) {
+    const left = Buffer.from(a);
+    const right = Buffer.from(b);
+    return left.length === right.length && timingSafeEqual(left, right);
+  }
+
+  private quoteSecret() {
+    return process.env.ORDER_QUOTE_SECRET || process.env.JWT_SECRET || 'fashionai-order-quote-dev-secret';
+  }
+
   private async getActiveOrderProducts(dto: CreateOrderDto) {
     const productIds = dto.items.map((item) => item.productId);
     const products = await this.prisma.product.findMany({
@@ -661,7 +819,7 @@ export class OrdersService {
     return products;
   }
 
-  private async buildOrderPricing(dto: CreateOrderDto, products: IOrderProduct[]) {
+  private async buildOrderPricing(dto: ResolvedCreateOrderDto, products: IOrderProduct[]) {
     const productMap = new Map(products.map((product) => [product.id, product]));
     const itemsTotal = dto.items.reduce((sum, item) => {
       const product = productMap.get(item.productId)!;
@@ -697,7 +855,7 @@ export class OrdersService {
     };
   }
 
-  private calculateOrderShippingFee(dto: CreateOrderDto, itemsTotal: number) {
+  private calculateOrderShippingFee(dto: ResolvedCreateOrderDto, itemsTotal: number) {
     const { ghnDistrictId, ghnWardCode } = dto.shippingInfo;
     if (!ghnDistrictId || !ghnWardCode) {
       throw new BadRequestException('GHN district and ward are required to calculate shipping fee');
