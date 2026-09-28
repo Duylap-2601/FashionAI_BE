@@ -34,7 +34,7 @@ type ExpressResponse = ServerResponse & {
         const service = configService.get<string>('SERVICE_NAME', 'fashionai-be');
         const version = configService.get<string>('APP_VERSION', '1.0.0');
         const logLevel = configService.get<string>('LOG_LEVEL', environment === 'production' ? 'info' : 'debug');
-        const pretty = configService
+        const pretty = environment !== 'production' && configService
           .get<string>('LOG_PRETTY', environment === 'production' ? 'false' : 'true')
           .toLowerCase() === 'true';
         const trustRequestIdHeader = Number(configService.get<string>('TRUST_PROXY_HOPS', '0')) > 0;
