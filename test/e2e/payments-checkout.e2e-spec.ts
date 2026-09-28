@@ -17,6 +17,12 @@ import {
 } from './helpers/test-app';
 
 const AUTH_USER = { id: 'user-1', email: 'a@b.com', tier: UserTier.FREE };
+const VALID_SHIPPING_SNAPSHOT = {
+  address: '123 Nguyen Trai, Phuong 1, Quan 1, TP Ho Chi Minh',
+  phone: '0900000000',
+  ghnDistrictId: 1442,
+  ghnWardCode: '21211',
+};
 
 /** Guard cho phép mọi request và gắn user cố định, để test tập trung vào logic checkout. */
 const allowAllAuthGuard = {
@@ -81,6 +87,8 @@ describe('POST /api/payments/checkout (e2e)', () => {
         targetTier: null,
         amount: 350000,
         status: OrderStatus.PENDING,
+        shippingAddressSnapshot: VALID_SHIPPING_SNAPSHOT,
+        shippingInfo: null,
         items: [{ id: 'item-1', productId: 'p1', quantity: 1 }],
       };
       prisma.order.findFirst.mockResolvedValue(order);
