@@ -22,6 +22,8 @@ import { AuthenticatedUser } from '../auth/interfaces/authenticated-user.interfa
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { CheckoutDto } from './dto/checkout.dto';
 import { ConfirmManualPaymentDto } from './dto/confirm-manual-payment.dto';
+import { MomoIpnDto } from './dto/momo-ipn.dto';
+import { RefundPaymentDto } from './dto/refund-payment.dto';
 import { SubscriptionHistoryQueryDto } from './dto/subscription-history-query.dto';
 import { PaymentsService } from './payments.service';
 import { SubscriptionService } from './subscription.service';
@@ -79,6 +81,26 @@ export class PaymentsController {
     );
   }
 
+  @Public()
+  @Post('momo/ipn')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Nhận IPN thanh toán từ MoMo' })
+  async momoIPN(@Body() payload: MomoIpnDto) {
+    return this.paymentsService.handleMomoIPN(payload as MomoIpnDto & Record<string, unknown>);
+  }
+
+  @Public()
+  @Get('momo/return')
+  @ApiOperation({ summary: 'MoMo browser return chỉ dùng cho UX, không cập nhật trạng thái' })
+  momoReturn(@Query('paymentId') paymentId?: string, @Query('orderId') providerOrderId?: string) {
+    return {
+      success: true,
+      message: 'Return received. Client must poll authenticated payment status.',
+      paymentId,
+      providerOrderId,
+    };
+  }
+
   @Post('admin/orders/:orderCode/confirm-manual')
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(Role.ADMIN)
@@ -117,6 +139,22 @@ export class PaymentsController {
   async resolveWebhookFailure(@Req() req: Request, @Param('id') id: string) {
     const data = await this.paymentsService.markWebhookFailureResolved(id);
     return buildApiResponse(req, 'WEBHOOK_FAILURE_RESOLVED', 'Đã đánh dấu xử lý xong', data);
+  }
+
+  @Post('admin/:paymentId/refunds')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(Role.ADMIN)
+  @ApiBearerAuth('access-token')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Hoàn tiền MoMo cho một payment (Admin Only)' })
+  async refundMomoPayment(
+    @Req() req: Request,
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('paymentId') paymentId: string,
+    @Body() dto: RefundPaymentDto,
+  ) {
+    const data = await this.paymentsService.refundMomoPayment(paymentId, dto, user.id);
+    return buildApiResponse(req, 'PAYMENT_REFUND_CREATED', 'Yêu cầu hoàn tiền đã được xử lý', data);
   }
 
   @Get('orders')
@@ -220,5 +258,18 @@ export class PaymentsController {
       'Đã bật lại tự động gia hạn.',
       data,
     );
+  }
+
+  @Get(':paymentId')
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth('access-token')
+  @ApiOperation({ summary: 'Lấy trạng thái thanh toán theo paymentId' })
+  async getPaymentStatus(
+    @Req() req: Request,
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('paymentId') paymentId: string,
+  ) {
+    const data = await this.paymentsService.getPaymentStatus(user.id, paymentId);
+    return buildApiResponse(req, 'PAYMENT_STATUS_SUCCESS', 'Lấy trạng thái thanh toán thành công', data);
   }
 }

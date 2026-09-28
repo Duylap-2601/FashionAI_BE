@@ -521,6 +521,11 @@ export class OrdersService {
     const order = await this.findOrderByIdentifier(id);
     if (!order) throw new NotFoundException(`Không tìm thấy đơn hàng có ID ${id}`);
 
+    const hasMomoPayment = order.payments?.some((payment) => payment.provider === 'MOMO');
+    if (hasMomoPayment && dto.refundStatus === RefundStatus.COMPLETED) {
+      throw new BadRequestException('Không được xác nhận hoàn tiền MoMo thủ công. Vui lòng dùng endpoint hoàn tiền MoMo trong Payments.');
+    }
+
     const paymentStatus = dto.refundStatus === RefundStatus.COMPLETED ? PaymentStatus.REFUNDED : order.paymentStatus;
     const refundStatusForOrder = dto.refundStatus === RefundStatus.COMPLETED
       ? RefundStatus.COMPLETED

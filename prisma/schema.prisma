@@ -709,7 +709,7 @@ model WebhookEvent {
   paymentId         String?            @map("payment_id") @db.Uuid
   shipmentId        String?            @map("shipment_id") @db.Uuid
   receivedAt        DateTime           @default(now()) @map("received_at")
-  processedAt       DateTime?          @default(now()) @map("processed_at")
+  processedAt       DateTime?          @map("processed_at")
   attemptCount      Int                @default(0) @map("attempt_count")
   lastError         String?            @map("last_error") @db.Text
 
@@ -762,6 +762,7 @@ model Payment {
   paidAt             DateTime?     @map("paid_at")
   failedAt           DateTime?     @map("failed_at")
   refundedAt         DateTime?     @map("refunded_at")
+  expiresAt          DateTime?     @map("expires_at")
   failureReason      String?       @map("failure_reason") @db.Text
   idempotencyKey     String?       @unique @map("idempotency_key")
   paymentData        Json?         @map("payment_data")
@@ -776,6 +777,8 @@ model Payment {
   @@index([orderId, status])
   @@index([orderId, createdAt])
   @@index([provider, createdAt])
+  @@index([provider, status, createdAt])
+  @@index([expiresAt])
   @@map("payments")
 }
 
