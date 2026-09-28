@@ -2,6 +2,7 @@ import { BadRequestException, Injectable, NotFoundException, UnauthorizedExcepti
 import { ConfigService } from '@nestjs/config';
 import { GhnLocationLevel, OrderStatus, Prisma, ShipmentStatus } from '@prisma/client';
 import { PrismaService } from '../../database/prisma.service';
+import { RedisService } from '../../common/services/redis.service';
 import { CalculateShippingFeeDto } from './dto/calculate-shipping-fee.dto';
 import { ShippingProviderType } from './constants/shipping-provider.enum';
 import { ShippingProviderFactory } from './shipping-provider.factory';
@@ -28,6 +29,7 @@ export interface ShippingLocationProvince {
 @Injectable()
 export class ShippingService {
   private locationsCache: { expiresAt: number; data: ShippingLocationProvince[] } | null = null;
+  private readonly LOCATIONS_CACHE_TTL_SECONDS = 24 * 60 * 60;
 
   constructor(
     private readonly configService: ConfigService,
@@ -35,6 +37,7 @@ export class ShippingService {
     private readonly factory: ShippingProviderFactory,
     private readonly ghnProvider: GhnShippingProvider,
     private readonly adminSettingsService: AdminSettingsService,
+    private readonly redisService: RedisService,
   ) {}
 
   async calculateFee(dto: CalculateShippingFeeDto) {
@@ -92,27 +95,62 @@ export class ShippingService {
   }
 
   async getProvinces() {
+    const cached = await this.getCachedJson<{ id: number; name: string }[]>(this.locationsCacheKey('provinces'));
+    if (cached) return cached;
+
     const provinces = await this.prisma.ghnLocation.findMany({
       where: { level: GhnLocationLevel.PROVINCE, isActive: true },
       orderBy: { name: 'asc' },
     });
-    return provinces.map((item) => ({ id: Number(item.code), name: item.name })).filter((item) => Number.isFinite(item.id));
+    const result = provinces.map((item) => ({ id: Number(item.code), name: item.name })).filter((item) => Number.isFinite(item.id));
+    await this.setCachedJson(this.locationsCacheKey('provinces'), result);
+    return result;
   }
 
   async getDistricts(provinceId: number) {
+    const cacheKey = this.locationsCacheKey('districts', provinceId);
+    const cached = await this.getCachedJson<{ id: number; name: string }[]>(cacheKey);
+    if (cached) return cached;
+
     const districts = await this.prisma.ghnLocation.findMany({
       where: { level: GhnLocationLevel.DISTRICT, parentCode: String(provinceId), isActive: true },
       orderBy: { name: 'asc' },
     });
-    return districts.map((item) => ({ id: Number(item.code), name: item.name })).filter((item) => Number.isFinite(item.id));
+    const result = districts.map((item) => ({ id: Number(item.code), name: item.name })).filter((item) => Number.isFinite(item.id));
+    await this.setCachedJson(cacheKey, result);
+    return result;
   }
 
   async getWards(districtId: number) {
+    const cacheKey = this.locationsCacheKey('wards', districtId);
+    const cached = await this.getCachedJson<{ code: string; name: string }[]>(cacheKey);
+    if (cached) return cached;
+
     const wards = await this.prisma.ghnLocation.findMany({
       where: { level: GhnLocationLevel.WARD, parentCode: String(districtId), isActive: true },
       orderBy: { name: 'asc' },
     });
-    return wards.map((item) => ({ code: item.code, name: item.name }));
+    const result = wards.map((item) => ({ code: item.code, name: item.name }));
+    await this.setCachedJson(cacheKey, result);
+    return result;
+  }
+
+  private locationsCacheKey(scope: string, parentId?: number) {
+    return parentId === undefined ? `ghn:locations:${scope}` : `ghn:locations:${scope}:${parentId}`;
+  }
+
+  private async getCachedJson<T>(key: string): Promise<T | null> {
+    const raw = await this.redisService.get(key);
+    if (!raw) return null;
+    try {
+      return JSON.parse(raw) as T;
+    } catch {
+      return null;
+    }
+  }
+
+  private async setCachedJson(key: string, value: unknown) {
+    await this.redisService.set(key, JSON.stringify(value), this.LOCATIONS_CACHE_TTL_SECONDS);
   }
 
   async validateGhnLocation(provinceId: number, districtId: number, wardCode: string) {
@@ -140,26 +178,44 @@ export class ShippingService {
       return this.locationsCache.data;
     }
 
-    const provinces = await this.getProvinces();
-    const data = await Promise.all(
-      provinces.map(async (province) => {
-        const districts = await this.getDistricts(province.id);
-        const districtsWithWards = await Promise.all(
-          districts.map(async (district) => ({
-            ...district,
-            wards: await this.getWards(district.id),
-          })),
-        );
+    const [provinceRows, districtRows, wardRows] = await Promise.all([
+      this.prisma.ghnLocation.findMany({ where: { level: GhnLocationLevel.PROVINCE, isActive: true }, orderBy: { name: 'asc' } }),
+      this.prisma.ghnLocation.findMany({ where: { level: GhnLocationLevel.DISTRICT, isActive: true }, orderBy: { name: 'asc' } }),
+      this.prisma.ghnLocation.findMany({ where: { level: GhnLocationLevel.WARD, isActive: true }, orderBy: { name: 'asc' } }),
+    ]);
 
+    const wardsByDistrict = new Map<string, ShippingLocationWard[]>();
+    for (const ward of wardRows) {
+      if (!ward.parentCode) continue;
+      const list = wardsByDistrict.get(ward.parentCode) ?? [];
+      list.push({ code: ward.code, name: ward.name });
+      wardsByDistrict.set(ward.parentCode, list);
+    }
+
+    const districtsByProvince = new Map<string, ShippingLocationDistrict[]>();
+    for (const district of districtRows) {
+      if (!district.parentCode) continue;
+      const districtId = Number(district.code);
+      if (!Number.isFinite(districtId)) continue;
+      const list = districtsByProvince.get(district.parentCode) ?? [];
+      list.push({ id: districtId, name: district.name, wards: wardsByDistrict.get(district.code) ?? [] });
+      districtsByProvince.set(district.parentCode, list);
+    }
+
+    const data = provinceRows
+      .map((province) => {
+        const provinceId = Number(province.code);
+        if (!Number.isFinite(provinceId)) return null;
         return {
-          ...province,
-          districts: districtsWithWards,
+          id: provinceId,
+          name: province.name,
+          districts: districtsByProvince.get(province.code) ?? [],
         };
-      }),
-    );
+      })
+      .filter((item): item is ShippingLocationProvince => item !== null);
 
     this.locationsCache = {
-      expiresAt: now + 24 * 60 * 60 * 1000,
+      expiresAt: now + this.LOCATIONS_CACHE_TTL_SECONDS * 1000,
       data,
     };
 

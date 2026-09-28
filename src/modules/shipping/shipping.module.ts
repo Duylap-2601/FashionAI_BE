@@ -1,5 +1,6 @@
 import { Module } from '@nestjs/common';
 import { PrismaModule } from '../../database/prisma.module';
+import { RedisModule } from '../../common/redis/redis.module';
 import { AdminModule } from '../admin/admin.module';
 import { AdminShipmentsController } from './admin-shipments.controller';
 import { AdminShipmentsService } from './admin-shipments.service';
@@ -15,7 +16,7 @@ import { GhnWebhookController } from './webhooks/ghn-webhook.controller';
 import { StagingSimulatorController } from './webhooks/staging-simulator.controller';
 
 @Module({
-  imports: [PrismaModule, AdminModule],
+  imports: [PrismaModule, RedisModule, AdminModule],
   controllers: [ShippingController, AdminShipmentsController, GhnWebhookController, StagingSimulatorController],
   providers: [ShippingService, ShipmentService, AdminShipmentsService, GhnLocationSyncService, ShippingProviderFactory, GhnClient, GhnShippingProvider, GhnMapper],
   exports: [ShippingService, ShipmentService],
