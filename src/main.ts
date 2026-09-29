@@ -1,15 +1,17 @@
-import { Logger, ValidationPipe } from '@nestjs/common';
+import { Logger as NestLogger, ValidationPipe } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 import cookieParser from 'cookie-parser';
+import { Logger } from 'nestjs-pino';
 import { AppModule } from './app.module';
 import { GlobalExceptionFilter } from './common/filters/http-exception.filter';
 import { parseCorsOrigins } from './common/utils/cors-origins.util';
 import { RedisIoAdapter } from './common/redis/redis-io.adapter';
 
 async function bootstrap() {
-  const logger = new Logger('Bootstrap');
-  const app = await NestFactory.create(AppModule, { rawBody: true });
+  const logger = new NestLogger('Bootstrap');
+  const app = await NestFactory.create(AppModule, { rawBody: true, bufferLogs: true });
+  app.useLogger(app.get(Logger));
 
   const apiPrefix = process.env.API_PREFIX ?? 'api';
   const swaggerPath = process.env.SWAGGER_PATH ?? 'docs';
@@ -36,6 +38,7 @@ async function bootstrap() {
     ),
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
     allowedHeaders: ['Content-Type', 'Authorization', 'X-Platform', 'Idempotency-Key'],
+    exposedHeaders: ['X-Request-Id'],
     credentials: corsCredentials,
   });
 
@@ -117,4 +120,8 @@ function parseBoolean(value: string | undefined, fallback: boolean) {
   return value.toLowerCase() === 'true';
 }
 
-bootstrap();
+bootstrap().catch((error) => {
+  const logger = new NestLogger('Bootstrap');
+  logger.fatal('Failed to bootstrap application', error instanceof Error ? error.stack : undefined);
+  process.exit(1);
+});

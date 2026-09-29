@@ -298,8 +298,7 @@ export class MailService {
 
   private async sendMail(to: string, subject: string, html: string): Promise<void> {
     if (!this.client) {
-      this.logger.log(`[DEV MAIL] To: ${to} | Subject: ${subject}`);
-      this.logger.log(`[DEV MAIL HTML]:\n${html}`);
+      this.logger.log(`Dev mail suppressed | subject=${subject}`);
       return;
     }
 
@@ -310,10 +309,10 @@ export class MailService {
         subject,
         htmlContent: html,
       });
-      this.logger.log(`Email sent to ${to} (${subject}) | MessageId: ${result.messageId}`);
+      this.logger.log(`Email sent | subject=${subject} | messageId=${result.messageId}`);
     } catch (err: any) {
       const details = err.response?.body || err.message;
-      this.logger.error(`Failed to send email to ${to}: ${JSON.stringify(details)}`, err.stack);
+      this.logger.error(`Failed to send email | subject=${subject} | error=${JSON.stringify(details)}`, err.stack);
     }
   }
 }

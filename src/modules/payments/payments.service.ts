@@ -95,7 +95,8 @@ export class PaymentsService {
       throw new BadRequestException('Đơn hàng này đã được thanh toán.');
     }
 
-    if (order.status !== OrderStatus.PENDING) {
+    const payableStatuses: OrderStatus[] = [OrderStatus.PENDING, OrderStatus.PENDING_PAYMENT];
+    if (!payableStatuses.includes(order.status)) {
       throw new BadRequestException(
         `Không thể thanh toán đơn hàng ở trạng thái ${order.status}.`,
       );
@@ -107,6 +108,17 @@ export class PaymentsService {
 
     if (Number(order.amount) <= 0) {
       throw new BadRequestException('Giá trị đơn hàng không hợp lệ.');
+    }
+
+    if (order.items.length > 0) {
+      const snapshot = order.shippingAddressSnapshot ?? order.shippingInfo;
+      const info = snapshot as { address?: string; phone?: string; ghnDistrictId?: number; ghnWardCode?: string } | null;
+      if (!info?.address || !info?.phone || !info?.ghnDistrictId || !info?.ghnWardCode) {
+        throw new BadRequestException('Đơn hàng thiếu địa chỉ giao hàng hợp lệ. Vui lòng liên hệ hỗ trợ hoặc hủy và đặt lại nếu còn đủ điều kiện.');
+      }
+      if (!order.shippingAddressSnapshot && order.shippingInfo) {
+        await this.prisma.order.update({ where: { id: order.id }, data: { shippingAddressSnapshot: order.shippingInfo as Prisma.InputJsonValue } });
+      }
     }
 
     return order;

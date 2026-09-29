@@ -1,10 +1,14 @@
 import { Body, Controller, Get, Post, Query, Req, UseGuards } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
+import { Role } from '@prisma/client';
 import { Request } from 'express';
 import { Public } from '../../common/decorators/public.decorator';
+import { Roles } from '../../common/decorators/roles.decorator';
+import { RolesGuard } from '../../common/guards/roles.guard';
 import { buildApiResponse } from '../../common/utils/api-response.util';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { CalculateShippingFeeDto } from './dto/calculate-shipping-fee.dto';
+import { GhnLocationSyncService } from './ghn-location-sync.service';
 import { ShippingService } from './shipping.service';
 
 @ApiTags('Shipping')
@@ -12,7 +16,10 @@ import { ShippingService } from './shipping.service';
 @UseGuards(JwtAuthGuard)
 @Controller('shipping')
 export class ShippingController {
-  constructor(private readonly shippingService: ShippingService) {}
+  constructor(
+    private readonly shippingService: ShippingService,
+    private readonly ghnLocationSyncService: GhnLocationSyncService,
+  ) {}
 
   @Post('calculate-fee')
   @ApiOperation({ summary: 'Tính phí vận chuyển qua backend' })
@@ -44,5 +51,14 @@ export class ShippingController {
   async getLocations(@Req() req: Request) {
     const data = await this.shippingService.getLocations();
     return buildApiResponse(req, 'SHIPPING_LOCATIONS_FETCHED', 'Lấy danh sách địa chỉ giao hàng thành công', data);
+  }
+
+  @Post('ghn-locations/sync')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(Role.ADMIN)
+  @ApiOperation({ summary: 'Admin trigger sync GHN master-data địa chỉ' })
+  async syncGhnLocations(@Req() req: Request) {
+    const data = await this.ghnLocationSyncService.sync('admin');
+    return buildApiResponse(req, 'GHN_LOCATIONS_SYNC_TRIGGERED', 'Đã xử lý yêu cầu đồng bộ địa chỉ GHN', data);
   }
 }

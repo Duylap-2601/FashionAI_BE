@@ -4,14 +4,11 @@ import {
   ArgumentsHost,
   HttpException,
   HttpStatus,
-  Logger,
 } from '@nestjs/common';
 import { Request, Response } from 'express';
 
 @Catch()
 export class GlobalExceptionFilter implements ExceptionFilter {
-  private readonly logger = new Logger(GlobalExceptionFilter.name);
-
   catch(exception: unknown, host: ArgumentsHost) {
     // Filter này chỉ format response HTTP. Lỗi trong WebSocket handler đi qua đây
     // sẽ crash vì switchToHttp().getResponse() không có .status()/.json(). Gateway
@@ -50,18 +47,8 @@ export class GlobalExceptionFilter implements ExceptionFilter {
       message = exception.message;
     }
 
-    const logLine = `[${request.method}] ${request.url} → ${status} (${code}): ${JSON.stringify(message)}`;
-
     if (status >= HttpStatus.INTERNAL_SERVER_ERROR) {
-      this.logger.error(
-        logLine,
-        exception instanceof Error ? exception.stack : undefined,
-      );
-    } else {
-      // 4xx là lỗi phía client (token hết hạn, validate sai...). Stack trace của
-      // chúng chỉ trỏ vào internals của passport/nest nên làm ngập log mà không
-      // thêm thông tin gì để lần ra lỗi.
-      this.logger.warn(logLine);
+      response.locals.logError = exception;
     }
 
     response.status(status).json({
