@@ -479,6 +479,7 @@ export class AuthController {
 
   private isAllowedMobileRedirectUrl(url: URL) {
     if (url.protocol === 'fashionai:') return true;
+    if (url.protocol === 'fashionaimobile:') return true;
     if (url.protocol === 'exp:' && this.config.get<string>('NODE_ENV') !== 'production') return true;
     return false;
   }
