@@ -1,0 +1,14 @@
+export const ZALOPAY_PROVIDER = 'ZALOPAY';
+
+export const ZALOPAY_SUCCESS_RETURN_CODE = 1;
+export const ZALOPAY_FAILED_RETURN_CODE = 2;
+export const ZALOPAY_PENDING_RETURN_CODE = 3;
+export const ZALOPAY_EXPIRED_SUB_RETURN_CODE = -54;
+
+export const ZALOPAY_QUERY_UNPAID_SUBCODES = new Set([
+  -54, -63, -101, -217, -332, -333,
+  -1330, -1331, -1332, -1333, -1334, -1335, -1336, -1337, -1338, -1339, -1340, -1341, -1342, -1343,
+]);
+
+export const ZALOPAY_QUERY_SYSTEM_ERROR_SUBCODES = new Set([-92, -401, -402, -429, -500, -999]);
+export const ZALOPAY_REFUND_FAILED_SUBCODES = new Set([-2, -13, -14, -32, -101]);

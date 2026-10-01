@@ -14,10 +14,10 @@ import * as crypto from 'crypto';
 import { createWithUniqueOrderCode } from '../../common/utils/order-code.util';
 import { CheckoutDto } from './dto/checkout.dto';
 import { ConfirmManualPaymentDto } from './dto/confirm-manual-payment.dto';
-import { MomoIpnDto } from './dto/momo-ipn.dto';
 import { RefundPaymentDto } from './dto/refund-payment.dto';
-import { MomoPaymentProvider } from './momo/momo-payment.provider';
-import { MOMO_PROVIDER, MOMO_SUCCESS_RESULT_CODE } from './momo/momo.constants';
+import { GatewayCode, GatewayPaymentResult, PaymentGateway } from './gateways/payment-gateway.types';
+import { PaymentGatewayRegistry } from './gateways/payment-gateway.registry';
+import { RedisService } from '../../common/services/redis.service';
 import { MailQueueService } from '../mail/mail-queue.service';
 import { NotificationService } from '../notification/notification.service';
 import { SubscriptionService } from './subscription.service';
@@ -39,6 +39,7 @@ interface CheckoutLinkResult {
 @Injectable()
 export class PaymentsService {
   private readonly logger = new Logger(PaymentsService.name);
+  private reconcileRunning = false;
 
   constructor(
     private readonly configService: ConfigService,
@@ -47,7 +48,8 @@ export class PaymentsService {
     private readonly notificationService: NotificationService,
     private readonly subscriptionService: SubscriptionService,
     private readonly outboxService: OutboxService,
-    private readonly momoPaymentProvider: MomoPaymentProvider,
+    private readonly gatewayRegistry: PaymentGatewayRegistry,
+    private readonly redisService: RedisService,
   ) {}
 
   /**
@@ -60,7 +62,9 @@ export class PaymentsService {
       ? await this.resolveProductOrder(userId, dto.orderId)
       : await this.createSubscriptionOrder(userId, dto.targetTier!);
 
-    if (dto.provider === 'SEPAY') {
+    const provider = dto.provider ?? this.gatewayRegistry.getDefaultCode();
+
+    if (provider === 'SEPAY') {
       const { checkoutUrl, extra } = await this.createSePayCheckoutLink(order);
 
       await this.prisma.order.update({
@@ -84,7 +88,8 @@ export class PaymentsService {
       };
     }
 
-    return this.createMomoCheckoutLink(order);
+    const gateway = this.gatewayRegistry.resolve(provider);
+    return this.createGatewayCheckoutLink(order, gateway);
   }
 
   /**
@@ -257,24 +262,48 @@ export class PaymentsService {
     };
   }
 
-  private async createMomoCheckoutLink(order: Order) {
+  private async createGatewayCheckoutLink(order: Order, gateway: PaymentGateway) {
     const amount = Math.trunc(Number(order.amount));
-    const expiresAt = new Date(Date.now() + CHECKOUT_TTL_MS);
+    const now = new Date();
+    const expiresAt = new Date(now.getTime() + gateway.checkoutTtlMs);
+    const minUsableExpiry = new Date(now.getTime() + 60_000);
+    const minCreatedAt = new Date(now.getTime() - gateway.linkReuseMs);
     const existingPayment = await this.prisma.payment.findFirst({
       where: {
         orderId: order.id,
-        provider: MOMO_PROVIDER,
+        provider: gateway.code,
         status: PaymentStatus.PENDING,
-        expiresAt: { gt: new Date() },
+        expiresAt: { gt: minUsableExpiry },
+        createdAt: { gt: minCreatedAt },
       },
       orderBy: { createdAt: 'desc' },
     });
 
+    const existingData = existingPayment?.paymentData as Record<string, unknown> | null;
+    const existingCheckoutUrl = existingData?.checkoutUrl ?? existingData?.payUrl;
+    if (existingPayment && typeof existingCheckoutUrl === 'string' && existingCheckoutUrl) {
+      return {
+        orderId: order.id,
+        orderCode: order.orderCode,
+        paymentId: existingPayment.id,
+        amount,
+        targetTier: order.targetTier,
+        kind: order.targetTier ? 'SUBSCRIPTION' : 'PRODUCT',
+        provider: gateway.code,
+        checkoutUrl: existingCheckoutUrl,
+        payUrl: existingData?.payUrl,
+        deeplink: existingData?.deeplink,
+        qrCodeUrl: existingData?.qrCodeUrl,
+        qrCode: existingData?.qrCode,
+        extra: { providerOrderId: existingPayment.providerPaymentId, requestId: existingPayment.idempotencyKey },
+      };
+    }
+
     const payment = existingPayment ?? await this.prisma.payment.create({
       data: {
         orderId: order.id,
-        provider: MOMO_PROVIDER,
-        providerPaymentId: this.buildMomoProviderOrderId(order.orderCode),
+        provider: gateway.code,
+        providerPaymentId: gateway.buildProviderOrderId(order.orderCode),
         idempotencyKey: crypto.randomUUID(),
         amountVnd: BigInt(amount),
         currency: 'VND',
@@ -285,29 +314,44 @@ export class PaymentsService {
 
     const providerOrderId = payment.providerPaymentId!;
     const requestId = payment.idempotencyKey!;
-    const extraData = Buffer.from(JSON.stringify({ paymentId: payment.id, orderId: order.id })).toString('base64');
     const redirectUrl = new URL(this.configService.get<string>('MOMO_REDIRECT_URL', 'http://localhost:3000/payment/result'));
     redirectUrl.searchParams.set('paymentId', payment.id);
-    const providerResponse = await this.momoPaymentProvider.createPayment({
-      amount,
-      orderId: providerOrderId,
-      requestId,
-      orderInfo: this.buildOrderDescription(order),
-      extraData,
-      redirectUrl: redirectUrl.toString(),
-    });
-    const checkoutUrl = String(providerResponse.payUrl ?? providerResponse.deeplink ?? providerResponse.qrCodeUrl ?? '');
-    if (!checkoutUrl) {
-      await this.prisma.payment.update({
-        where: { id: payment.id },
+    let result;
+    try {
+      result = await gateway.createPayment({
+        paymentId: payment.id,
+        orderCode: order.orderCode,
+        userId: order.userId,
+        providerOrderId,
+        requestId,
+        amountVnd: amount,
+        description: this.buildOrderDescription(order),
+        redirectUrl: redirectUrl.toString(),
+        expiresAt,
+      });
+    } catch (err) {
+      await this.prisma.payment.updateMany({
+        where: { id: payment.id, status: PaymentStatus.PENDING },
         data: {
           status: PaymentStatus.FAILED,
           failedAt: new Date(),
-          failureReason: 'MoMo create payment response did not include a redirect artifact',
-          paymentData: providerResponse as Prisma.InputJsonValue,
+          failureReason: err instanceof Error ? err.message : String(err),
         },
       });
-      throw new BadRequestException('MoMo không trả về link thanh toán. Vui lòng thử lại sau.');
+      throw err;
+    }
+    const checkoutUrl = result.checkoutUrl;
+    if (!checkoutUrl) {
+      await this.prisma.payment.updateMany({
+        where: { id: payment.id, status: PaymentStatus.PENDING },
+        data: {
+          status: PaymentStatus.FAILED,
+          failedAt: new Date(),
+          failureReason: `${gateway.code} create payment response did not include a redirect artifact`,
+          paymentData: result.raw as Prisma.InputJsonValue,
+        },
+      });
+      throw new BadRequestException(`${gateway.code} không trả về link thanh toán. Vui lòng thử lại sau.`);
     }
 
     await this.prisma.$transaction([
@@ -315,10 +359,12 @@ export class PaymentsService {
         where: { id: payment.id },
         data: {
           paymentData: {
-            providerResponse,
-            payUrl: providerResponse.payUrl,
-            deeplink: providerResponse.deeplink,
-            qrCodeUrl: providerResponse.qrCodeUrl,
+            providerResponse: result.raw,
+            checkoutUrl: result.checkoutUrl,
+            payUrl: result.payUrl,
+            deeplink: result.deeplink,
+            qrCodeUrl: result.qrCodeUrl,
+            qrCode: result.qrCode,
           } as Prisma.InputJsonValue,
         },
       }),
@@ -326,7 +372,7 @@ export class PaymentsService {
         where: { id: order.id },
         data: {
           status: order.status === OrderStatus.PENDING_PAYMENT ? OrderStatus.PENDING : order.status,
-          paymentProvider: MOMO_PROVIDER,
+          paymentProvider: gateway.code,
           checkoutUrl,
           checkoutExpiresAt: expiresAt,
         },
@@ -340,100 +386,124 @@ export class PaymentsService {
       amount,
       targetTier: order.targetTier,
       kind: order.targetTier ? 'SUBSCRIPTION' : 'PRODUCT',
-      provider: MOMO_PROVIDER,
+      provider: gateway.code,
       checkoutUrl,
-      payUrl: providerResponse.payUrl,
-      deeplink: providerResponse.deeplink,
-      qrCodeUrl: providerResponse.qrCodeUrl,
+      payUrl: result.payUrl,
+      deeplink: result.deeplink,
+      qrCodeUrl: result.qrCodeUrl,
+      qrCode: result.qrCode,
       extra: { providerOrderId, requestId },
     };
   }
 
-  private buildMomoProviderOrderId(orderCode: number) {
-    return `MOMO_${orderCode}_${Date.now()}_${crypto.randomBytes(3).toString('hex')}`;
+  async handleGatewayCallback(code: GatewayCode, body: unknown): Promise<'OK' | 'DUPLICATE'> {
+    const gateway = this.gatewayRegistry.resolve(code);
+    const result = gateway.parseCallback(body);
+    const applied = await this.applyGatewayPaymentResult(gateway, result, 'CALLBACK');
+    return applied === 'PENDING' ? 'OK' : applied;
   }
 
-  async handleMomoIPN(payload: MomoIpnDto & Record<string, unknown>) {
-    this.momoPaymentProvider.verifyIpn(payload);
-    const transId = payload.transId === undefined || payload.transId === null ? '' : String(payload.transId);
-    const eventKey = `MOMO:${payload.orderId}:${payload.requestId}:${payload.resultCode}:${transId}`;
-
+  private async applyGatewayPaymentResult(
+    gateway: PaymentGateway,
+    result: GatewayPaymentResult,
+    source: 'CALLBACK' | 'QUERY',
+  ): Promise<'OK' | 'DUPLICATE' | 'PENDING'> {
+    if (result.status === 'PENDING') return 'PENDING';
     const payment = await this.prisma.payment.findFirst({
-      where: { provider: MOMO_PROVIDER, providerPaymentId: payload.orderId },
+      where: { provider: gateway.code, providerPaymentId: result.providerOrderId },
       include: { order: true },
     });
 
     if (!payment) {
-      await this.recordWebhookFailure(MOMO_PROVIDER, 'PAYMENT_NOT_FOUND', `Không tìm thấy MoMo payment ${payload.orderId}`, payload);
-      throw new NotFoundException('MoMo payment not found');
+      await this.recordWebhookFailure(gateway.code, 'PAYMENT_NOT_FOUND', `Không tìm thấy ${gateway.code} payment ${result.providerOrderId}`, result.raw);
+      throw new NotFoundException(`${gateway.code} payment not found`);
     }
 
-    if (payment.idempotencyKey !== payload.requestId) {
-      await this.recordWebhookFailure(MOMO_PROVIDER, 'REQUEST_ID_MISMATCH', `MoMo requestId không khớp cho payment ${payment.id}`, payload, payment.order.orderCode);
-      throw new BadRequestException('MoMo requestId mismatch');
+    if (result.requestId && payment.idempotencyKey !== result.requestId) {
+      await this.markRefundRequiredIfCollected(payment, result, 'REQUEST_ID_MISMATCH');
+      await this.recordWebhookFailure(gateway.code, 'REQUEST_ID_MISMATCH', `${gateway.code} requestId không khớp cho payment ${payment.id}`, result.raw, payment.order.orderCode);
+      throw new BadRequestException(`${gateway.code} requestId mismatch`);
     }
 
-    if (Number(payment.amountVnd ?? payment.order.amount) !== Number(payload.amount)) {
-      await this.recordWebhookFailure(MOMO_PROVIDER, 'AMOUNT_MISMATCH', `MoMo amount không khớp cho payment ${payment.id}`, payload, payment.order.orderCode);
-      throw new BadRequestException('MoMo amount mismatch');
+    if (Number(payment.amountVnd ?? payment.order.amount) !== Number(result.amountVnd)) {
+      await this.markRefundRequiredIfCollected(payment, result, 'AMOUNT_MISMATCH');
+      await this.recordWebhookFailure(gateway.code, 'AMOUNT_MISMATCH', `${gateway.code} amount không khớp cho payment ${payment.id}`, result.raw, payment.order.orderCode);
+      throw new BadRequestException(`${gateway.code} amount mismatch`);
     }
 
     try {
       await this.prisma.webhookEvent.create({
         data: {
-          provider: MOMO_PROVIDER,
-          eventKey,
-          providerEventId: eventKey,
-          providerOrderCode: payload.orderId,
-          eventType: 'PAYMENT_IPN',
+          provider: gateway.code,
+          eventKey: result.eventKey,
+          providerEventId: result.eventKey,
+          providerOrderCode: result.providerOrderId,
+          eventType: source === 'CALLBACK' ? 'PAYMENT_CALLBACK' : 'PAYMENT_QUERY',
           status: 'PROCESSING',
-          payload: payload as Prisma.InputJsonValue,
+          payload: result.raw as Prisma.InputJsonValue,
           signatureValid: true,
           orderId: payment.orderId,
           paymentId: payment.id,
-          processedAt: null,
+          processedAt: new Date(),
           attemptCount: 1,
         },
       });
     } catch (err: any) {
       if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002') {
-        return { resultCode: 0, message: 'Duplicate IPN acknowledged' };
+        return 'DUPLICATE';
       }
       throw err;
     }
 
     try {
-      if (payload.resultCode === MOMO_SUCCESS_RESULT_CODE) {
-        if (!transId) {
-          throw new BadRequestException('MoMo success IPN missing transId');
+      if (result.status === 'SUCCESS') {
+        if (!result.transactionId) {
+          throw new BadRequestException(`${gateway.code} success callback missing transactionId`);
         }
-        await this.processOrderSuccess(
-          payment.order.orderCode,
-          MOMO_PROVIDER,
-          { ...payload, transId, providerOrderId: payload.orderId, paymentId: payment.id },
-          Number(payload.amount),
-          payment.id,
-        );
+        let processResult: { message?: string } | undefined;
+        try {
+          processResult = await this.processOrderSuccess(
+            payment.order.orderCode,
+            gateway.code,
+            { ...result.raw, transId: result.transactionId, providerOrderId: result.providerOrderId, paymentId: payment.id },
+            Number(result.amountVnd),
+            payment.id,
+          );
+        } catch (err) {
+          if (err instanceof BadRequestException) {
+            await this.markRefundRequiredIfCollected(payment, result, 'INVALID_ORDER_STATUS');
+            await this.prisma.webhookEvent.update({
+              where: { eventKey: result.eventKey },
+              data: { status: 'PROCESSED', processedAt: new Date(), lastError: null },
+            });
+            return 'OK';
+          }
+          throw err;
+        }
+        if (processResult?.message === 'Order already processed') {
+          await this.markRefundRequiredIfCollected(payment, result, 'DUPLICATE_PAYMENT');
+          await this.recordWebhookFailure(gateway.code, 'DUPLICATE_PAYMENT', `${gateway.code} payment trùng cho đơn #${payment.order.orderCode}`, result.raw, payment.order.orderCode);
+        }
       } else if (payment.status === PaymentStatus.PENDING) {
-        await this.prisma.payment.update({
-          where: { id: payment.id },
+        await this.prisma.payment.updateMany({
+          where: { id: payment.id, status: PaymentStatus.PENDING },
           data: {
             status: PaymentStatus.FAILED,
             failedAt: new Date(),
-            failureReason: payload.message ?? `MoMo resultCode=${payload.resultCode}`,
-            paymentData: payload as Prisma.InputJsonValue,
+            failureReason: result.failureReason,
+            paymentData: result.raw as Prisma.InputJsonValue,
           },
         });
       }
 
       await this.prisma.webhookEvent.update({
-        where: { eventKey },
+        where: { eventKey: result.eventKey },
         data: { status: 'PROCESSED', processedAt: new Date(), lastError: null },
       });
-      return { resultCode: 0, message: 'Success' };
+      return 'OK';
     } catch (err) {
       await this.prisma.webhookEvent.update({
-        where: { eventKey },
+        where: { eventKey: result.eventKey },
         data: {
           status: 'FAILED_RETRYABLE',
           lastError: err instanceof Error ? err.message : String(err),
@@ -443,11 +513,79 @@ export class PaymentsService {
     }
   }
 
+  private async markRefundRequiredIfCollected(
+    payment: { id: string; orderId: string; paymentData: Prisma.JsonValue | null; status: PaymentStatus },
+    result: GatewayPaymentResult,
+    reason: string,
+  ) {
+    if (result.status !== 'SUCCESS') return;
+    const existingData = (payment.paymentData as Record<string, unknown> | null) ?? {};
+    const updated = await this.prisma.payment.updateMany({
+      where: { id: payment.id, status: PaymentStatus.PENDING },
+      data: {
+        status: PaymentStatus.REFUND_REQUIRED,
+        transactionId: result.transactionId,
+        paidAt: new Date(),
+        failureReason: reason,
+        paymentData: {
+          ...existingData,
+          providerResponse: result.raw,
+          collectedAmountVnd: result.amountVnd,
+          refundScope: 'PAYMENT_ONLY',
+        } as Prisma.InputJsonValue,
+      },
+    });
+    if (updated.count === 1) {
+      await this.prisma.orderEvent.create({
+        data: {
+          orderId: payment.orderId,
+          type: 'PAYMENT_REFUND_REQUIRED',
+          source: 'PAYMENT',
+          publicMessage: 'Đã nhận khoản thanh toán không thể ghi nhận cho đơn này, khoản tiền sẽ được hoàn lại.',
+          internalNote: reason,
+          deduplicationKey: `payment:${result.providerOrderId}:${result.transactionId ?? result.eventKey}:refund-required`,
+        },
+      }).catch(() => undefined);
+    }
+  }
+
   async getPaymentStatus(userId: string, paymentId: string) {
-    const payment = await this.prisma.payment.findFirst({
+    let payment = await this.prisma.payment.findFirst({
       where: { id: paymentId, order: { userId } },
       include: { order: { select: { id: true, orderCode: true, status: true, paymentStatus: true, targetTier: true } } },
     });
+    if (!payment) {
+      throw new NotFoundException('Không tìm thấy thanh toán');
+    }
+
+    if (
+      payment.status === PaymentStatus.PENDING &&
+      payment.providerPaymentId &&
+      payment.idempotencyKey &&
+      this.gatewayRegistry.has(payment.provider)
+    ) {
+      const gateway = this.gatewayRegistry.resolve(payment.provider);
+      if (gateway.queryPayment) {
+        try {
+          const result = await gateway.queryPayment(payment.providerPaymentId, payment.idempotencyKey, {
+            pastExpiry: Boolean(payment.expiresAt && payment.expiresAt.getTime() < Date.now() - 30 * 60 * 1000),
+          });
+          if (result.status !== 'PENDING') {
+            await this.applyGatewayPaymentResult(gateway, result, 'QUERY');
+            payment = await this.prisma.payment.findFirst({
+              where: { id: paymentId, order: { userId } },
+              include: { order: { select: { id: true, orderCode: true, status: true, paymentStatus: true, targetTier: true } } },
+            });
+            if (!payment) {
+              throw new NotFoundException('Không tìm thấy thanh toán');
+            }
+          }
+        } catch (err) {
+          this.logger.warn(`On-demand payment query failed | paymentId=${paymentId} | provider=${gateway.code} | error=${err instanceof Error ? err.message : String(err)}`);
+        }
+      }
+    }
+
     if (!payment) {
       throw new NotFoundException('Không tìm thấy thanh toán');
     }
@@ -470,7 +608,7 @@ export class PaymentsService {
     };
   }
 
-  async refundMomoPayment(paymentId: string, dto: RefundPaymentDto, adminId: string) {
+  async refundGatewayPayment(paymentId: string, dto: RefundPaymentDto, adminId: string) {
     const idempotencyKey = dto.idempotencyKey ?? crypto.randomUUID();
     const existingRefund = await this.prisma.refund.findUnique({ where: { idempotencyKey } });
     if (existingRefund) {
@@ -484,18 +622,29 @@ export class PaymentsService {
     if (!payment) {
       throw new NotFoundException('Không tìm thấy thanh toán');
     }
-    if (payment.provider !== MOMO_PROVIDER) {
-      throw new BadRequestException('Endpoint này chỉ xử lý hoàn tiền MoMo. Dùng luồng manual cho payment legacy.');
+    if (!this.gatewayRegistry.has(payment.provider)) {
+      throw new BadRequestException('Endpoint này chỉ xử lý hoàn tiền qua cổng online. Dùng luồng manual cho payment legacy.');
     }
-    if (payment.status !== PaymentStatus.PAID || payment.order.paymentStatus !== PaymentStatus.PAID) {
-      throw new BadRequestException('Chỉ có thể hoàn tiền payment MoMo đã thanh toán.');
+    const gateway = this.gatewayRegistry.resolve(payment.provider);
+    const paymentData = (payment.paymentData as Record<string, unknown> | null) ?? {};
+    const isPaymentOnly = paymentData.refundScope === 'PAYMENT_ONLY';
+    if (payment.status === PaymentStatus.PAID && payment.order.paymentStatus !== PaymentStatus.PAID) {
+      throw new BadRequestException(`Chỉ có thể hoàn tiền payment ${payment.provider} đã thanh toán.`);
+    }
+    if (payment.status !== PaymentStatus.PAID && payment.status !== PaymentStatus.REFUND_REQUIRED) {
+      throw new BadRequestException(`Chỉ có thể hoàn tiền payment ${payment.provider} đã thanh toán hoặc cần hoàn.`);
     }
     if (!payment.transactionId) {
-      throw new BadRequestException('Payment MoMo thiếu transId gốc, không thể gọi refund.');
+      throw new BadRequestException(`Payment ${payment.provider} thiếu transactionId gốc, không thể gọi refund.`);
     }
 
     const amountVnd = BigInt(dto.amountVnd);
-    const paidAmount = payment.amountVnd ?? payment.order.amountPaidVnd ?? BigInt(Math.round(Number(payment.order.amount)));
+    const paidAmount = isPaymentOnly
+      ? BigInt(Number(paymentData.collectedAmountVnd ?? payment.amountVnd ?? payment.order.amount))
+      : payment.amountVnd ?? payment.order.amountPaidVnd ?? BigInt(Math.round(Number(payment.order.amount)));
+    if (isPaymentOnly && amountVnd !== paidAmount) {
+      throw new BadRequestException('Payment cần hoàn riêng phải được hoàn toàn bộ số tiền cổng đã thu.');
+    }
     const reserved = await this.prisma.refund.aggregate({
       where: {
         paymentId: payment.id,
@@ -508,13 +657,13 @@ export class PaymentsService {
       throw new BadRequestException(`Số tiền hoàn vượt quá số dư có thể hoàn. Còn lại ${remaining.toString()} VND.`);
     }
 
-    const refundOrderId = this.buildMomoRefundOrderId(payment.order.orderCode);
+    const refundOrderId = gateway.buildRefundId(payment.order.orderCode);
     const refund = await this.prisma.$transaction(async (tx) => {
       const created = await tx.refund.create({
         data: {
           orderId: payment.orderId,
           paymentId: payment.id,
-          provider: MOMO_PROVIDER,
+          provider: gateway.code,
           providerRefundId: refundOrderId,
           amountVnd,
           currency: 'VND',
@@ -524,10 +673,12 @@ export class PaymentsService {
           metadata: { requestedBy: adminId, originalTransId: payment.transactionId } as Prisma.InputJsonValue,
         },
       });
-      await tx.order.update({
-        where: { id: payment.orderId },
-        data: { refundStatus: RefundStatus.PROCESSING, paymentStatus: PaymentStatus.REFUND_PENDING },
-      });
+      if (!isPaymentOnly) {
+        await tx.order.update({
+          where: { id: payment.orderId },
+          data: { refundStatus: RefundStatus.PROCESSING, paymentStatus: PaymentStatus.REFUND_PENDING },
+        });
+      }
       await tx.orderEvent.create({
         data: {
           orderId: payment.orderId,
@@ -536,9 +687,11 @@ export class PaymentsService {
           actorId: adminId,
           fromPaymentStatus: payment.order.paymentStatus,
           toPaymentStatus: PaymentStatus.REFUND_PENDING,
-          publicMessage: 'Yêu cầu hoàn tiền đang được xử lý qua MoMo.',
+          publicMessage: isPaymentOnly
+            ? `Đang hoàn lại khoản thanh toán không hợp lệ qua ${gateway.code}.`
+            : `Yêu cầu hoàn tiền đang được xử lý qua ${gateway.code}.`,
           internalNote: dto.reason,
-          deduplicationKey: `refund:${MOMO_PROVIDER}:${idempotencyKey}:requested`,
+          deduplicationKey: `refund:${gateway.code}:${idempotencyKey}:requested`,
         },
       }).catch((err) => {
         if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002') return null;
@@ -548,28 +701,39 @@ export class PaymentsService {
     });
 
     try {
-      const providerResponse = await this.momoPaymentProvider.refundPayment({
-        amount: dto.amountVnd,
-        orderId: refundOrderId,
+      const providerResponse = await gateway.refund({
+        amountVnd: dto.amountVnd,
+        refundId: refundOrderId,
         requestId: idempotencyKey,
-        transId: payment.transactionId,
-        description: dto.reason,
+        transactionId: payment.transactionId,
+        description: dto.reason ?? `Refund payment ${payment.id}`,
       });
-      const resultCode = Number(providerResponse.resultCode);
-      if (resultCode !== MOMO_SUCCESS_RESULT_CODE) {
+      if (providerResponse.status === 'PENDING') {
+        const processing = await this.prisma.refund.update({
+          where: { id: refund.id },
+          data: {
+            status: RefundStatus.PROCESSING,
+            metadata: { ...(refund.metadata as Record<string, unknown> | null), providerRefundRef: providerResponse.providerRefundRef, providerResponse: providerResponse.raw } as Prisma.InputJsonValue,
+          },
+        });
+        return this.toRefundResponse(processing);
+      }
+      if (providerResponse.status === 'FAILED') {
         const failed = await this.prisma.refund.update({
           where: { id: refund.id },
           data: {
             status: RefundStatus.FAILED,
-            failedReason: String(providerResponse.message ?? `MoMo refund resultCode=${providerResponse.resultCode}`),
+            failedReason: providerResponse.message,
             processedAt: new Date(),
-            metadata: { providerResponse } as Prisma.InputJsonValue,
+            metadata: { ...(refund.metadata as Record<string, unknown> | null), providerResponse: providerResponse.raw } as Prisma.InputJsonValue,
           },
         });
-        await this.prisma.order.update({
-          where: { id: payment.orderId },
-          data: { refundStatus: RefundStatus.FAILED, paymentStatus: PaymentStatus.PAID },
-        });
+        if (!isPaymentOnly) {
+          await this.prisma.order.update({
+            where: { id: payment.orderId },
+            data: { refundStatus: RefundStatus.FAILED, paymentStatus: PaymentStatus.PAID },
+          });
+        }
         return this.toRefundResponse(failed);
       }
 
@@ -579,7 +743,7 @@ export class PaymentsService {
           data: {
             status: RefundStatus.COMPLETED,
             processedAt: new Date(),
-            metadata: { providerResponse } as Prisma.InputJsonValue,
+            metadata: { ...(refund.metadata as Record<string, unknown> | null), providerResponse: providerResponse.raw } as Prisma.InputJsonValue,
           },
         });
         const totalCompleted = await tx.refund.aggregate({
@@ -588,18 +752,20 @@ export class PaymentsService {
         });
         const refundedTotal = totalCompleted._sum.amountVnd ?? BigInt(0);
         const fullyRefunded = refundedTotal >= paidAmount;
-        await tx.order.update({
-          where: { id: payment.orderId },
-          data: {
-            amountRefundedVnd: refundedTotal,
-            refundStatus: RefundStatus.COMPLETED,
-            paymentStatus: fullyRefunded ? PaymentStatus.REFUNDED : PaymentStatus.PARTIALLY_REFUNDED,
-          },
-        });
+        if (!isPaymentOnly) {
+          await tx.order.update({
+            where: { id: payment.orderId },
+            data: {
+              amountRefundedVnd: refundedTotal,
+              refundStatus: RefundStatus.COMPLETED,
+              paymentStatus: fullyRefunded ? PaymentStatus.REFUNDED : PaymentStatus.PARTIALLY_REFUNDED,
+            },
+          });
+        }
         await tx.payment.update({
           where: { id: payment.id },
           data: {
-            status: fullyRefunded ? PaymentStatus.REFUNDED : PaymentStatus.PARTIALLY_REFUNDED,
+            status: isPaymentOnly ? PaymentStatus.REFUNDED : fullyRefunded ? PaymentStatus.REFUNDED : PaymentStatus.PARTIALLY_REFUNDED,
             refundedAt: new Date(),
           },
         });
@@ -611,10 +777,10 @@ export class PaymentsService {
             actorId: adminId,
             fromPaymentStatus: PaymentStatus.REFUND_PENDING,
             toPaymentStatus: fullyRefunded ? PaymentStatus.REFUNDED : PaymentStatus.PARTIALLY_REFUNDED,
-            publicMessage: 'Khoản hoàn tiền đã được MoMo xác nhận.',
+            publicMessage: isPaymentOnly ? 'Khoản thanh toán không hợp lệ đã được hoàn lại.' : `Khoản hoàn tiền đã được ${gateway.code} xác nhận.`,
             internalNote: dto.reason,
             metadata: { refundId: refund.id, amountVnd: dto.amountVnd, providerRefundId: refundOrderId } as Prisma.InputJsonValue,
-            deduplicationKey: `refund:${MOMO_PROVIDER}:${idempotencyKey}:completed`,
+            deduplicationKey: `refund:${gateway.code}:${idempotencyKey}:completed`,
           },
         }).catch((err) => {
           if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002') return null;
@@ -631,12 +797,8 @@ export class PaymentsService {
           failedReason: err instanceof Error ? err.message : String(err),
         },
       }).catch(() => undefined);
-      throw new ServiceUnavailableException('Chưa xác định kết quả hoàn tiền MoMo. Vui lòng query/reconcile bằng cùng idempotencyKey trước khi gửi lại.');
+      throw new ServiceUnavailableException(`Chưa xác định kết quả hoàn tiền ${gateway.code}. Vui lòng query/reconcile bằng cùng idempotencyKey trước khi gửi lại.`);
     }
-  }
-
-  private buildMomoRefundOrderId(orderCode: number) {
-    return `MOMO_REFUND_${orderCode}_${Date.now()}_${crypto.randomBytes(3).toString('hex')}`;
   }
 
   private toRefundResponse(refund: { id: string; orderId: string; paymentId: string | null; provider: string; providerRefundId: string | null; amountVnd: bigint; currency: string; reason: string | null; status: RefundStatus; idempotencyKey: string | null; requestedAt: Date; processedAt: Date | null; failedReason: string | null; metadata: Prisma.JsonValue | null }) {
@@ -1258,6 +1420,174 @@ export class PaymentsService {
       where: { userId },
       include: { payments: true, items: { include: { product: true } } },
       orderBy: { createdAt: 'desc' },
+    });
+  }
+
+  async reconcileGatewayPayments() {
+    if (this.reconcileRunning) return { skipped: true, reason: 'running' };
+    const lockKey = 'payment-gateway-reconcile';
+    const acquired = await this.redisService.acquireLock(lockKey, 120);
+    if (!acquired) return { skipped: true, reason: 'locked' };
+
+    this.reconcileRunning = true;
+    try {
+      const paymentGateways = this.gatewayRegistry.withPaymentQuery();
+      const refundGateways = this.gatewayRegistry.withRefundQuery();
+      const paymentCodes = paymentGateways.map((gateway) => gateway.code);
+      const refundCodes = refundGateways.map((gateway) => gateway.code);
+      let paymentsProcessed = 0;
+      let refundsProcessed = 0;
+
+      if (paymentCodes.length > 0) {
+        const now = new Date();
+        const payments = await this.prisma.payment.findMany({
+          where: {
+            status: PaymentStatus.PENDING,
+            provider: { in: paymentCodes },
+            providerPaymentId: { not: null },
+            idempotencyKey: { not: null },
+            createdAt: { lt: new Date(now.getTime() - 2 * 60 * 1000), gt: new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000) },
+            OR: [
+              { expiresAt: { gt: new Date(now.getTime() - 30 * 60 * 1000) }, updatedAt: { lt: new Date(now.getTime() - 60 * 1000) } },
+              { expiresAt: { gte: new Date(now.getTime() - 24 * 60 * 60 * 1000), lt: new Date(now.getTime() - 30 * 60 * 1000) }, updatedAt: { lt: new Date(now.getTime() - 30 * 60 * 1000) } },
+              { expiresAt: { lt: new Date(now.getTime() - 24 * 60 * 60 * 1000) }, updatedAt: { lt: new Date(now.getTime() - 6 * 60 * 60 * 1000) } },
+            ],
+          },
+          orderBy: { updatedAt: 'asc' },
+          take: 50,
+        });
+
+        for (const payment of payments) {
+          const gateway = this.gatewayRegistry.resolve(payment.provider);
+          const existingData = (payment.paymentData as Record<string, unknown> | null) ?? {};
+          try {
+            const result = await gateway.queryPayment!(payment.providerPaymentId!, payment.idempotencyKey!, {
+              pastExpiry: Boolean(payment.expiresAt && payment.expiresAt.getTime() < Date.now() - 30 * 60 * 1000),
+            });
+            const outcome = await this.applyGatewayPaymentResult(gateway, result, 'QUERY');
+            if (outcome === 'PENDING') {
+              await this.prisma.payment.updateMany({
+                where: { id: payment.id, status: PaymentStatus.PENDING },
+                data: {
+                  paymentData: { ...existingData, lastQueriedAt: new Date().toISOString(), queryCount: Number(existingData.queryCount ?? 0) + 1 } as Prisma.InputJsonValue,
+                },
+              });
+            }
+            paymentsProcessed++;
+          } catch (err) {
+            await this.prisma.payment.updateMany({
+              where: { id: payment.id, status: PaymentStatus.PENDING },
+              data: {
+                paymentData: {
+                  ...existingData,
+                  lastQueriedAt: new Date().toISOString(),
+                  queryCount: Number(existingData.queryCount ?? 0) + 1,
+                  lastQueryError: err instanceof Error ? err.message : String(err),
+                } as Prisma.InputJsonValue,
+              },
+            });
+            this.logger.warn(`Payment reconcile failed | paymentId=${payment.id} | provider=${payment.provider} | error=${err instanceof Error ? err.message : String(err)}`);
+          }
+        }
+      }
+
+      if (refundCodes.length > 0) {
+        const now = new Date();
+        const refunds = await this.prisma.refund.findMany({
+          where: {
+            status: RefundStatus.PROCESSING,
+            provider: { in: refundCodes },
+            providerRefundId: { not: null },
+            requestedAt: { gt: new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000) },
+            OR: [
+              { requestedAt: { gt: new Date(now.getTime() - 60 * 60 * 1000) }, updatedAt: { lt: new Date(now.getTime() - 60 * 1000) } },
+              { requestedAt: { lte: new Date(now.getTime() - 60 * 60 * 1000) }, updatedAt: { lt: new Date(now.getTime() - 30 * 60 * 1000) } },
+            ],
+          },
+          orderBy: { updatedAt: 'asc' },
+          take: 50,
+        });
+
+        for (const refund of refunds) {
+          const gateway = this.gatewayRegistry.resolve(refund.provider);
+          const existingMetadata = (refund.metadata as Record<string, unknown> | null) ?? {};
+          try {
+            const result = await gateway.queryRefund!(refund.providerRefundId!);
+            if (result.status === 'SUCCESS' || result.status === 'FAILED') {
+              await this.finalizeGatewayRefund(refund.id, result.status === 'SUCCESS' ? 'COMPLETED' : 'FAILED', result.raw, result.message);
+            } else {
+              await this.prisma.refund.updateMany({
+                where: { id: refund.id, status: RefundStatus.PROCESSING },
+                data: { metadata: { ...existingMetadata, lastQueriedAt: new Date().toISOString() } as Prisma.InputJsonValue },
+              });
+            }
+            refundsProcessed++;
+          } catch (err) {
+            await this.prisma.refund.updateMany({
+              where: { id: refund.id, status: RefundStatus.PROCESSING },
+              data: { metadata: { ...existingMetadata, lastQueriedAt: new Date().toISOString(), lastQueryError: err instanceof Error ? err.message : String(err) } as Prisma.InputJsonValue },
+            });
+            this.logger.warn(`Refund reconcile failed | refundId=${refund.id} | provider=${refund.provider} | error=${err instanceof Error ? err.message : String(err)}`);
+          }
+        }
+      }
+
+      return { skipped: false, paymentsProcessed, refundsProcessed };
+    } finally {
+      this.reconcileRunning = false;
+      await this.redisService.releaseLock(lockKey);
+    }
+  }
+
+  private async finalizeGatewayRefund(refundId: string, outcome: 'COMPLETED' | 'FAILED', providerResponse: Record<string, unknown>, message?: string) {
+    return this.prisma.$transaction(async (tx) => {
+      const refund = await tx.refund.findUnique({ where: { id: refundId }, include: { payment: { include: { order: true } } } });
+      if (!refund || !refund.payment) return null;
+      const claim = await tx.refund.updateMany({
+        where: { id: refundId, status: { in: [RefundStatus.PENDING, RefundStatus.PROCESSING] } },
+        data: {
+          status: outcome === 'COMPLETED' ? RefundStatus.COMPLETED : RefundStatus.FAILED,
+          processedAt: new Date(),
+          failedReason: outcome === 'FAILED' ? message : null,
+          metadata: { ...((refund.metadata as Record<string, unknown> | null) ?? {}), providerResponse } as Prisma.InputJsonValue,
+        },
+      });
+      if (claim.count === 0) return refund;
+
+      const paymentData = (refund.payment.paymentData as Record<string, unknown> | null) ?? {};
+      const isPaymentOnly = paymentData.refundScope === 'PAYMENT_ONLY';
+      const paidAmount = refund.payment.amountVnd ?? refund.payment.order.amountPaidVnd ?? BigInt(Math.round(Number(refund.payment.order.amount)));
+      if (outcome === 'COMPLETED') {
+        const totalCompleted = await tx.refund.aggregate({ where: { paymentId: refund.paymentId, status: RefundStatus.COMPLETED }, _sum: { amountVnd: true } });
+        const refundedTotal = totalCompleted._sum.amountVnd ?? BigInt(0);
+        const fullyRefunded = refundedTotal >= paidAmount;
+        if (!isPaymentOnly) {
+          await tx.order.update({
+            where: { id: refund.orderId },
+            data: {
+              amountRefundedVnd: refundedTotal,
+              refundStatus: RefundStatus.COMPLETED,
+              paymentStatus: fullyRefunded ? PaymentStatus.REFUNDED : PaymentStatus.PARTIALLY_REFUNDED,
+            },
+          });
+        }
+        await tx.payment.update({
+          where: { id: refund.paymentId! },
+          data: { status: isPaymentOnly ? PaymentStatus.REFUNDED : fullyRefunded ? PaymentStatus.REFUNDED : PaymentStatus.PARTIALLY_REFUNDED, refundedAt: new Date() },
+        });
+      } else if (isPaymentOnly) {
+        await tx.payment.update({ where: { id: refund.paymentId! }, data: { status: PaymentStatus.REFUND_REQUIRED } });
+      } else {
+        const totalCompleted = await tx.refund.aggregate({ where: { paymentId: refund.paymentId, status: RefundStatus.COMPLETED }, _sum: { amountVnd: true } });
+        await tx.order.update({
+          where: { id: refund.orderId },
+          data: {
+            refundStatus: RefundStatus.FAILED,
+            paymentStatus: (totalCompleted._sum.amountVnd ?? BigInt(0)) > BigInt(0) ? PaymentStatus.PARTIALLY_REFUNDED : PaymentStatus.PAID,
+          },
+        });
+      }
+      return refund;
     });
   }
 

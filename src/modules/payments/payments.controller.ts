@@ -27,6 +27,7 @@ import { RefundPaymentDto } from './dto/refund-payment.dto';
 import { SubscriptionHistoryQueryDto } from './dto/subscription-history-query.dto';
 import { PaymentsService } from './payments.service';
 import { SubscriptionService } from './subscription.service';
+import { toZaloPayAck } from './zalopay/zalopay-ack.util';
 import { buildPlanList } from '../../common/constants/subscription-plans.constants';
 import { buildApiResponse } from '../../common/utils/api-response.util';
 
@@ -86,7 +87,23 @@ export class PaymentsController {
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'Nhận IPN thanh toán từ MoMo' })
   async momoIPN(@Body() payload: MomoIpnDto) {
-    return this.paymentsService.handleMomoIPN(payload as MomoIpnDto & Record<string, unknown>);
+    const result = await this.paymentsService.handleGatewayCallback('MOMO', payload as MomoIpnDto & Record<string, unknown>);
+    return result === 'DUPLICATE'
+      ? { resultCode: 0, message: 'Duplicate IPN acknowledged' }
+      : { resultCode: 0, message: 'Success' };
+  }
+
+  @Public()
+  @Post('zalopay/callback')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Nhận callback thanh toán từ ZaloPay' })
+  async zalopayCallback(@Body() payload: Record<string, unknown>) {
+    try {
+      await this.paymentsService.handleGatewayCallback('ZALOPAY', payload);
+      return toZaloPayAck(null);
+    } catch (err) {
+      return toZaloPayAck(err);
+    }
   }
 
   @Public()
@@ -146,14 +163,14 @@ export class PaymentsController {
   @Roles(Role.ADMIN)
   @ApiBearerAuth('access-token')
   @HttpCode(HttpStatus.OK)
-  @ApiOperation({ summary: 'Hoàn tiền MoMo cho một payment (Admin Only)' })
-  async refundMomoPayment(
+  @ApiOperation({ summary: 'Hoàn tiền online cho một payment (Admin Only)' })
+  async refundGatewayPayment(
     @Req() req: Request,
     @CurrentUser() user: AuthenticatedUser,
     @Param('paymentId') paymentId: string,
     @Body() dto: RefundPaymentDto,
   ) {
-    const data = await this.paymentsService.refundMomoPayment(paymentId, dto, user.id);
+    const data = await this.paymentsService.refundGatewayPayment(paymentId, dto, user.id);
     return buildApiResponse(req, 'PAYMENT_REFUND_CREATED', 'Yêu cầu hoàn tiền đã được xử lý', data);
   }
 

@@ -31,6 +31,7 @@ import {
   MeasurementField,
   getMissingMeasurements,
 } from '../../common/constants/measurement.constants';
+import { ONLINE_REFUND_PROVIDERS } from '../../common/constants/payment.constants';
 
 type IOrderWithRelations = Prisma.OrderGetPayload<{
   include: ReturnType<OrdersService['orderInclude']>;
@@ -521,9 +522,15 @@ export class OrdersService {
     const order = await this.findOrderByIdentifier(id);
     if (!order) throw new NotFoundException(`Không tìm thấy đơn hàng có ID ${id}`);
 
-    const hasMomoPayment = order.payments?.some((payment) => payment.provider === 'MOMO');
-    if (hasMomoPayment && dto.refundStatus === RefundStatus.COMPLETED) {
-      throw new BadRequestException('Không được xác nhận hoàn tiền MoMo thủ công. Vui lòng dùng endpoint hoàn tiền MoMo trong Payments.');
+    const refundablePaymentStatuses: PaymentStatus[] = [PaymentStatus.PAID, PaymentStatus.PARTIALLY_REFUNDED, PaymentStatus.REFUNDED];
+    const hasOnlineOrderPayment = order.payments?.some((payment) => {
+      const paymentData = payment.paymentData as { refundScope?: string } | null;
+      return ONLINE_REFUND_PROVIDERS.includes(payment.provider as (typeof ONLINE_REFUND_PROVIDERS)[number])
+        && paymentData?.refundScope !== 'PAYMENT_ONLY'
+        && refundablePaymentStatuses.includes(payment.status);
+    });
+    if (hasOnlineOrderPayment && dto.refundStatus === RefundStatus.COMPLETED) {
+      throw new BadRequestException('Không được xác nhận hoàn tiền online thủ công. Vui lòng dùng endpoint hoàn tiền trong Payments.');
     }
 
     const paymentStatus = dto.refundStatus === RefundStatus.COMPLETED ? PaymentStatus.REFUNDED : order.paymentStatus;
@@ -537,7 +544,7 @@ export class OrdersService {
       // Create Refund record for tracking
       if (dto.refundStatus === RefundStatus.REQUIRED || dto.refundStatus === RefundStatus.PROCESSING || dto.refundStatus === RefundStatus.COMPLETED) {
         const existingRefund = await tx.refund.findFirst({
-          where: { orderId: order.id, status: { notIn: ['CANCELLED'] } },
+          where: { orderId: order.id, provider: 'MANUAL', status: { notIn: ['CANCELLED'] } },
         });
 
         if (!existingRefund) {

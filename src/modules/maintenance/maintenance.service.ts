@@ -103,4 +103,21 @@ export class MaintenanceService {
       this.logger.warn(`Keep-alive ping failed: ${message} (${healthUrl})`);
     }
   }
+
+  @Cron(CronExpression.EVERY_MINUTE, { name: 'payment-gateway-reconcile' })
+  async reconcilePaymentGateways() {
+    if (!this.enabled) return;
+
+    try {
+      const result = await this.paymentsService.reconcileGatewayPayments();
+      if (!result.skipped) {
+        this.logger.log(
+          `Payment gateway reconcile completed | payments=${result.paymentsProcessed} refunds=${result.refundsProcessed}`,
+        );
+      }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'unknown';
+      this.logger.error(`Payment gateway reconcile failed: ${message}`);
+    }
+  }
 }
