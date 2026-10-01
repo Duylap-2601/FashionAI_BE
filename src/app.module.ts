@@ -57,6 +57,11 @@ import { AppLoggingModule } from './common/logging/app-logging.module';
               username: url.username || undefined,
               password: url.password ? decodeURIComponent(url.password) : undefined,
               db: Number(url.pathname.replace('/', '') || 0),
+              // rediss:// (vd Upstash) yêu cầu TLS. Parse URL ra object làm mất
+              // scheme nên phải khai báo lại tls, nếu không ioredis bắt tay plain TCP
+              // với endpoint chỉ nhận TLS -> queue.add() treo vô hạn (retry ngầm).
+              tls: url.protocol === 'rediss:' ? {} : undefined,
+              maxRetriesPerRequest: 3,
             },
             defaultJobOptions,
           };

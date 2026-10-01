@@ -16,7 +16,7 @@ export class MailProcessor extends WorkerHost {
   async process(job: Job<MailJobData>): Promise<void> {
     switch (job.data.kind) {
       case MAIL_JOB.VERIFICATION:
-        await this.mailService.sendVerificationEmail(job.data.email, job.data.token);
+        await this.mailService.sendVerificationEmail(job.data.email, job.data.otp);
         break;
       case MAIL_JOB.PASSWORD_RESET:
         await this.mailService.sendPasswordResetEmail(job.data.email, job.data.token);
