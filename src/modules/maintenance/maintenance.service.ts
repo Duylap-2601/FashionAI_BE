@@ -90,7 +90,12 @@ export class MaintenanceService {
     if (!this.enabled) return;
 
     const baseUrl = this.config.get<string>('PUBLIC_API_URL') ?? 'http://localhost:3002';
-    const healthUrl = `${baseUrl.replace(/\/$/, '')}/health/liveness`;
+    // PUBLIC_API_URL là domain trần (không gồm prefix), còn HealthController nằm
+    // sau global prefix `api` -> /api/health/liveness. Tự bù prefix để cron
+    // không ping nhầm /health/liveness (404). Env nào đã gắn sẵn /api thì giữ.
+    const normalizedBase = baseUrl.replace(/\/+$/, '');
+    const apiBase = normalizedBase.endsWith('/api') ? normalizedBase : `${normalizedBase}/api`;
+    const healthUrl = `${apiBase}/health/liveness`;
 
     try {
       const controller = new AbortController();
