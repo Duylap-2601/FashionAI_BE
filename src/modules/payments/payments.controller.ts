@@ -22,6 +22,7 @@ import { AuthenticatedUser } from '../auth/interfaces/authenticated-user.interfa
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { CheckoutDto } from './dto/checkout.dto';
 import { ConfirmManualPaymentDto } from './dto/confirm-manual-payment.dto';
+import { UnmatchedTransactionsQueryDto } from './dto/unmatched-transactions-query.dto';
 import { SubscriptionHistoryQueryDto } from './dto/subscription-history-query.dto';
 import { PaymentsService } from './payments.service';
 import { SubscriptionService } from './subscription.service';
@@ -117,6 +118,30 @@ export class PaymentsController {
   async resolveWebhookFailure(@Req() req: Request, @Param('id') id: string) {
     const data = await this.paymentsService.markWebhookFailureResolved(id);
     return buildApiResponse(req, 'WEBHOOK_FAILURE_RESOLVED', 'Đã đánh dấu xử lý xong', data);
+  }
+
+  @Get('admin/unmatched-transactions')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(Role.ADMIN)
+  @ApiBearerAuth('access-token')
+  @ApiOperation({ summary: 'Giao dịch lạ chưa match đơn + gợi ý đơn PENDING khớp số tiền (Admin Only)' })
+  async listUnmatchedTransactions(
+    @Req() req: Request,
+    @Query() query: UnmatchedTransactionsQueryDto,
+    @Query('resolved') resolved?: string,
+  ) {
+    const result = await this.paymentsService.listUnmatchedTransactions(
+      query.page || 1,
+      query.limit || 20,
+      resolved === undefined ? false : resolved === 'true',
+    );
+    return buildApiResponse(
+      req,
+      'UNMATCHED_TRANSACTIONS_SUCCESS',
+      'Lấy danh sách giao dịch chưa đối soát thành công',
+      result.items,
+      result.meta,
+    );
   }
 
   @Get('orders')

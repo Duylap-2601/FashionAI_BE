@@ -436,6 +436,110 @@ export class PaymentsService {
     });
   }
 
+  /**
+   * Giao dịch tiền vào không gắn được với đơn nào (memo PAY... của QR gateway
+   * thay vì FAI<orderCode>) + gợi ý đơn PENDING khớp ĐÚNG số tiền trong ±24h
+   * quanh giờ giao dịch để admin đối soát 1-click qua confirm-manual.
+   * Chỉ gợi ý, không tự đổi trạng thái bất kỳ đơn nào.
+   */
+  async listUnmatchedTransactions(page = 1, limit = 20, resolved = false) {
+    limit = Math.min(Math.max(limit, 1), 100);
+    const skip = (page - 1) * limit;
+    const where = {
+      provider: 'SEPAY_WEBHOOK',
+      reason: { in: ['UNMATCHED_TRANSACTION', 'PARSE_FAILED'] },
+      resolved,
+    };
+
+    const [items, total] = await Promise.all([
+      this.prisma.webhookFailure.findMany({
+        where,
+        orderBy: { createdAt: 'desc' },
+        skip,
+        take: limit,
+      }),
+      this.prisma.webhookFailure.count({ where }),
+    ]);
+
+    const windowMs = 24 * 60 * 60 * 1000;
+    const mapped = [];
+    for (const item of items) {
+      const payload = (item.rawPayload ?? {}) as Record<string, any>;
+      const transferAmount = Number(payload.transferAmount);
+      const anchor = this.parseSePayTransactionDate(payload.transactionDate) ?? item.createdAt;
+
+      let candidates: Array<{
+        orderCode: number;
+        amount: number;
+        targetTier: unknown;
+        status: unknown;
+        userEmail: string | null;
+        createdAt: Date;
+        minutesApart: number;
+      }> = [];
+      if (Number.isFinite(transferAmount)) {
+        const orders = await this.prisma.order.findMany({
+          where: {
+            status: OrderStatus.PENDING,
+            createdAt: {
+              gte: new Date(anchor.getTime() - windowMs),
+              lte: new Date(anchor.getTime() + windowMs),
+            },
+          },
+          include: { user: { select: { email: true } } },
+          orderBy: { createdAt: 'desc' },
+          take: 20,
+        });
+        candidates = orders
+          .filter((o) => Number(o.amount) === transferAmount)
+          .map((o) => ({
+            orderCode: o.orderCode,
+            amount: Number(o.amount),
+            targetTier: o.targetTier,
+            status: o.status,
+            userEmail: o.user?.email ?? null,
+            createdAt: o.createdAt,
+            minutesApart: Math.round(Math.abs(o.createdAt.getTime() - anchor.getTime()) / 60000),
+          }))
+          .sort((a, b) => a.minutesApart - b.minutesApart)
+          .slice(0, 5);
+      }
+
+      mapped.push({
+        id: item.id,
+        reason: item.reason,
+        message: item.message,
+        transferAmount: Number.isFinite(transferAmount) ? transferAmount : null,
+        code: payload.code ?? null,
+        content: payload.content ?? null,
+        transactionDate: payload.transactionDate ?? null,
+        referenceCode: payload.referenceCode ?? null,
+        gateway: payload.gateway ?? null,
+        accountNumber: payload.accountNumber ?? null,
+        resolved: item.resolved,
+        createdAt: item.createdAt,
+        candidates,
+      });
+    }
+
+    return {
+      items: mapped,
+      meta: { total, page, limit, totalPages: Math.ceil(total / limit) },
+    };
+  }
+
+  /**
+   * SePay transactionDate dạng `YYYY-MM-DD HH:mm:ss` giờ VN, không kèm offset.
+   * Đổi về UTC (VN = UTC+7) để so với Order.createdAt.
+   */
+  private parseSePayTransactionDate(value: unknown): Date | null {
+    if (typeof value !== 'string') return null;
+    const m = value.match(/^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})(?::(\d{2}))?$/);
+    if (!m) return null;
+    const utc = Date.UTC(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +(m[6] ?? '0'));
+    return new Date(utc - 7 * 60 * 60 * 1000);
+  }
+
   private signSePayFields(fields: Record<string, string>, secretKey: string) {
     const allowedFields = [
       'order_amount',
