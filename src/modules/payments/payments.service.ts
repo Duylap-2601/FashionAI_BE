@@ -21,6 +21,10 @@ import { OUTBOX_EVENT_TYPE } from '../outbox/constants/outbox.constants';
 import {
   TIER_PRICES,
   RENEWAL_REMINDER_DAYS_BEFORE,
+  PRORATION_MIN_REMAINING_DAYS,
+  calcUpgradeProration,
+  isUpgrade,
+  type UpgradeProration,
 } from '../../common/constants/subscription-plans.constants';
 
 /** Link thanh toán coi như hết hiệu lực sau 24h; tạo lại link mới khi user quay lại. */
@@ -73,6 +77,7 @@ export class PaymentsService {
       kind: order.targetTier ? 'SUBSCRIPTION' : 'PRODUCT',
       provider: 'SEPAY',
       checkoutUrl,
+      proration: order.prorationSnapshot ?? null,
       ...extra,
     };
   }
@@ -143,8 +148,39 @@ export class PaymentsService {
 
     if (scheduledSub) {
       throw new ConflictException(
-        `Bạn đã có gói ${scheduledSub.tier} được hẹn kích hoạt vào ${scheduledSub.startsAt.toLocaleDateString('vi-VN')}. Vui lòng huỷ trước khi đổi gói.`,
+        `Bạn đã có gói ${scheduledSub.tier} được hẹn kích hoạt vào ${scheduledSub.startsAt.toLocaleDateString('vi-VN')}. Dùng POST /payments/subscriptions/scheduled/cancel để huỷ lịch hẹn trước khi đổi gói.`,
       );
+    }
+
+    // Upgrade giữa kỳ: prorate về cuối chu kỳ hiện tại, khách chỉ trả chênh
+    // lệch phần còn lại (làm tròn lên 1.000đ). Còn ít ngày thì thu full như renewal.
+    let amount = TIER_PRICES[targetTier];
+    let proration: UpgradeProration | null = null;
+
+    const currentSub = await this.prisma.subscription.findFirst({
+      where: {
+        userId,
+        status: 'ACTIVE',
+        expiresAt: { gte: new Date() },
+      },
+      orderBy: { expiresAt: 'desc' },
+    });
+
+    if (currentSub && isUpgrade(currentSub.tier, targetTier)) {
+      const remainingDays = Math.ceil(
+        (currentSub.expiresAt.getTime() - Date.now()) / (1000 * 60 * 60 * 24),
+      );
+      if (remainingDays > PRORATION_MIN_REMAINING_DAYS) {
+        const quote = calcUpgradeProration(
+          currentSub.tier,
+          targetTier,
+          remainingDays,
+        );
+        if (quote.net > 0) {
+          amount = quote.net;
+          proration = quote;
+        }
+      }
     }
 
     return createWithUniqueOrderCode((orderCode) =>
@@ -153,7 +189,8 @@ export class PaymentsService {
           orderCode,
           userId,
           targetTier,
-          amount: TIER_PRICES[targetTier],
+          amount,
+          prorationSnapshot: (proration ?? undefined) as Prisma.InputJsonValue | undefined,
           status: OrderStatus.PENDING,
           paymentStatus: PaymentStatus.PENDING,
         },
@@ -849,33 +886,55 @@ export class PaymentsService {
 
     for (const sub of subs) {
       try {
-        // Create renewal order
-        const renewalOrder = await createWithUniqueOrderCode((orderCode) =>
-          this.prisma.order.create({
-            data: {
-              orderCode,
-              userId: sub.userId,
-              targetTier: sub.tier,
-              amount: TIER_PRICES[sub.tier],
-              status: OrderStatus.PENDING,
-              paymentStatus: PaymentStatus.PENDING,
-            },
-          }),
-        );
-
-        // Generate checkout link
-        const { checkoutUrl } = await this.createSePayCheckoutLink(renewalOrder);
-
-        await this.prisma.order.update({
-          where: { id: renewalOrder.id },
-          data: {
-            paymentProvider: 'SEPAY',
-            checkoutUrl,
-            checkoutExpiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000),
+        // Tái dùng đơn renewal PENDING còn hạn để không đẻ nhiều đơn khi user
+        // bỏ qua email nhắc nhiều ngày liên tiếp.
+        const existingPending = await this.prisma.order.findFirst({
+          where: {
+            userId: sub.userId,
+            targetTier: sub.tier,
+            status: OrderStatus.PENDING,
+            checkoutExpiresAt: { gt: new Date() },
           },
+          orderBy: { createdAt: 'desc' },
         });
 
-        ordersCreated++;
+        let renewalOrder = existingPending;
+        let checkoutUrl = existingPending?.checkoutUrl ?? null;
+
+        if (!renewalOrder || !checkoutUrl) {
+          // Create renewal order
+          renewalOrder = await createWithUniqueOrderCode((orderCode) =>
+            this.prisma.order.create({
+              data: {
+                orderCode,
+                userId: sub.userId,
+                targetTier: sub.tier,
+                amount: TIER_PRICES[sub.tier],
+                status: OrderStatus.PENDING,
+                paymentStatus: PaymentStatus.PENDING,
+              },
+            }),
+          );
+
+          // Generate checkout link
+          const link = await this.createSePayCheckoutLink(renewalOrder);
+          checkoutUrl = link.checkoutUrl;
+
+          await this.prisma.order.update({
+            where: { id: renewalOrder.id },
+            data: {
+              paymentProvider: 'SEPAY',
+              checkoutUrl,
+              checkoutExpiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000),
+            },
+          });
+
+          ordersCreated++;
+        }
+
+        if (!renewalOrder || !checkoutUrl) {
+          throw new Error(`Không tạo được đơn gia hạn cho subscription ${sub.id}`);
+        }
 
         // Send notification
         this.notificationService

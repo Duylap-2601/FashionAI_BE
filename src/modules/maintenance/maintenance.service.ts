@@ -42,11 +42,12 @@ export class MaintenanceService {
 
       const subscriptionResult = await this.subscriptionService.expireSubscriptions();
 
-      // Expire PENDING orders that haven't been paid after 24h
+      // Expire PENDING orders that haven't been paid after 24h. Bao gồm cả
+      // đơn subscription/renewal (có targetTier) để không tồn đọng nhiều đơn
+      // PENDING khi user bỏ qua email nhắc gia hạn.
       const expiredOrders = await this.prisma.order.updateMany({
         where: {
           status: OrderStatus.PENDING,
-          targetTier: null,
           createdAt: { lt: new Date(Date.now() - 24 * 60 * 60 * 1000) },
         },
         data: {

@@ -221,4 +221,24 @@ export class PaymentsController {
       data,
     );
   }
+
+  @Post('subscriptions/scheduled/cancel')
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth('access-token')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: 'Hủy lịch chuyển gói đang chờ',
+    description:
+      'Hủy bản ghi SCHEDULED khi đổi ý sau downgrade. Chỉ hủy chỗ giữ, ' +
+      'không hoàn tiền đơn đã thanh toán; gói hiện tại được bật lại tự động gia hạn.',
+  })
+  async cancelScheduledSubscription(@Req() req: Request, @CurrentUser() user: AuthenticatedUser) {
+    const data = await this.subscriptionService.cancelScheduledSubscription(user.id);
+    return buildApiResponse(
+      req,
+      'SUBSCRIPTION_SCHEDULED_CANCELLED',
+      'Đã hủy lịch chuyển gói. Số tiền đã thanh toán cho gói hẹn không được hoàn lại.',
+      data,
+    );
+  }
 }

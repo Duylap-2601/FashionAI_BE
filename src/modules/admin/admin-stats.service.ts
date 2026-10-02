@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import { AiActionType, ProductStatus } from '@prisma/client';
+import { AiActionType, ProductStatus, RefundStatus } from '@prisma/client';
 import { PrismaService } from '../../database/prisma.service';
 import { PAID_STATUSES } from '../../common/constants/order.constants';
 
@@ -18,6 +18,7 @@ export class AdminStatsService {
       tryOnTodayAgg,
       stylistCount,
       revenueAgg,
+      completedRefunds,
     ] = await Promise.all([
       this.prisma.user.count(),
       this.prisma.product.count({ where: { status: ProductStatus.ACTIVE } }),
@@ -35,6 +36,14 @@ export class AdminStatsService {
         _sum: { amount: true },
         _count: { _all: true },
         where: { status: { in: PAID_STATUSES } },
+      }),
+      // Hoàn tiền đã xử lý xong để tính doanh thu net; giữ gross nguyên cho FE cũ.
+      this.prisma.refund.findMany({
+        where: { status: RefundStatus.COMPLETED },
+        select: {
+          amountVnd: true,
+          order: { select: { targetTier: true } },
+        },
       }),
     ]);
 
@@ -55,6 +64,18 @@ export class AdminStatsService {
       }
     }
 
+    let subscriptionRefunded = 0;
+    let productRefunded = 0;
+    for (const refund of completedRefunds) {
+      const amount = Number(refund.amountVnd ?? 0);
+      if (refund.order?.targetTier) {
+        subscriptionRefunded += amount;
+      } else {
+        productRefunded += amount;
+      }
+    }
+    const refundedAmount = subscriptionRefunded + productRefunded;
+
     return {
       userCount,
       productCount,
@@ -65,6 +86,12 @@ export class AdminStatsService {
       totalRevenue: subscriptionRevenue + productRevenue,
       subscriptionRevenue,
       productRevenue,
+      refundedAmount,
+      subscriptionRefunded,
+      productRefunded,
+      netRevenue: subscriptionRevenue + productRevenue - refundedAmount,
+      netSubscriptionRevenue: subscriptionRevenue - subscriptionRefunded,
+      netProductRevenue: productRevenue - productRefunded,
       paidOrders: subscriptionOrders + productOrders,
       subscriptionOrders,
       productOrders,
