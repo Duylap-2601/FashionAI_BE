@@ -346,8 +346,16 @@ export class PaymentsService {
 
     const orderCode = this.parseSePayPaymentCode(payload.code, payload.content);
     if (!orderCode) {
-      await this.recordWebhookFailure('SEPAY_WEBHOOK', 'PARSE_FAILED', 'Missing or invalid SePay payment code', payload);
-      throw new BadRequestException('Missing or invalid SePay payment code');
+      // Giao dịch không gắn được với đơn nào (vd QR gateway sinh memo PAY...
+      // thay vì FAI<orderCode>). Lưu lại để admin đối soát tay rồi trả 200 để
+      // SePay không retry vô ích (non-2xx sẽ bị gửi lại tối đa 7 lần).
+      await this.recordWebhookFailure(
+        'SEPAY_WEBHOOK',
+        'UNMATCHED_TRANSACTION',
+        `Giao dich ${transactionId} khong match don nao (amount=${payload.transferAmount}, code=${payload.code ?? 'null'}). Cho admin doi soat tay.`,
+        payload,
+      );
+      return { success: true, message: 'Transaction recorded for manual reconciliation' };
     }
 
     await this.processOrderSuccess(
@@ -465,6 +473,19 @@ export class PaymentsService {
       }
       this.logger.warn('SEPAY_IPN_SECRET not configured, skipping signature verification (non-production)');
       return;
+    }
+
+    // Cổng thanh toán SePay (auth type SECRET_KEY) gửi secret thẳng qua header
+    // X-Secret-Key thay vì chữ ký HMAC. Chấp nhận cả hai để IPN không bị từ
+    // chối oan; so sánh constant-time chống timing attack.
+    const plainSecret = headers['x-secret-key'];
+    if (typeof plainSecret === 'string' && plainSecret.length > 0) {
+      const expected = Buffer.from(secret);
+      const provided = Buffer.from(plainSecret);
+      if (provided.length === expected.length && crypto.timingSafeEqual(provided, expected)) {
+        return;
+      }
+      throw new BadRequestException('SePay IPN secret key is invalid');
     }
 
     const signature = headers['x-sepay-signature'] || headers['x-signature'];
