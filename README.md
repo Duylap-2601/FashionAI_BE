@@ -159,6 +159,37 @@ Trên Windows PowerShell, dùng `npm.cmd` nếu `npm run ...` bị chặn bởi 
 docker-compose up --build -d
 ```
 
+Compose dùng PostgreSQL và Redis local, với `TAILSCALE_ENABLED=false`.
+
+## Render + Tailscale DB
+
+Image Docker có thể chạy NestJS trên Render và kết nối PostgreSQL private qua Tailscale userspace networking. Khi bật `TAILSCALE_ENABLED=true`, container chạy `tailscaled`, mở proxy DB nội bộ `127.0.0.1:${DB_PROXY_PORT}`, kiểm tra `SELECT 1`, chạy `npm run migrate:deploy`, rồi mới start NestJS.
+
+Biến môi trường cần cấu hình trên Render:
+
+```dotenv
+TAILSCALE_ENABLED=true
+TS_AUTHKEY=<render-secret>
+TAILSCALE_HOSTNAME=fashionai-be-render
+TAILSCALE_DB_HOST=100.90.252.117
+TAILSCALE_DB_PORT=30432
+DB_PROXY_PORT=15432
+TAILSCALE_STARTUP_TIMEOUT_SECONDS=60
+DB_CONNECT_TIMEOUT_SECONDS=60
+
+DATABASE_URL=postgresql://lamtailoi:<URL_ENCODED_PASSWORD>@127.0.0.1:15432/lamtailoi
+DIRECT_URL=postgresql://lamtailoi:<URL_ENCODED_PASSWORD>@127.0.0.1:15432/lamtailoi
+```
+
+Lưu ý triển khai:
+
+- Tạo `TS_AUTHKEY` trong đúng tailnet, dạng reusable + ephemeral; bật pre-approved nếu tailnet yêu cầu device approval.
+- Policy/tag của node Render phải được phép tới `100.90.252.117:30432`.
+- Không publish port DB/proxy; Render chỉ expose HTTP app.
+- Xác nhận endpoint `30432` hỗ trợ cả runtime query và Prisma migration trước khi dùng chung cho `DATABASE_URL` và `DIRECT_URL`.
+- Không tự thêm `sslmode=disable`; giữ đúng yêu cầu TLS/CA của PostgreSQL đích.
+- Dùng `/api/health` để kiểm tra readiness DB và `/api/health/liveness` để kiểm tra process còn sống.
+
 ## Trạng Thái Hiện Tại (2026-08-22)
 
 ✅ **Hoàn thiện production-ready:**

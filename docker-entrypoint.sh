@@ -1,5 +1,17 @@
 #!/bin/sh
-set -e
+set -eu
+
+is_tailscale_enabled() {
+  case "${TAILSCALE_ENABLED:-false}" in
+    true|TRUE|1|yes|YES) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+if is_tailscale_enabled; then
+  echo "[entrypoint] Tailscale mode enabled; starting supervisor."
+  exec /usr/bin/supervisord -c /app/docker/supervisord.conf
+fi
 
 # Render free tier khoá Pre-Deploy Command, nên migration phải chạy ngay tại đây
 # trước khi app nhận traffic. Chỉ có 1 instance nên không lo nhiều process cùng
@@ -13,12 +25,6 @@ MAX_RETRIES=5
 RETRY_DELAY=5
 attempt=1
 
-# Resolve known failed migrations so prisma migrate deploy can proceed.
-# This is safe to run repeatedly — if the migration is already resolved it
-# becomes a no-op (Prisma just errors harmlessly).
-echo "[entrypoint] Resolving failed migrations (if any)..."
-npx prisma migrate resolve --rolled-back 202609130001_order_payment_shipping_foundation 2>&1 || true
-
 echo "[entrypoint] Applying pending Prisma migrations..."
 until npm run migrate:deploy; do
   if [ "$attempt" -ge "$MAX_RETRIES" ]; then
@@ -26,11 +32,6 @@ until npm run migrate:deploy; do
     exit 1
   fi
   echo "[entrypoint] Migration attempt $attempt failed, retrying in ${RETRY_DELAY}s..."
-
-  # On retry, resolve the migration again in case it just failed
-  echo "[entrypoint] Re-resolving migration before retry..."
-  npx prisma migrate resolve --rolled-back 202609130001_order_payment_shipping_foundation 2>&1 || true
-
   sleep "$RETRY_DELAY"
   attempt=$((attempt + 1))
   RETRY_DELAY=$((RETRY_DELAY + 5))

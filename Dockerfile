@@ -24,6 +24,9 @@ RUN npm run build
 # is not an npm package, so prune leaves it in place.
 RUN npm prune --omit=dev
 
+# ---------- Tailscale binaries ----------
+FROM tailscale/tailscale:v1.84.3@sha256:f97ea471667bd94023f76e228c5be0b95564cdba2f9501cb084eeef139d8b65e AS tailscale
+
 # ---------- Runner ----------
 FROM node:22-alpine AS runner
 
@@ -33,18 +36,22 @@ ENV NODE_ENV=production
 
 # tini gives us a real PID 1 for correct signal handling / graceful shutdown.
 # openssl provides libssl.so.3, which the Prisma query engine links against.
-RUN apk add --no-cache tini openssl
+# supervisor manages tailscaled, the local DB proxy, and the app in Tailscale mode.
+RUN apk add --no-cache tini openssl ca-certificates supervisor socat
 
 # Copy only the production artifacts from the builder stage.
 COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/dist ./dist
 COPY --from=builder /app/package.json ./package.json
 COPY --from=builder /app/prisma ./prisma
+COPY --from=tailscale /usr/local/bin/tailscale /usr/local/bin/tailscale
+COPY --from=tailscale /usr/local/bin/tailscaled /usr/local/bin/tailscaled
 COPY docker-entrypoint.sh ./docker-entrypoint.sh
-RUN chmod +x ./docker-entrypoint.sh
+COPY docker ./docker
+RUN chmod +x ./docker-entrypoint.sh ./docker/*.sh ./docker/supervisor-exit-listener.py
 
 # Writable dir for the local avatar-storage fallback, owned by the non-root user.
-RUN mkdir -p storage && chown -R node:node storage
+RUN mkdir -p storage /tmp/tailscale/state && chown -R node:node storage /tmp/tailscale
 
 # Run as an unprivileged user.
 USER node

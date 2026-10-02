@@ -10,6 +10,7 @@ services:
     environment:
       - NODE_ENV=production
       - PORT=3000
+      - TAILSCALE_ENABLED=false
       - DATABASE_URL=postgresql://postgres:postgres@postgres:5432/fashionai?sslmode=disable
       - DIRECT_URL=postgresql://postgres:postgres@postgres:5432/fashionai?sslmode=disable
       - REDIS_HOST=redis
