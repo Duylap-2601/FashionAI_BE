@@ -8,7 +8,6 @@ import {
   BadRequestException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { fal } from '@fal-ai/client';
 import { GoogleGenAI } from '@google/genai';
 import axios from 'axios';
 import * as crypto from 'crypto';
@@ -56,13 +55,14 @@ export interface TryOnResultResponse {
 export class TryOnService {
   private readonly logger = new Logger(TryOnService.name);
   private readonly TIMEOUT_MS: number;
-  private readonly SAM2_ENABLED: boolean;
-  private readonly provider: 'fal' | 'mock';
+  private readonly provider: 'fashn' | 'mock';
   private readonly CACHE_TTL_MS: number;
   private readonly MAX_GARMENTS = 2;
 
+  private readonly FASHN_API_KEY: string;
   private readonly FASHN_MODEL: string;
-  private readonly SAM2_MODEL: string;
+  private readonly FASHN_BASE_URL = 'https://api.fashn.ai';
+  private readonly FASHN_POLL_INTERVAL_MS = 2000;
 
   private readonly ai: GoogleGenAI | null;
   private readonly QUALITY_GATE_ENABLED: boolean;
@@ -75,13 +75,11 @@ export class TryOnService {
     private readonly quotaService: QuotaService,
     private readonly redisService: RedisService,
   ) {
-    const falKey = this.config.get<string>('FAL_KEY') ?? '';
+    this.FASHN_API_KEY = this.config.get<string>('FASHN_API_KEY') ?? '';
     this.TIMEOUT_MS = parseInt(this.config.get<string>('TIMEOUT_MS') ?? '120000', 10);
-    this.SAM2_ENABLED = this.config.get<string>('SAM2_ENABLED') !== 'false';
-    this.FASHN_MODEL = this.config.get<string>('FASHN_MODEL') ?? 'fal-ai/fashn/tryon/v1.6';
-    this.SAM2_MODEL = this.config.get<string>('SAM2_MODEL') ?? 'fal-ai/sam2/auto-segment';
+    this.FASHN_MODEL = this.config.get<string>('FASHN_MODEL') ?? 'tryon-v1.6';
     this.provider =
-      this.config.get<string>('AI_TRYON_PROVIDER') === 'mock' ? 'mock' : 'fal';
+      this.config.get<string>('AI_TRYON_PROVIDER') === 'mock' ? 'mock' : 'fashn';
     this.CACHE_TTL_MS =
       parseInt(this.config.get<string>('TRYON_CACHE_TTL_DAYS') ?? '30', 10) *
       24 *
@@ -89,7 +87,7 @@ export class TryOnService {
       60 *
       1000;
 
-    // Cổng kiểm tra chất lượng ảnh bằng Gemini trước khi gọi fal.ai (tốn phí).
+    // Cổng kiểm tra chất lượng ảnh bằng Gemini trước khi gọi FASHN (tốn credit).
     // Chỉ bật khi có GEMINI_API_KEY và cờ TRYON_QUALITY_GATE_ENABLED=true.
     const geminiKey = this.config.get<string>('GEMINI_API_KEY');
     this.ai = geminiKey ? new GoogleGenAI({ apiKey: geminiKey }) : null;
@@ -98,15 +96,12 @@ export class TryOnService {
       Boolean(geminiKey);
     this.QUALITY_GATE_MODEL = this.config.get<string>('GEMINI_MODEL', 'gemini-2.0-flash');
 
-    if (!falKey) {
-      this.logger.warn('[fal.ai] FAL_KEY chưa được cấu hình!');
-    } else {
-      fal.config({ credentials: falKey });
+    if (!this.FASHN_API_KEY) {
+      this.logger.warn('[FASHN] FASHN_API_KEY chưa được cấu hình!');
     }
 
     this.logger.log(
-      `[fal.ai] Khởi tạo | model=${this.FASHN_MODEL} | SAM2=${this.SAM2_ENABLED} | ` +
-        `qualityGate=${this.QUALITY_GATE_ENABLED}`,
+      `[FASHN] Khởi tạo | model=${this.FASHN_MODEL} | qualityGate=${this.QUALITY_GATE_ENABLED}`,
     );
   }
 
@@ -258,40 +253,57 @@ export class TryOnService {
     }
   }
 
-  private async uploadToFalStorage(buffer: Buffer, mimetype: string, label: string): Promise<string> {
-    this.logger.log(`[fal.storage] Uploading ${label} (${buffer.length} bytes)...`);
-    const blob = new Blob([buffer], { type: mimetype || 'image/jpeg' });
-    const url = await fal.storage.upload(blob);
-    this.logger.log(`[fal.storage] ${label} → ${url}`);
-    return url;
+  private toDataUri(buffer: Buffer, mimetype: string): string {
+    return `data:${mimetype || 'image/jpeg'};base64,${buffer.toString('base64')}`;
   }
 
-  private async segmentGarment(garmentUrl: string): Promise<string> {
-    this.logger.log(`[SAM2] Bắt đầu segment garment...`);
-    try {
-      const samResult = await this.withTimeout(
-        (fal.subscribe as any)(this.SAM2_MODEL, {
-          input: { image_url: garmentUrl },
-        }),
-        'SAM2 timed out',
-      );
-
-      const data = (samResult as any)?.data;
-      const segmentedUrl: string | undefined =
-        data?.image?.url ??
-        data?.images?.[0]?.url ??
-        data?.masked_image?.url ??
-        data?.output_image?.url;
-
-      if (segmentedUrl) {
-        this.logger.log(`[SAM2] Segment hoàn tất → ${segmentedUrl}`);
-        return segmentedUrl;
-      }
-      return garmentUrl;
-    } catch (err: any) {
-      this.logger.warn(`[SAM2] Segment thất bại (${err?.message}), fallback về ảnh gốc`);
-      return garmentUrl;
+  private async callFashnRun(body: object): Promise<string> {
+    const res = await axios.post<{ id: string; error?: any }>(
+      `${this.FASHN_BASE_URL}/v1/run`,
+      body,
+      {
+        headers: {
+          Authorization: `Bearer ${this.FASHN_API_KEY}`,
+          'Content-Type': 'application/json',
+        },
+        timeout: 30000,
+      },
+    );
+    if (res.data.error) {
+      throw new Error(`FASHN run error: ${JSON.stringify(res.data.error)}`);
     }
+    return res.data.id;
+  }
+
+  private async pollFashnStatus(predictionId: string): Promise<{ output: string[]; raw: any }> {
+    const deadline = Date.now() + this.TIMEOUT_MS;
+    while (Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, this.FASHN_POLL_INTERVAL_MS));
+      const res = await axios.get<{
+        id: string;
+        status: string;
+        output?: string[];
+        error?: any;
+      }>(`${this.FASHN_BASE_URL}/v1/status/${predictionId}`, {
+        headers: { Authorization: `Bearer ${this.FASHN_API_KEY}` },
+        timeout: 15000,
+      });
+
+      const { status, output, error } = res.data;
+      if (status === 'completed') {
+        if (!output || output.length === 0) {
+          throw new Error('FASHN trả về completed nhưng không có output URL');
+        }
+        return { output, raw: res.data };
+      }
+      if (status === 'failed') {
+        throw new Error(
+          `FASHN prediction thất bại: ${error?.message ?? JSON.stringify(error)}`,
+        );
+      }
+      // starting / in_queue / processing — tiếp tục poll
+    }
+    throw new Error('FASHN try-on timed out');
   }
 
   private computeHash(buffer: Buffer): string {
@@ -494,46 +506,33 @@ export class TryOnService {
       }
       // ── Chuỗi FASHN: kết quả bước trước là model_image của bước sau ─────
       const mode = this.config.get<string>('FASHN_MODE', 'balanced');
-      let modelUrl = await this.uploadToFalStorage(
-        humanImage.buffer,
-        humanImage.mimetype,
-        'humanImage',
-      );
+      let modelImageInput: string = this.toDataUri(humanImage.buffer, humanImage.mimetype);
       const providerMeta: any[] = [];
 
       for (const g of resolved) {
-        let garmentUrl = await this.uploadToFalStorage(
-          g.buffer,
-          g.mime,
-          `garment_${g.category}`,
-        );
-        if (this.SAM2_ENABLED) {
-          garmentUrl = await this.segmentGarment(garmentUrl);
-        }
+        const garmentImageInput = this.toDataUri(g.buffer, g.mime);
+        this.logger.log(`[FASHN] Gửi request | category=${g.category} | model=${this.FASHN_MODEL}`);
 
-        const step = await this.withTimeout(
-          fal.subscribe(this.FASHN_MODEL, {
-            input: {
-              model_image: modelUrl,
-              garment_image: garmentUrl,
-              category: this.mapCategory(g.category),
-              mode,
-              garment_photo_type: 'auto',
-            },
-          }),
-          'FASHN try-on timed out',
-        );
+        const predictionId = await this.callFashnRun({
+          model_name: this.FASHN_MODEL,
+          inputs: {
+            model_image: modelImageInput,
+            garment_image: garmentImageInput,
+            category: this.mapCategory(g.category),
+            mode,
+            garment_photo_type: 'auto',
+            segmentation_free: true,
+          },
+        });
 
-        const stepUrl: string | undefined =
-          (step.data as any)?.images?.[0]?.url ?? (step.data as any)?.image?.url;
-        if (!stepUrl) {
-          throw new Error('Mô hình AI không trả về URL ảnh kết quả');
-        }
-        modelUrl = stepUrl;
-        providerMeta.push(step.data ?? {});
+        this.logger.log(`[FASHN] Prediction ID=${predictionId}, bắt đầu poll...`);
+        const { output, raw } = await this.pollFashnStatus(predictionId);
+        // Bước sau dùng URL kết quả (public CDN của FASHN) làm model_image
+        modelImageInput = output[0];
+        providerMeta.push(raw);
       }
       // ── Lưu ảnh cuối cùng vào storage ──────────────────────────────────
-      const imgRes = await axios.get<ArrayBuffer>(modelUrl, {
+      const imgRes = await axios.get<ArrayBuffer>(modelImageInput, {
         responseType: 'arraybuffer',
         timeout: 30000,
       });
@@ -672,7 +671,7 @@ export class TryOnService {
         providerMetadata: {
           provider: 'mock',
           model: 'mock-tryon',
-          note: 'Generated without fal.ai for local and frontend testing.',
+          note: 'Generated without FASHN API for local and frontend testing.',
         },
       },
     });
@@ -768,7 +767,7 @@ export class TryOnService {
     }
 
     const msg = error instanceof Error ? error.message : 'Lỗi không xác định';
-    this.logger.error(`[fal.ai] Lỗi Try-On: ${msg}`);
+    this.logger.error(`[FASHN] Lỗi Try-On: ${msg}`);
 
     if (msg.includes('timeout') || msg.includes('Timeout') || msg.includes('AbortError')) {
       throw new HttpException(

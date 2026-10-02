@@ -1,7 +1,7 @@
 {
   "name": "ai-fashion-tryon-api",
   "version": "1.0.0",
-  "description": "FashionAI backend: virtual try-on (fal.ai FASHN) and AI stylist (Gemini) REST API built with NestJS",
+  "description": "FashionAI backend: virtual try-on (FASHN API) and AI stylist (Gemini) REST API built with NestJS",
   "author": "",
   "private": true,
   "license": "UNLICENSED",
@@ -31,7 +31,6 @@
     "seed": "ts-node prisma/seed.ts"
   },
   "dependencies": {
-    "@fal-ai/client": "^1.10.1",
     "@getbrevo/brevo": "^6.0.3",
     "@google/genai": "^2.6.0",
     "@nestjs/bullmq": "^10.2.3",
