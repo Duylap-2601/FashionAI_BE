@@ -115,6 +115,10 @@ if is_tailscale_enabled; then
   require_env TAILSCALE_DB_PORT "${TAILSCALE_DB_PORT:-}"
   validate_port TAILSCALE_DB_PORT "$TAILSCALE_DB_PORT"
   validate_port DB_PROXY_PORT "${DB_PROXY_PORT:-15432}"
+  if [ -n "${TAILSCALE_REDIS_HOST:-}" ]; then
+    validate_port TAILSCALE_REDIS_PORT "${TAILSCALE_REDIS_PORT:-6379}"
+    validate_port REDIS_PROXY_PORT "${REDIS_PROXY_PORT:-16379}"
+  fi
   tailscale_up
 fi
 

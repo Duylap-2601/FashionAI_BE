@@ -48,7 +48,8 @@ COPY --from=tailscale /usr/local/bin/tailscale /usr/local/bin/tailscale
 COPY --from=tailscale /usr/local/bin/tailscaled /usr/local/bin/tailscaled
 COPY docker-entrypoint.sh ./docker-entrypoint.sh
 COPY docker ./docker
-RUN chmod +x ./docker-entrypoint.sh ./docker/*.sh ./docker/supervisor-exit-listener.py
+RUN sed -i 's/\r$//' ./docker-entrypoint.sh ./docker/*.sh ./docker/supervisor-exit-listener.py \
+  && chmod +x ./docker-entrypoint.sh ./docker/*.sh ./docker/supervisor-exit-listener.py
 
 # Writable dir for the local avatar-storage fallback, owned by the non-root user.
 RUN mkdir -p storage /tmp/tailscale/state && chown -R node:node storage /tmp/tailscale
