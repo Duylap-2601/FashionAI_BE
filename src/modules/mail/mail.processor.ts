@@ -14,6 +14,17 @@ export class MailProcessor extends WorkerHost {
   }
 
   async process(job: Job<MailJobData>): Promise<void> {
+    if (!this.isValidJob(job)) {
+      job.discard();
+      throw new Error(`Malformed mail job: ${job.name}`);
+    }
+
+    if (job.data.expiresAt && new Date(job.data.expiresAt).getTime() <= Date.now()) {
+      job.discard();
+      this.logger.warn(`Discarded expired mail job: ${job.name}`);
+      return;
+    }
+
     switch (job.data.kind) {
       case MAIL_JOB.VERIFICATION:
         await this.mailService.sendVerificationEmail(job.data.email, job.data.otp);
@@ -34,7 +45,22 @@ export class MailProcessor extends WorkerHost {
         });
         break;
       default:
-        this.logger.warn(`Unknown mail job: ${job.name}`);
+        job.discard();
+        throw new Error(`Unknown mail job: ${job.name}`);
     }
+  }
+
+  private isValidJob(job: Job<MailJobData>): boolean {
+    const data = job.data as MailJobData | undefined;
+    if (!data || data.schemaVersion !== 2) return false;
+    if (job.name !== data.kind) return false;
+    if (!this.isEmail(data.email)) return false;
+    if (!data.mailEventId || data.mailEventId.length > 200) return false;
+    if (data.expiresAt && Number.isNaN(new Date(data.expiresAt).getTime())) return false;
+    return true;
+  }
+
+  private isEmail(value: string): boolean {
+    return typeof value === 'string' && value.length <= 254 && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
   }
 }

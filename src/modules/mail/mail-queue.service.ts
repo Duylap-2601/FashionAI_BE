@@ -1,12 +1,12 @@
 import { InjectQueue } from '@nestjs/bullmq';
 import { Injectable, Logger } from '@nestjs/common';
+import { createHash, randomUUID } from 'crypto';
 import { Queue } from 'bullmq';
 import {
-  MailService,
   OrderConfirmationData,
   OrderStatusUpdateData,
   RenewalReminderData,
-} from './mail.service';
+} from './mail.types';
 import { MAIL_JOB, MAIL_QUEUE } from './mail.constants';
 import { MailJobData } from './mail-queue.types';
 
@@ -16,22 +16,21 @@ export class MailQueueService {
 
   constructor(
     @InjectQueue(MAIL_QUEUE) private readonly mailQueue: Queue<MailJobData>,
-    private readonly mailService: MailService,
   ) {}
 
   async sendVerificationEmail(email: string, otp: string): Promise<void> {
+    const expiresAt = new Date(Date.now() + 5 * 60 * 1000).toISOString();
     await this.enqueue(
       MAIL_JOB.VERIFICATION,
-      { kind: MAIL_JOB.VERIFICATION, email, otp },
-      () => this.mailService.sendVerificationEmail(email, otp),
+      { schemaVersion: 2, mailEventId: randomUUID(), expiresAt, kind: MAIL_JOB.VERIFICATION, email, otp },
     );
   }
 
   async sendPasswordResetEmail(email: string, token: string): Promise<void> {
+    const expiresAt = new Date(Date.now() + 60 * 60 * 1000).toISOString();
     await this.enqueue(
       MAIL_JOB.PASSWORD_RESET,
-      { kind: MAIL_JOB.PASSWORD_RESET, email, token },
-      () => this.mailService.sendPasswordResetEmail(email, token),
+      { schemaVersion: 2, mailEventId: randomUUID(), expiresAt, kind: MAIL_JOB.PASSWORD_RESET, email, token },
     );
   }
 
@@ -41,8 +40,7 @@ export class MailQueueService {
   ): Promise<void> {
     await this.enqueue(
       MAIL_JOB.ORDER_CONFIRMATION,
-      { kind: MAIL_JOB.ORDER_CONFIRMATION, email, order },
-      () => this.mailService.sendOrderConfirmationEmail(email, order),
+      { schemaVersion: 2, mailEventId: this.eventId(MAIL_JOB.ORDER_CONFIRMATION, { orderId: order.orderId, orderCode: order.orderCode }), kind: MAIL_JOB.ORDER_CONFIRMATION, email, order },
     );
   }
 
@@ -52,8 +50,7 @@ export class MailQueueService {
   ): Promise<void> {
     await this.enqueue(
       MAIL_JOB.ORDER_STATUS_UPDATE,
-      { kind: MAIL_JOB.ORDER_STATUS_UPDATE, email, data },
-      () => this.mailService.sendOrderStatusUpdateEmail(email, data),
+      { schemaVersion: 2, mailEventId: this.eventId(MAIL_JOB.ORDER_STATUS_UPDATE, { orderId: data.orderId, orderCode: data.orderCode, status: data.status }), kind: MAIL_JOB.ORDER_STATUS_UPDATE, email, data },
     );
   }
 
@@ -61,26 +58,36 @@ export class MailQueueService {
     await this.enqueue(
       MAIL_JOB.RENEWAL_REMINDER,
       {
+        schemaVersion: 2,
+        mailEventId: this.eventId(MAIL_JOB.RENEWAL_REMINDER, { email, orderCode: data.orderCode, expiresAt: data.expiresAt.toISOString() }),
         kind: MAIL_JOB.RENEWAL_REMINDER,
         email,
         data: { ...data, expiresAt: data.expiresAt.toISOString() },
       },
-      () => this.mailService.sendRenewalReminderEmail(email, data),
     );
   }
 
   private async enqueue(
     name: (typeof MAIL_JOB)[keyof typeof MAIL_JOB],
     data: MailJobData,
-    fallback: () => Promise<void>,
   ) {
     try {
-      await this.mailQueue.add(name, data);
+      await this.mailQueue.add(name, data, {
+        jobId: this.eventId(name, { mailEventId: data.mailEventId }),
+        removeOnComplete: true,
+        removeOnFail: { age: 24 * 60 * 60, count: 100 },
+      });
     } catch (err) {
-      this.logger.warn(
-        `Mail queue unavailable for job ${name}; sending directly. ${err instanceof Error ? err.message : String(err)}`,
+      this.logger.error(
+        `Mail queue unavailable for job ${name}; not sending directly. ${err instanceof Error ? err.message : String(err)}`,
       );
-      await fallback();
+      throw err;
     }
+  }
+
+  private eventId(kind: string, payload: Record<string, unknown>): string {
+    return createHash('sha256')
+      .update(JSON.stringify({ version: 2, kind, ...payload }))
+      .digest('base64url');
   }
 }
