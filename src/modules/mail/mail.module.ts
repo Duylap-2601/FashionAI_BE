@@ -13,8 +13,8 @@ import { MailService } from './mail.service';
       defaultJobOptions: {
         attempts: 3,
         backoff: { type: 'exponential', delay: 5000 },
-        removeOnComplete: 1000,
-        removeOnFail: 5000,
+        removeOnComplete: true,
+        removeOnFail: { age: 24 * 60 * 60, count: 100 },
       },
     }),
   ],

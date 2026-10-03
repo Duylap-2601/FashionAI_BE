@@ -1842,24 +1842,20 @@ export class PaymentsService {
           .catch(() => undefined);
 
         // Send email
-        await this.mailQueueService
-          .sendRenewalReminderEmail(sub.user.email, {
-            name: sub.user.name || 'Khách hàng',
-            tier: sub.tier,
-            tierLabel: sub.tier,
-            price: TIER_PRICES[sub.tier],
-            expiresAt: sub.expiresAt,
-            daysRemaining: Math.ceil(
-              (sub.expiresAt.getTime() - Date.now()) / (1000 * 60 * 60 * 24),
-            ),
-            checkoutUrl,
-            orderCode: renewalOrder.orderCode,
-          })
-          .catch((err) => {
-            this.logger.warn(`Failed to send renewal reminder email for user ${sub.userId}: ${err.message}`);
-          });
+        await this.mailQueueService.sendRenewalReminderEmail(sub.user.email, {
+          name: sub.user.name || 'Khách hàng',
+          tier: sub.tier,
+          tierLabel: sub.tier,
+          price: TIER_PRICES[sub.tier],
+          expiresAt: sub.expiresAt,
+          daysRemaining: Math.ceil(
+            (sub.expiresAt.getTime() - Date.now()) / (1000 * 60 * 60 * 24),
+          ),
+          checkoutUrl,
+          orderCode: renewalOrder.orderCode,
+        });
 
-        // Mark reminder sent
+        // This records that the reminder was queued, not provider delivery.
         await this.subscriptionService.markRenewalReminderSent(sub.id);
         remindersSent++;
       } catch (err) {
