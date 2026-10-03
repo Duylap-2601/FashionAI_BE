@@ -4,6 +4,7 @@ import { ModuleMetadata } from '@nestjs/common/interfaces';
 import { PrismaService } from '../../../src/database/prisma.service';
 import { RedisService } from '../../../src/common/services/redis.service';
 import { GlobalExceptionFilter } from '../../../src/common/filters/http-exception.filter';
+import { PaymentGatewayRegistry } from '../../../src/modules/payments/gateways/payment-gateway.registry';
 
 /**
  * E2E ở đây chạy toàn bộ HTTP stack thật (routing, guard, pipe, filter) nhưng thay
@@ -103,6 +104,21 @@ export function createRedisMock() {
   };
 }
 
+export function createPaymentGatewayRegistryMock() {
+  return {
+    getDefaultCode: jest.fn(() => 'SEPAY'),
+    getDefault: jest.fn(() => {
+      throw new Error('Gateway default is not used when PAYMENT_DEFAULT_PROVIDER=SEPAY');
+    }),
+    resolve: jest.fn((code: string) => {
+      throw new Error(`Unexpected payment gateway resolve in e2e test: ${code}`);
+    }),
+    has: jest.fn(() => false),
+    withPaymentQuery: jest.fn(() => []),
+    withRefundQuery: jest.fn(() => []),
+  };
+}
+
 export interface TestAppOptions {
   metadata: ModuleMetadata;
   prisma?: PrismaMock;
@@ -117,6 +133,7 @@ export async function createTestApp(options: TestAppOptions): Promise<{
 }> {
   const prisma = options.prisma ?? createPrismaMock();
   const redis = options.redis ?? createRedisMock();
+  const gatewayRegistry = createPaymentGatewayRegistryMock();
 
   // Khai báo sẵn hai provider này trong module test rồi override, vì
   // overrideProvider chỉ thay được thứ đã tồn tại trong graph.
@@ -125,13 +142,16 @@ export async function createTestApp(options: TestAppOptions): Promise<{
     providers: [
       { provide: PrismaService, useValue: prisma },
       { provide: RedisService, useValue: redis },
+      { provide: PaymentGatewayRegistry, useValue: gatewayRegistry },
       ...(options.metadata.providers ?? []),
     ],
   })
     .overrideProvider(PrismaService)
     .useValue(prisma)
     .overrideProvider(RedisService)
-    .useValue(redis);
+    .useValue(redis)
+    .overrideProvider(PaymentGatewayRegistry)
+    .useValue(gatewayRegistry);
 
   if (options.configure) {
     builder = options.configure(builder);

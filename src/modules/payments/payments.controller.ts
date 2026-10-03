@@ -22,10 +22,13 @@ import { AuthenticatedUser } from '../auth/interfaces/authenticated-user.interfa
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { CheckoutDto } from './dto/checkout.dto';
 import { ConfirmManualPaymentDto } from './dto/confirm-manual-payment.dto';
+import { MomoIpnDto } from './dto/momo-ipn.dto';
+import { RefundPaymentDto } from './dto/refund-payment.dto';
 import { UnmatchedTransactionsQueryDto } from './dto/unmatched-transactions-query.dto';
 import { SubscriptionHistoryQueryDto } from './dto/subscription-history-query.dto';
 import { PaymentsService } from './payments.service';
 import { SubscriptionService } from './subscription.service';
+import { toZaloPayAck } from './zalopay/zalopay-ack.util';
 import { buildPlanList } from '../../common/constants/subscription-plans.constants';
 import { buildApiResponse } from '../../common/utils/api-response.util';
 
@@ -80,6 +83,42 @@ export class PaymentsController {
     );
   }
 
+  @Public()
+  @Post('momo/ipn')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Nhận IPN thanh toán từ MoMo' })
+  async momoIPN(@Body() payload: MomoIpnDto) {
+    const result = await this.paymentsService.handleGatewayCallback('MOMO', payload as MomoIpnDto & Record<string, unknown>);
+    return result === 'DUPLICATE'
+      ? { resultCode: 0, message: 'Duplicate IPN acknowledged' }
+      : { resultCode: 0, message: 'Success' };
+  }
+
+  @Public()
+  @Post('zalopay/callback')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Nhận callback thanh toán từ ZaloPay' })
+  async zalopayCallback(@Body() payload: Record<string, unknown>) {
+    try {
+      await this.paymentsService.handleGatewayCallback('ZALOPAY', payload);
+      return toZaloPayAck(null);
+    } catch (err) {
+      return toZaloPayAck(err);
+    }
+  }
+
+  @Public()
+  @Get('momo/return')
+  @ApiOperation({ summary: 'MoMo browser return chỉ dùng cho UX, không cập nhật trạng thái' })
+  momoReturn(@Query('paymentId') paymentId?: string, @Query('orderId') providerOrderId?: string) {
+    return {
+      success: true,
+      message: 'Return received. Client must poll authenticated payment status.',
+      paymentId,
+      providerOrderId,
+    };
+  }
+
   @Post('admin/orders/:orderCode/confirm-manual')
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(Role.ADMIN)
@@ -118,6 +157,22 @@ export class PaymentsController {
   async resolveWebhookFailure(@Req() req: Request, @Param('id') id: string) {
     const data = await this.paymentsService.markWebhookFailureResolved(id);
     return buildApiResponse(req, 'WEBHOOK_FAILURE_RESOLVED', 'Đã đánh dấu xử lý xong', data);
+  }
+
+  @Post('admin/:paymentId/refunds')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(Role.ADMIN)
+  @ApiBearerAuth('access-token')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Hoàn tiền online cho một payment (Admin Only)' })
+  async refundGatewayPayment(
+    @Req() req: Request,
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('paymentId') paymentId: string,
+    @Body() dto: RefundPaymentDto,
+  ) {
+    const data = await this.paymentsService.refundGatewayPayment(paymentId, dto, user.id);
+    return buildApiResponse(req, 'PAYMENT_REFUND_CREATED', 'Yêu cầu hoàn tiền đã được xử lý', data);
   }
 
   @Get('admin/unmatched-transactions')
@@ -265,5 +320,18 @@ export class PaymentsController {
       'Đã hủy lịch chuyển gói. Số tiền đã thanh toán cho gói hẹn không được hoàn lại.',
       data,
     );
+  }
+
+  @Get(':paymentId')
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth('access-token')
+  @ApiOperation({ summary: 'Lấy trạng thái thanh toán theo paymentId' })
+  async getPaymentStatus(
+    @Req() req: Request,
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('paymentId') paymentId: string,
+  ) {
+    const data = await this.paymentsService.getPaymentStatus(user.id, paymentId);
+    return buildApiResponse(req, 'PAYMENT_STATUS_SUCCESS', 'Lấy trạng thái thanh toán thành công', data);
   }
 }

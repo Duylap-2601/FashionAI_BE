@@ -77,7 +77,8 @@ Existing ownership boundaries:
   review for made-to-measure orders, order history, shipment linkage, refunds,
   stock changes, backend-authoritative order pricing, and customer-visible
   order tracking.
-- `payments`: checkout links, SePay webhooks/IPN handling, payment records, and
+- `payments`: checkout links, payment gateway adapters, SePay webhooks/IPN
+  handling, ZaloPay callbacks/reconcile/refunds, payment records, and
   subscription activation.
 - `shipping`: shipping fee/address/provider lookup and shipping-provider API
   integration. GHN pickup address settings are stored through admin settings
@@ -118,8 +119,9 @@ Good split candidates in this repo:
   lifecycle/status transition, measurement review, shipment coordination,
   refunds, event/history, and public order mapping when those areas keep growing.
 - `payments.service.ts`: separate checkout creation, SePay signing/verification,
-  webhook/IPN parsing, payment success processing, subscription-payment handling,
-  and payment response mapping.
+  webhook/IPN parsing, payment gateway adapters, payment success processing,
+  subscription-payment handling, refund finalization, and payment response
+  mapping.
 - `products/reviews.service.ts`: separate review CRUD, review replies, rating
   aggregation, and review notifications if more review behavior is added.
 - AI services (`try-on`, `stylist`, `chat`): keep provider SDK calls, cache/key
@@ -209,6 +211,38 @@ When schema changes are required:
 - Keep backward-compatible input handling when existing clients depend on it,
   such as order lookup by UUID or `ORD-<orderCode>` and shipping note/notes
   compatibility.
+
+## Payment Gateways
+
+- New online providers must implement `PaymentGateway` under
+  `src/modules/payments/<provider>/` and be registered through
+  `PaymentGatewayRegistry`; do not call provider SDKs directly from controllers.
+- `SEPAY` remains a legacy checkout/webhook path, not a `PaymentGateway` strategy.
+  `PAYMENT_DEFAULT_PROVIDER=SEPAY` is allowed and must route through the existing
+  SePay checkout branch.
+- ZaloPay uses `zalopay-sdk` for order creation, query, refund, query-refund,
+  callback verification, and `app_trans_id` generation. Do not reimplement ZaloPay
+  request MAC signing unless the SDK cannot express a required field.
+- ZaloPay `redirect_url` must include `paymentId` so `/payment/result` can poll
+  `GET /payments/:paymentId`. Keep `ZALOPAY_REDIRECT_URL` pointed at the active
+  frontend origin and port, for example `http://localhost:3001/payment/result`.
+- ZaloPay callbacks are public and return ZaloPay's ack shape. Transient server
+  errors should surface as HTTP 500 so ZaloPay retries; validation/signature errors
+  should ack with `return_code: 2`.
+- `getPaymentStatus` may perform an on-demand query for pending queryable gateways
+  so local development still updates when callbacks point at a remote tunnel or
+  hosted backend.
+- Gateway reconcile runs from `MaintenanceService` and only queries gateways that
+  implement query methods. It uses the existing Redis lock and updates pending
+  query metadata to avoid starvation.
+- For ZaloPay refunds, persist `Refund.providerRefundId` as ZaloPay `m_refund_id`.
+  Store ZaloPay `refund_id` only in `refund.metadata.providerRefundRef`; querying
+  refund status with `refund_id` will fail.
+- Admin online refund endpoint is `POST /payments/admin/:paymentId/refunds`.
+  It supports MoMo and ZaloPay payments with status `PAID` or `REFUND_REQUIRED`.
+  `idempotencyKey` must be a UUID. `REFUND_REQUIRED` payments are payment-only
+  refunds and must be refunded for the full collected amount without mutating the
+  order's paid/refunded aggregates.
 
 ## Testing And Validation
 
