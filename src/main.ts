@@ -7,7 +7,7 @@ import { AppModule } from './app.module';
 import { GlobalExceptionFilter } from './common/filters/http-exception.filter';
 import { parseCorsOrigins } from './common/utils/cors-origins.util';
 import { RedisIoAdapter } from './common/redis/redis-io.adapter';
-import { normalizeRedisUrl } from './common/redis/redis-url.util';
+import { parseRedisUrl } from './common/redis/redis-url.util';
 
 async function bootstrap() {
   const logger = new NestLogger('Bootstrap');
@@ -94,7 +94,7 @@ async function bootstrap() {
   // Gắn WebSocket adapter TRƯỚC listen. Có REDIS_URL thì bật Redis adapter để
   // fan-out event qua mọi instance; không có thì dùng adapter mặc định
   // (in-memory) cho dev 1 instance.
-  const redisUrl = normalizeRedisUrl(process.env.REDIS_URL);
+  const redisUrl = parseRedisUrl(process.env.REDIS_URL)?.toString();
   if (redisUrl) {
     const redisIoAdapter = new RedisIoAdapter(app);
     await redisIoAdapter.connectToRedis(redisUrl);
