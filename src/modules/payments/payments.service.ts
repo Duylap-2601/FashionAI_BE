@@ -193,10 +193,10 @@ export class PaymentsService {
   }
 
   private buildOrderDescription(order: Order) {
-    const invoiceNumber = `FAI${order.orderCode}`;
+    const invoiceNumber = `SUB-${order.orderCode}`;
     return order.targetTier
-      ? `Nang cap tai khoan FashionAI goi ${order.targetTier} ${invoiceNumber}`
-      : `Thanh toan don hang FashionAI ${invoiceNumber}`;
+      ? `Nang cap tai khoan StAle. goi ${order.targetTier} ${invoiceNumber}`
+      : `Thanh toan don hang StAle. ${invoiceNumber}`;
   }
 
   private async createSePayCheckoutLink(
@@ -204,7 +204,7 @@ export class PaymentsService {
   ): Promise<CheckoutLinkResult> {
     const amount = Number(order.amount);
     const orderCode = order.orderCode;
-    const invoiceNumber = `FAI${orderCode}`;
+    const invoiceNumber = `ORD-${orderCode}`;
 
     const merchant = this.configService.get<string>('SEPAY_MERCHANT_ID');
     const secretKey = this.configService.get<string>('SEPAY_SECRET_KEY');
