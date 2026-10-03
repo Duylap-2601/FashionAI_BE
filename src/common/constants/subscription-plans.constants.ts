@@ -8,7 +8,7 @@ import {
 
 export const TIER_PRICES: Record<UserTier, number> = {
   FREE: 0,
-  MEMBER: 49000,
+  MEMBER: 34000,
   VIP: 99000,
 };
 
@@ -26,6 +26,50 @@ export const TIER_RANK: Record<UserTier, number> = {
 
 export const SUBSCRIPTION_DURATION_DAYS = 30;
 export const RENEWAL_REMINDER_DAYS_BEFORE = 3;
+
+/** Net khi prorate luôn làm tròn lên 1.000đ vì VND không có đơn vị nhỏ hơn. */
+export const PRORATION_ROUND_VND = 1000;
+/** Còn ít hơn ngưỡng này thì không prorate nữa: thu full giá như renewal. */
+export const PRORATION_MIN_REMAINING_DAYS = 1;
+
+export interface UpgradeProration {
+  oldTier: UserTier;
+  newTier: UserTier;
+  remainingDays: number;
+  credit: number;
+  debit: number;
+  net: number;
+}
+
+export function roundUpVnd(amount: number): number {
+  return Math.ceil(amount / PRORATION_ROUND_VND) * PRORATION_ROUND_VND;
+}
+
+/**
+ * Tính tiền upgrade giữa kỳ theo kiểu prorate về cuối chu kỳ hiện tại:
+ * credit phần chưa dùng của gói cũ, debit phần tương ứng của gói mới,
+ * khách chỉ trả chênh lệch. Expiry giữ nguyên, kỳ sau thu full giá mới.
+ */
+export function calcUpgradeProration(
+  oldTier: UserTier,
+  newTier: UserTier,
+  remainingDays: number,
+): UpgradeProration {
+  const credit = roundUpVnd(
+    (TIER_PRICES[oldTier] * remainingDays) / SUBSCRIPTION_DURATION_DAYS,
+  );
+  const debit = roundUpVnd(
+    (TIER_PRICES[newTier] * remainingDays) / SUBSCRIPTION_DURATION_DAYS,
+  );
+  return {
+    oldTier,
+    newTier,
+    remainingDays,
+    credit,
+    debit,
+    net: Math.max(debit - credit, 0),
+  };
+}
 
 export interface PlanSummary {
   tier: UserTier;

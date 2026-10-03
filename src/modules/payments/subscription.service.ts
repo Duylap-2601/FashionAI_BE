@@ -69,7 +69,7 @@ export class SubscriptionService {
             startsAt: current.startsAt,
             expiresAt: current.expiresAt,
             daysRemaining: Math.max(0, daysRemaining),
-            price: 0,
+            price: Number(current.order.amount),
             order: { orderCode: current.order.orderCode, amount: Number(current.order.amount) },
           }
         : null,
@@ -215,6 +215,69 @@ export class SubscriptionService {
     };
   }
 
+  /**
+   * Hủy lịch chuyển gói (SCHEDULED) do user đổi ý. Chỉ hủy chỗ giữ, không hoàn
+   * tiền đơn downgrade đã thanh toán. Gói ACTIVE hiện tại được bật lại
+   * auto-renew để quay về hành xử gia hạn bình thường.
+   */
+  async cancelScheduledSubscription(userId: string) {
+    const scheduled = await this.prisma.subscription.findFirst({
+      where: { userId, status: 'SCHEDULED' },
+      orderBy: { startsAt: 'asc' },
+    });
+
+    if (!scheduled) {
+      throw new NotFoundException(
+        'Bạn không có lịch chuyển gói nào đang chờ.',
+      );
+    }
+
+    const result = await this.prisma.subscription.updateMany({
+      where: { id: scheduled.id, status: 'SCHEDULED' },
+      data: { status: 'CANCELLED' },
+    });
+
+    if (result.count === 0) {
+      throw new BadRequestException('Lịch chuyển gói đã được xử lý trước đó.');
+    }
+
+    const current = await this.prisma.subscription.findFirst({
+      where: {
+        userId,
+        status: 'ACTIVE',
+        expiresAt: { gte: new Date() },
+      },
+      orderBy: { expiresAt: 'desc' },
+    });
+
+    if (current) {
+      await this.prisma.subscription.update({
+        where: { id: current.id },
+        data: { autoRenew: true },
+      });
+    }
+
+    this.notificationService
+      .create({
+        userId,
+        type: 'SYSTEM',
+        title: 'Đã hủy lịch chuyển gói',
+        message: `Lịch chuyển sang gói ${scheduled.tier} đã được hủy. Bạn tiếp tục dùng gói hiện tại đến hết hạn. Số tiền đã thanh toán cho gói hẹn không được hoàn lại.`,
+        data: {
+          subscriptionId: scheduled.id,
+          tier: scheduled.tier,
+        },
+      })
+      .catch(() => undefined);
+
+    return {
+      id: scheduled.id,
+      tier: scheduled.tier,
+      status: 'CANCELLED',
+      currentAutoRenew: true,
+    };
+  }
+
   async findSubscriptionsDueForRenewal(withinDays: number) {
     const now = new Date();
     const reminderDeadline = new Date(now.getTime() + withinDays * 24 * 60 * 60 * 1000);
@@ -320,8 +383,16 @@ export class SubscriptionService {
 
       return { subscription, mode };
     } else if (mode === 'UPGRADE') {
-      const newExpiresAt = new Date(now);
-      newExpiresAt.setDate(newExpiresAt.getDate() + SUBSCRIPTION_DURATION_DAYS);
+      // Prorate về cuối chu kỳ hiện tại: giữ nguyên ngày hết hạn của gói cũ,
+      // tier mới hiệu lực ngay. Phần chênh lệch đã thu ở bước checkout nên
+      // không reset thêm 30 ngày ở đây; kỳ sau gia hạn full giá gói mới.
+      let newExpiresAt = new Date(currentSub!.expiresAt);
+      if (newExpiresAt <= now) {
+        newExpiresAt = new Date(now);
+        newExpiresAt.setDate(
+          newExpiresAt.getDate() + SUBSCRIPTION_DURATION_DAYS,
+        );
+      }
 
       await db.subscription.update({
         where: { id: currentSub!.id },
@@ -360,7 +431,7 @@ export class SubscriptionService {
       }
 
       this.logger.log(
-        `Subscription UPGRADE: user=${userId} from ${currentSub!.tier} to ${tier} effective=${now.toISOString()}`,
+        `Subscription UPGRADE (prorated): user=${userId} from ${currentSub!.tier} to ${tier} effective=${now.toISOString()} expires=${newExpiresAt.toISOString()}`,
       );
 
       return { subscription, mode };

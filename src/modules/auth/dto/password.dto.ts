@@ -1,5 +1,5 @@
 import { ApiProperty } from '@nestjs/swagger';
-import { IsEmail, IsNotEmpty, IsString, MinLength } from 'class-validator';
+import { IsEmail, IsNotEmpty, IsString, Matches, MinLength } from 'class-validator';
 
 export class ChangePasswordDto {
   @ApiProperty({ description: 'Mật khẩu hiện tại' })
@@ -35,8 +35,18 @@ export class ResetPasswordDto {
 }
 
 export class VerifyEmailDto {
-  @ApiProperty({ description: 'Token xác thực email nhận được qua email' })
+  @ApiProperty({ description: 'Email tài khoản cần xác thực' })
+  @IsEmail({}, { message: 'Email không hợp lệ' })
+  email!: string;
+
+  @ApiProperty({ description: 'Mã OTP 4 số nhận được qua email' })
   @IsString()
-  @IsNotEmpty()
-  token!: string;
+  @Matches(/^\d{4}$/, { message: 'OTP phải gồm đúng 4 chữ số' })
+  otp!: string;
+}
+
+export class ResendOtpDto {
+  @ApiProperty({ description: 'Email tài khoản cần gửi lại OTP' })
+  @IsEmail({}, { message: 'Email không hợp lệ' })
+  email!: string;
 }

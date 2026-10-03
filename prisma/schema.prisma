@@ -601,6 +601,7 @@ model Order {
   shippingInfo      Json?       @map("shipping_info")
   shippingAddressSnapshot Json?  @map("shipping_address_snapshot")
   shippingQuoteSnapshot   Json?  @map("shipping_quote_snapshot")
+  prorationSnapshot       Json?  @map("proration_snapshot")
   paymentMethod     String?     @map("payment_method")
   paymentProvider   String?     @map("payment_provider")
   checkoutUrl       String?     @map("checkout_url")

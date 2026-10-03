@@ -26,6 +26,10 @@ import { OUTBOX_EVENT_TYPE } from '../outbox/constants/outbox.constants';
 import {
   TIER_PRICES,
   RENEWAL_REMINDER_DAYS_BEFORE,
+  PRORATION_MIN_REMAINING_DAYS,
+  calcUpgradeProration,
+  isUpgrade,
+  type UpgradeProration,
 } from '../../common/constants/subscription-plans.constants';
 
 /** Link thanh toán coi như hết hiệu lực sau 24h; tạo lại link mới khi user quay lại. */
@@ -84,6 +88,7 @@ export class PaymentsService {
         kind: order.targetTier ? 'SUBSCRIPTION' : 'PRODUCT',
         provider: 'SEPAY',
         checkoutUrl,
+        proration: order.prorationSnapshot ?? null,
         ...extra,
       };
     }
@@ -158,8 +163,39 @@ export class PaymentsService {
 
     if (scheduledSub) {
       throw new ConflictException(
-        `Bạn đã có gói ${scheduledSub.tier} được hẹn kích hoạt vào ${scheduledSub.startsAt.toLocaleDateString('vi-VN')}. Vui lòng huỷ trước khi đổi gói.`,
+        `Bạn đã có gói ${scheduledSub.tier} được hẹn kích hoạt vào ${scheduledSub.startsAt.toLocaleDateString('vi-VN')}. Dùng POST /payments/subscriptions/scheduled/cancel để huỷ lịch hẹn trước khi đổi gói.`,
       );
+    }
+
+    // Upgrade giữa kỳ: prorate về cuối chu kỳ hiện tại, khách chỉ trả chênh
+    // lệch phần còn lại (làm tròn lên 1.000đ). Còn ít ngày thì thu full như renewal.
+    let amount = TIER_PRICES[targetTier];
+    let proration: UpgradeProration | null = null;
+
+    const currentSub = await this.prisma.subscription.findFirst({
+      where: {
+        userId,
+        status: 'ACTIVE',
+        expiresAt: { gte: new Date() },
+      },
+      orderBy: { expiresAt: 'desc' },
+    });
+
+    if (currentSub && isUpgrade(currentSub.tier, targetTier)) {
+      const remainingDays = Math.ceil(
+        (currentSub.expiresAt.getTime() - Date.now()) / (1000 * 60 * 60 * 24),
+      );
+      if (remainingDays > PRORATION_MIN_REMAINING_DAYS) {
+        const quote = calcUpgradeProration(
+          currentSub.tier,
+          targetTier,
+          remainingDays,
+        );
+        if (quote.net > 0) {
+          amount = quote.net;
+          proration = quote;
+        }
+      }
     }
 
     return createWithUniqueOrderCode((orderCode) =>
@@ -168,7 +204,8 @@ export class PaymentsService {
           orderCode,
           userId,
           targetTier,
-          amount: TIER_PRICES[targetTier],
+          amount,
+          prorationSnapshot: (proration ?? undefined) as Prisma.InputJsonValue | undefined,
           status: OrderStatus.PENDING,
           paymentStatus: PaymentStatus.PENDING,
         },
@@ -882,8 +919,16 @@ export class PaymentsService {
 
     const orderCode = this.parseSePayPaymentCode(payload.code, payload.content);
     if (!orderCode) {
-      await this.recordWebhookFailure('SEPAY_WEBHOOK', 'PARSE_FAILED', 'Missing or invalid SePay payment code', payload);
-      throw new BadRequestException('Missing or invalid SePay payment code');
+      // Giao dịch không gắn được với đơn nào (vd QR gateway sinh memo PAY...
+      // thay vì FAI<orderCode>). Lưu lại để admin đối soát tay rồi trả 200 để
+      // SePay không retry vô ích (non-2xx sẽ bị gửi lại tối đa 7 lần).
+      await this.recordWebhookFailure(
+        'SEPAY_WEBHOOK',
+        'UNMATCHED_TRANSACTION',
+        `Giao dich ${transactionId} khong match don nao (amount=${payload.transferAmount}, code=${payload.code ?? 'null'}). Cho admin doi soat tay.`,
+        payload,
+      );
+      return { success: true, message: 'Transaction recorded for manual reconciliation' };
     }
 
     await this.processOrderSuccess(
@@ -964,6 +1009,110 @@ export class PaymentsService {
     });
   }
 
+  /**
+   * Giao dịch tiền vào không gắn được với đơn nào (memo PAY... của QR gateway
+   * thay vì FAI<orderCode>) + gợi ý đơn PENDING khớp ĐÚNG số tiền trong ±24h
+   * quanh giờ giao dịch để admin đối soát 1-click qua confirm-manual.
+   * Chỉ gợi ý, không tự đổi trạng thái bất kỳ đơn nào.
+   */
+  async listUnmatchedTransactions(page = 1, limit = 20, resolved = false) {
+    limit = Math.min(Math.max(limit, 1), 100);
+    const skip = (page - 1) * limit;
+    const where = {
+      provider: 'SEPAY_WEBHOOK',
+      reason: { in: ['UNMATCHED_TRANSACTION', 'PARSE_FAILED'] },
+      resolved,
+    };
+
+    const [items, total] = await Promise.all([
+      this.prisma.webhookFailure.findMany({
+        where,
+        orderBy: { createdAt: 'desc' },
+        skip,
+        take: limit,
+      }),
+      this.prisma.webhookFailure.count({ where }),
+    ]);
+
+    const windowMs = 24 * 60 * 60 * 1000;
+    const mapped = [];
+    for (const item of items) {
+      const payload = (item.rawPayload ?? {}) as Record<string, any>;
+      const transferAmount = Number(payload.transferAmount);
+      const anchor = this.parseSePayTransactionDate(payload.transactionDate) ?? item.createdAt;
+
+      let candidates: Array<{
+        orderCode: number;
+        amount: number;
+        targetTier: unknown;
+        status: unknown;
+        userEmail: string | null;
+        createdAt: Date;
+        minutesApart: number;
+      }> = [];
+      if (Number.isFinite(transferAmount)) {
+        const orders = await this.prisma.order.findMany({
+          where: {
+            status: OrderStatus.PENDING,
+            createdAt: {
+              gte: new Date(anchor.getTime() - windowMs),
+              lte: new Date(anchor.getTime() + windowMs),
+            },
+          },
+          include: { user: { select: { email: true } } },
+          orderBy: { createdAt: 'desc' },
+          take: 20,
+        });
+        candidates = orders
+          .filter((o) => Number(o.amount) === transferAmount)
+          .map((o) => ({
+            orderCode: o.orderCode,
+            amount: Number(o.amount),
+            targetTier: o.targetTier,
+            status: o.status,
+            userEmail: o.user?.email ?? null,
+            createdAt: o.createdAt,
+            minutesApart: Math.round(Math.abs(o.createdAt.getTime() - anchor.getTime()) / 60000),
+          }))
+          .sort((a, b) => a.minutesApart - b.minutesApart)
+          .slice(0, 5);
+      }
+
+      mapped.push({
+        id: item.id,
+        reason: item.reason,
+        message: item.message,
+        transferAmount: Number.isFinite(transferAmount) ? transferAmount : null,
+        code: payload.code ?? null,
+        content: payload.content ?? null,
+        transactionDate: payload.transactionDate ?? null,
+        referenceCode: payload.referenceCode ?? null,
+        gateway: payload.gateway ?? null,
+        accountNumber: payload.accountNumber ?? null,
+        resolved: item.resolved,
+        createdAt: item.createdAt,
+        candidates,
+      });
+    }
+
+    return {
+      items: mapped,
+      meta: { total, page, limit, totalPages: Math.ceil(total / limit) },
+    };
+  }
+
+  /**
+   * SePay transactionDate dạng `YYYY-MM-DD HH:mm:ss` giờ VN, không kèm offset.
+   * Đổi về UTC (VN = UTC+7) để so với Order.createdAt.
+   */
+  private parseSePayTransactionDate(value: unknown): Date | null {
+    if (typeof value !== 'string') return null;
+    const m = value.match(/^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})(?::(\d{2}))?$/);
+    if (!m) return null;
+    const utc = Date.UTC(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +(m[6] ?? '0'));
+    return new Date(utc - 7 * 60 * 60 * 1000);
+  }
+
   private signSePayFields(fields: Record<string, string>, secretKey: string) {
     const allowedFields = [
       'order_amount',
@@ -1001,6 +1150,19 @@ export class PaymentsService {
       }
       this.logger.warn('SEPAY_IPN_SECRET not configured, skipping signature verification (non-production)');
       return;
+    }
+
+    // Cổng thanh toán SePay (auth type SECRET_KEY) gửi secret thẳng qua header
+    // X-Secret-Key thay vì chữ ký HMAC. Chấp nhận cả hai để IPN không bị từ
+    // chối oan; so sánh constant-time chống timing attack.
+    const plainSecret = headers['x-secret-key'];
+    if (typeof plainSecret === 'string' && plainSecret.length > 0) {
+      const expected = Buffer.from(secret);
+      const provided = Buffer.from(plainSecret);
+      if (provided.length === expected.length && crypto.timingSafeEqual(provided, expected)) {
+        return;
+      }
+      throw new BadRequestException('SePay IPN secret key is invalid');
     }
 
     const signature = headers['x-sepay-signature'] || headers['x-signature'];
@@ -1608,33 +1770,55 @@ export class PaymentsService {
 
     for (const sub of subs) {
       try {
-        // Create renewal order
-        const renewalOrder = await createWithUniqueOrderCode((orderCode) =>
-          this.prisma.order.create({
-            data: {
-              orderCode,
-              userId: sub.userId,
-              targetTier: sub.tier,
-              amount: TIER_PRICES[sub.tier],
-              status: OrderStatus.PENDING,
-              paymentStatus: PaymentStatus.PENDING,
-            },
-          }),
-        );
-
-        // Generate checkout link
-        const { checkoutUrl } = await this.createSePayCheckoutLink(renewalOrder);
-
-        await this.prisma.order.update({
-          where: { id: renewalOrder.id },
-          data: {
-            paymentProvider: 'SEPAY',
-            checkoutUrl,
-            checkoutExpiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000),
+        // Tái dùng đơn renewal PENDING còn hạn để không đẻ nhiều đơn khi user
+        // bỏ qua email nhắc nhiều ngày liên tiếp.
+        const existingPending = await this.prisma.order.findFirst({
+          where: {
+            userId: sub.userId,
+            targetTier: sub.tier,
+            status: OrderStatus.PENDING,
+            checkoutExpiresAt: { gt: new Date() },
           },
+          orderBy: { createdAt: 'desc' },
         });
 
-        ordersCreated++;
+        let renewalOrder = existingPending;
+        let checkoutUrl = existingPending?.checkoutUrl ?? null;
+
+        if (!renewalOrder || !checkoutUrl) {
+          // Create renewal order
+          renewalOrder = await createWithUniqueOrderCode((orderCode) =>
+            this.prisma.order.create({
+              data: {
+                orderCode,
+                userId: sub.userId,
+                targetTier: sub.tier,
+                amount: TIER_PRICES[sub.tier],
+                status: OrderStatus.PENDING,
+                paymentStatus: PaymentStatus.PENDING,
+              },
+            }),
+          );
+
+          // Generate checkout link
+          const link = await this.createSePayCheckoutLink(renewalOrder);
+          checkoutUrl = link.checkoutUrl;
+
+          await this.prisma.order.update({
+            where: { id: renewalOrder.id },
+            data: {
+              paymentProvider: 'SEPAY',
+              checkoutUrl,
+              checkoutExpiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000),
+            },
+          });
+
+          ordersCreated++;
+        }
+
+        if (!renewalOrder || !checkoutUrl) {
+          throw new Error(`Không tạo được đơn gia hạn cho subscription ${sub.id}`);
+        }
 
         // Send notification
         this.notificationService

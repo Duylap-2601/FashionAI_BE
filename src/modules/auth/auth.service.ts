@@ -1,6 +1,7 @@
 import {
   ConflictException,
   BadRequestException,
+  ForbiddenException,
   Injectable,
   UnauthorizedException,
 } from '@nestjs/common';
@@ -9,16 +10,22 @@ import * as bcrypt from 'bcrypt';
 import * as crypto from 'crypto';
 import { PrismaService } from '../../database/prisma.service';
 import { MailQueueService } from '../mail/mail-queue.service';
+import { RedisService } from '../../common/services/redis.service';
 import { LoginDto } from './dto/login.dto';
 import { RefreshTokenDto } from './dto/refresh-token.dto';
 import { RegisterDto } from './dto/register.dto';
 import {
   ChangePasswordDto,
   ForgotPasswordDto,
+  ResendOtpDto,
   ResetPasswordDto,
   VerifyEmailDto,
 } from './dto/password.dto';
 import { TokenService } from './token.service';
+
+const OTP_TTL_SECONDS = 5 * 60; // 5 phút
+const OTP_RESEND_COOLDOWN_SECONDS = 60; // chặn spam gửi lại OTP liên tục
+const OTP_MAX_ATTEMPTS = 5; // số lần nhập sai tối đa trước khi OTP bị khoá
 
 const USER_SELECT = {
   id: true,
@@ -38,6 +45,7 @@ export class AuthService {
     private readonly prisma: PrismaService,
     private readonly tokenService: TokenService,
     private readonly mailQueueService: MailQueueService,
+    private readonly redisService: RedisService,
   ) {}
 
   async register(dto: RegisterDto) {
@@ -62,10 +70,12 @@ export class AuthService {
       select: USER_SELECT,
     });
 
-    // Send email verification
-    this.sendEmailVerification(user.id).catch(() => null);
+    await this.sendEmailVerification(email);
 
-    return this.issueAuthResponse(user);
+    return {
+      message: 'Đăng ký thành công. Vui lòng kiểm tra email để lấy mã OTP xác thực.',
+      email: user.email,
+    };
   }
 
   async login(dto: LoginDto) {
@@ -78,6 +88,10 @@ export class AuthService {
     const isValid = await bcrypt.compare(dto.password, user.passwordHash);
     if (!isValid) {
       throw new UnauthorizedException('Email hoặc mật khẩu không đúng');
+    }
+
+    if (!user.isVerified) {
+      throw new ForbiddenException('Tài khoản chưa xác thực email. Vui lòng xác thực OTP trước khi đăng nhập.');
     }
 
     return this.issueAuthResponse(this.toPublicUser(user));
@@ -183,48 +197,85 @@ export class AuthService {
     return { message: 'Đặt lại mật khẩu thành công. Vui lòng đăng nhập lại bằng mật khẩu mới.' };
   }
 
-  async sendEmailVerification(userId: string) {
-    const user = await this.prisma.user.findUnique({ where: { id: userId } });
-    if (!user || user.isVerified) {
-      return { message: 'Tài khoản đã được xác thực hoặc không tồn tại.' };
+  /**
+   * Gửi OTP 4 số xác thực email, lưu trong Redis (TTL 5 phút).
+   * Có cooldown riêng để chống spam bấm gửi lại liên tục.
+   */
+  async sendEmailVerification(rawEmail: string) {
+    const email = rawEmail.toLowerCase().trim();
+    const user = await this.prisma.user.findUnique({ where: { email } });
+
+    // Không tiết lộ email có tồn tại hay không, trừ trường hợp đã verify rồi
+    // (ở đây OTP là flow trong luồng đăng ký nên trả message rõ hơn forgot-password).
+    if (!user) {
+      return { message: 'Nếu email tồn tại trong hệ thống, mã OTP đã được gửi.' };
+    }
+    if (user.isVerified) {
+      return { message: 'Tài khoản đã được xác thực.' };
     }
 
-    const rawToken = crypto.randomBytes(32).toString('hex');
-    const tokenHash = crypto.createHash('sha256').update(rawToken).digest('hex');
-    const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000); // 24 hours
+    const cooldownKey = this.otpCooldownKey(email);
+    const stillCoolingDown = await this.redisService.get(cooldownKey);
+    if (stillCoolingDown) {
+      throw new BadRequestException('Vui lòng chờ ít nhất 60 giây trước khi yêu cầu gửi lại OTP.');
+    }
 
-    await this.prisma.emailVerificationToken.create({
-      data: {
-        userId: user.id,
-        tokenHash,
-        expiresAt,
-      },
-    });
+    const otp = crypto.randomInt(0, 10000).toString().padStart(4, '0');
+    await this.redisService.set(this.otpKey(email), otp, OTP_TTL_SECONDS);
+    await this.redisService.del(this.otpAttemptsKey(email));
+    await this.redisService.set(cooldownKey, '1', OTP_RESEND_COOLDOWN_SECONDS);
 
-    await this.mailQueueService.sendVerificationEmail(user.email, rawToken);
-    return { message: 'Email xác thực đã được gửi.' };
+    await this.mailQueueService.sendVerificationEmail(user.email, otp);
+    return { message: 'Mã OTP xác thực đã được gửi tới email của bạn.' };
+  }
+
+  async resendEmailVerification(dto: ResendOtpDto) {
+    return this.sendEmailVerification(dto.email);
   }
 
   async verifyEmail(dto: VerifyEmailDto) {
-    const tokenHash = crypto.createHash('sha256').update(dto.token).digest('hex');
-    const verifyRecord = await this.prisma.emailVerificationToken.findUnique({
-      where: { tokenHash },
-    });
+    const email = dto.email.toLowerCase().trim();
+    const user = await this.prisma.user.findUnique({ where: { email } });
+    if (!user) {
+      throw new BadRequestException('Mã OTP không hợp lệ hoặc đã hết hạn');
+    }
+    if (user.isVerified) {
+      return { message: 'Tài khoản đã được xác thực.' };
+    }
 
-    if (!verifyRecord || verifyRecord.expiresAt < new Date()) {
-      throw new BadRequestException('Token xác thực không hợp lệ hoặc đã hết hạn');
+    const attemptsKey = this.otpAttemptsKey(email);
+    const attempts = await this.redisService.incr(attemptsKey, OTP_TTL_SECONDS);
+    if (attempts > OTP_MAX_ATTEMPTS) {
+      await this.redisService.del(this.otpKey(email));
+      throw new BadRequestException('Bạn đã nhập sai OTP quá nhiều lần. Vui lòng yêu cầu gửi lại mã mới.');
+    }
+
+    const storedOtp = await this.redisService.get(this.otpKey(email));
+    if (!storedOtp || storedOtp !== dto.otp) {
+      throw new BadRequestException('Mã OTP không hợp lệ hoặc đã hết hạn');
     }
 
     await this.prisma.user.update({
-      where: { id: verifyRecord.userId },
+      where: { id: user.id },
       data: { isVerified: true },
     });
 
-    await this.prisma.emailVerificationToken.deleteMany({
-      where: { userId: verifyRecord.userId },
-    });
+    await this.redisService.del(this.otpKey(email));
+    await this.redisService.del(attemptsKey);
 
     return { message: 'Xác thực email thành công.' };
+  }
+
+  private otpKey(email: string) {
+    return `otp:verify-email:${email}`;
+  }
+
+  private otpAttemptsKey(email: string) {
+    return `otp:verify-email:attempts:${email}`;
+  }
+
+  private otpCooldownKey(email: string) {
+    return `otp:verify-email:cooldown:${email}`;
   }
 
   async handleGoogleLogin(googleUser: {

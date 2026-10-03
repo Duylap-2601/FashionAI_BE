@@ -3,6 +3,7 @@ import { AuthService } from '../../src/modules/auth/auth.service';
 import { PrismaService } from '../../src/database/prisma.service';
 import { TokenService } from '../../src/modules/auth/token.service';
 import { MailQueueService } from '../../src/modules/mail/mail-queue.service';
+import { RedisService } from '../../src/common/services/redis.service';
 import { ConflictException, BadRequestException } from '@nestjs/common';
 
 describe('AuthService', () => {
@@ -42,13 +43,25 @@ describe('AuthService', () => {
     sendPasswordResetEmail: jest.fn().mockResolvedValue(true),
   };
 
+  const mockRedisService = {
+    get: jest.fn().mockResolvedValue(null),
+    set: jest.fn().mockResolvedValue(undefined),
+    incr: jest.fn().mockResolvedValue(1),
+    del: jest.fn().mockResolvedValue(undefined),
+  };
+
   beforeEach(async () => {
+    jest.clearAllMocks();
+    mockRedisService.get.mockResolvedValue(null);
+    mockRedisService.incr.mockResolvedValue(1);
+
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         AuthService,
         { provide: PrismaService, useValue: mockPrisma },
         { provide: TokenService, useValue: mockTokenService },
         { provide: MailQueueService, useValue: mockMailQueueService },
+        { provide: RedisService, useValue: mockRedisService },
       ],
     }).compile();
 

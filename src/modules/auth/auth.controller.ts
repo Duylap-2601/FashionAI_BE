@@ -37,6 +37,7 @@ import { ExchangeDto } from './dto/exchange.dto';
 import {
   ChangePasswordDto,
   ForgotPasswordDto,
+  ResendOtpDto,
   ResetPasswordDto,
   VerifyEmailDto,
 } from './dto/password.dto';
@@ -169,15 +170,13 @@ export class AuthController {
 
   @Public()
   @Post('register')
-  @ApiOperation({ summary: 'Đăng ký tài khoản' })
-  async register(
-    @Req() req: Request,
-    @Res({ passthrough: true }) res: Response,
-    @Body() dto: RegisterDto,
-    @CurrentPlatform() platform: Platform,
-  ) {
-    const tokens = await this.authService.register(dto);
-    return this.respondWithTokens(req, res, tokens, 'AUTH_REGISTER_SUCCESS', platform);
+  @ApiOperation({
+    summary: 'Đăng ký tài khoản',
+    description: 'Tạo tài khoản và gửi mã OTP xác thực email. Chưa trả token, cần verify-email trước khi login.',
+  })
+  async register(@Req() req: Request, @Body() dto: RegisterDto) {
+    const result = await this.authService.register(dto);
+    return buildApiResponse(req, 'AUTH_REGISTER_SUCCESS', result.message, { email: result.email });
   }
 
   @Public()
@@ -330,7 +329,7 @@ export class AuthController {
   @Public()
   @Post('verify-email')
   @HttpCode(HttpStatus.OK)
-  @ApiOperation({ summary: 'Xác thực tài khoản email bằng token' })
+  @ApiOperation({ summary: 'Xác thực tài khoản email bằng mã OTP 4 số' })
   async verifyEmail(
     @Req() req: Request,
     @Body() dto: VerifyEmailDto,
@@ -339,16 +338,15 @@ export class AuthController {
     return buildApiResponse(req, 'AUTH_VERIFY_EMAIL_SUCCESS', result.message, null);
   }
 
+  @Public()
   @Post('resend-verification')
   @HttpCode(HttpStatus.OK)
-  @UseGuards(JwtAuthGuard)
-  @ApiBearerAuth('access-token')
-  @ApiOperation({ summary: 'Gửi lại email xác thực' })
+  @ApiOperation({ summary: 'Gửi lại mã OTP xác thực email' })
   async resendVerification(
     @Req() req: Request,
-    @CurrentUser() user: AuthenticatedUser,
+    @Body() dto: ResendOtpDto,
   ) {
-    const result = await this.authService.sendEmailVerification(user.id);
+    const result = await this.authService.resendEmailVerification(dto);
     return buildApiResponse(req, 'AUTH_RESEND_VERIFICATION_SENT', result.message, null);
   }
 
@@ -479,6 +477,7 @@ export class AuthController {
 
   private isAllowedMobileRedirectUrl(url: URL) {
     if (url.protocol === 'fashionai:') return true;
+    if (url.protocol === 'fashionaimobile:') return true;
     if (url.protocol === 'exp:' && this.config.get<string>('NODE_ENV') !== 'production') return true;
     return false;
   }

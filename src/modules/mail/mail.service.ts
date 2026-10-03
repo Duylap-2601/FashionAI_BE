@@ -97,18 +97,15 @@ export class MailService {
     }
   }
 
-  async sendVerificationEmail(email: string, token: string): Promise<void> {
-    const frontendUrl = this.configService.get<string>('FRONTEND_URL', 'http://localhost:3000');
-    const verifyLink = `${frontendUrl}/verify-email?token=${token}`;
-    const subject = '[FashionAI] Xác nhận địa chỉ email của bạn';
+  async sendVerificationEmail(email: string, otp: string): Promise<void> {
+    const subject = '[FashionAI] Mã xác nhận địa chỉ email của bạn';
     const html = `
       <div style="font-family: Arial, sans-serif; padding: 20px;">
         <h2>Xác nhận địa chỉ Email</h2>
         <p>Cảm ơn bạn đã đăng ký tài khoản tại <strong>FashionAI</strong>.</p>
-        <p>Vui lòng nhấp vào đường dẫn bên dưới để xác nhận email của bạn:</p>
-        <p><a href="${verifyLink}" style="background-color: #4CAF50; color: white; padding: 10px 20px; text-decoration: none; border-radius: 5px; display: inline-block;">Xác nhận Email</a></p>
-        <p>Hoặc truy cập link: <a href="${verifyLink}">${verifyLink}</a></p>
-        <p>Đường dẫn này có hiệu lực trong 24 giờ.</p>
+        <p>Vui lòng nhập mã OTP bên dưới trong ứng dụng để xác nhận email của bạn:</p>
+        <p style="font-size: 32px; font-weight: bold; letter-spacing: 8px; text-align: center; background: #f5f5f5; padding: 16px; border-radius: 8px;">${otp}</p>
+        <p>Mã này có hiệu lực trong 5 phút. Không chia sẻ mã này cho bất kỳ ai.</p>
       </div>
     `;
 

@@ -19,11 +19,11 @@ export class MailQueueService {
     private readonly mailService: MailService,
   ) {}
 
-  async sendVerificationEmail(email: string, token: string): Promise<void> {
+  async sendVerificationEmail(email: string, otp: string): Promise<void> {
     await this.enqueue(
       MAIL_JOB.VERIFICATION,
-      { kind: MAIL_JOB.VERIFICATION, email, token },
-      () => this.mailService.sendVerificationEmail(email, token),
+      { kind: MAIL_JOB.VERIFICATION, email, otp },
+      () => this.mailService.sendVerificationEmail(email, otp),
     );
   }
 

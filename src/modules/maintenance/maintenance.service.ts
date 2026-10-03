@@ -42,11 +42,12 @@ export class MaintenanceService {
 
       const subscriptionResult = await this.subscriptionService.expireSubscriptions();
 
-      // Expire PENDING orders that haven't been paid after 24h
+      // Expire PENDING orders that haven't been paid after 24h. Bao gồm cả
+      // đơn subscription/renewal (có targetTier) để không tồn đọng nhiều đơn
+      // PENDING khi user bỏ qua email nhắc gia hạn.
       const expiredOrders = await this.prisma.order.updateMany({
         where: {
           status: OrderStatus.PENDING,
-          targetTier: null,
           createdAt: { lt: new Date(Date.now() - 24 * 60 * 60 * 1000) },
         },
         data: {
@@ -89,7 +90,12 @@ export class MaintenanceService {
     if (!this.enabled) return;
 
     const baseUrl = this.config.get<string>('PUBLIC_API_URL') ?? 'http://localhost:3002';
-    const healthUrl = `${baseUrl.replace(/\/$/, '')}/health/liveness`;
+    // PUBLIC_API_URL là domain trần (không gồm prefix), còn HealthController nằm
+    // sau global prefix `api` -> /api/health/liveness. Tự bù prefix để cron
+    // không ping nhầm /health/liveness (404). Env nào đã gắn sẵn /api thì giữ.
+    const normalizedBase = baseUrl.replace(/\/+$/, '');
+    const apiBase = normalizedBase.endsWith('/api') ? normalizedBase : `${normalizedBase}/api`;
+    const healthUrl = `${apiBase}/health/liveness`;
 
     try {
       const controller = new AbortController();

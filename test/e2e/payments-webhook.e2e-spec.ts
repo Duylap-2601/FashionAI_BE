@@ -1,5 +1,5 @@
 import { INestApplication } from '@nestjs/common';
-import { ConfigModule } from '@nestjs/config';
+import { ConfigService } from '@nestjs/config';
 import crypto from 'crypto';
 import request from 'supertest';
 import { OrderStatus, UserTier } from '@prisma/client';
@@ -18,6 +18,15 @@ import {
 } from './helpers/test-app';
 
 const IPN_SECRET = 'test-ipn-secret';
+const WEBHOOK_SECRET = 'test-webhook-secret';
+
+// Stub ConfigService để spec hermetic: không phụ thuộc giá trị thật trong `.env`
+// (ConfigModule sẽ merge `.env` đè lên `load`, ví dụ SEPAY_WEBHOOK_SECRET thật).
+const TEST_CONFIG: Record<string, string> = {
+  NODE_ENV: 'test',
+  SEPAY_IPN_SECRET: IPN_SECRET,
+  SEPAY_WEBHOOK_SECRET: WEBHOOK_SECRET,
+};
 
 describe('SePay IPN (e2e)', () => {
   let app: INestApplication;
@@ -32,20 +41,12 @@ describe('SePay IPN (e2e)', () => {
     const created = await createTestApp({
       prisma,
       metadata: {
-        imports: [
-          ConfigModule.forRoot({
-            load: [
-              () => ({
-                NODE_ENV: 'test',
-                SEPAY_IPN_SECRET: IPN_SECRET,
-              }),
-            ],
-          }),
-        ],
+        imports: [],
         controllers: [PaymentsController],
         providers: [
           PaymentsService,
           SubscriptionService,
+          { provide: ConfigService, useValue: { get: (key: string, fallback?: string) => TEST_CONFIG[key] ?? fallback } },
           {
             provide: MailQueueService,
             useValue: {
@@ -109,6 +110,21 @@ describe('SePay IPN (e2e)', () => {
       return req.set('Content-Type', 'application/json').send(rawBody);
     }
     return req.send(payload as object);
+  }
+
+  function postBank(payload: unknown) {
+    const timestamp = String(Math.floor(Date.now() / 1000));
+    const rawBody = JSON.stringify(payload);
+    const signature = `sha256=${crypto
+      .createHmac('sha256', WEBHOOK_SECRET)
+      .update(`${timestamp}.${rawBody}`)
+      .digest('hex')}`;
+    return request(app.getHttpServer())
+      .post('/api/payments/sepay-webhook')
+      .set('x-sepay-timestamp', timestamp)
+      .set('x-sepay-signature', signature)
+      .set('Content-Type', 'application/json')
+      .send(rawBody);
   }
 
   it('đánh dấu đơn sản phẩm là PAID mà không đổi tier', async () => {
@@ -206,6 +222,61 @@ describe('SePay IPN (e2e)', () => {
     }).expect(200);
 
     expect(prisma.$transaction).not.toHaveBeenCalled();
+  });
+
+  it('chấp nhận IPN ký bằng X-Secret-Key (auth type SECRET_KEY)', async () => {
+    prisma.order.findUnique.mockResolvedValue(pendingProductOrder);
+
+    await request(app.getHttpServer())
+      .post('/api/payments/sepay-ipn')
+      .set('X-Secret-Key', IPN_SECRET)
+      .send(orderPaidPayload())
+      .expect(200);
+
+    expect(prisma.$transaction).toHaveBeenCalled();
+  });
+
+  it('từ chối khi X-Secret-Key sai', async () => {
+    prisma.order.findUnique.mockResolvedValue(pendingProductOrder);
+
+    await request(app.getHttpServer())
+      .post('/api/payments/sepay-ipn')
+      .set('X-Secret-Key', 'wrong-secret')
+      .send(orderPaidPayload())
+      .expect(400);
+
+    expect(prisma.$transaction).not.toHaveBeenCalled();
+  });
+
+  describe('bank webhook giao dịch lạ (memo PAY... không có FAI)', () => {
+    const unmatchedPayload = {
+      id: 86449921,
+      gateway: 'MBBank',
+      transactionDate: '2026-10-02 21:40:53',
+      accountNumber: '0345986537',
+      subAccount: '',
+      code: null,
+      content: 'IBFT PAY40146ABFC27572D82',
+      transferType: 'in',
+      transferAmount: 34000,
+      referenceCode: 'FT24012345678',
+    };
+
+    it('trả 200 để SePay không retry, không đổi trạng thái đơn nào', async () => {
+      const res = await postBank(unmatchedPayload).expect(200);
+
+      expect(res.body.success).toBe(true);
+      expect(prisma.$transaction).not.toHaveBeenCalled();
+      expect(prisma.order.updateMany).not.toHaveBeenCalled();
+    });
+
+    it('vẫn match đơn khi content có FAI<orderCode>', async () => {
+      prisma.order.findUnique.mockResolvedValue(pendingProductOrder);
+
+      await postBank({ ...unmatchedPayload, content: 'FAI12345678 thanh toan', transferAmount: 350000 }).expect(200);
+
+      expect(prisma.$transaction).toHaveBeenCalled();
+    });
   });
 
   it('hủy đơn khi nhận TRANSACTION_VOID', async () => {

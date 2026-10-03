@@ -24,6 +24,7 @@ import { CheckoutDto } from './dto/checkout.dto';
 import { ConfirmManualPaymentDto } from './dto/confirm-manual-payment.dto';
 import { MomoIpnDto } from './dto/momo-ipn.dto';
 import { RefundPaymentDto } from './dto/refund-payment.dto';
+import { UnmatchedTransactionsQueryDto } from './dto/unmatched-transactions-query.dto';
 import { SubscriptionHistoryQueryDto } from './dto/subscription-history-query.dto';
 import { PaymentsService } from './payments.service';
 import { SubscriptionService } from './subscription.service';
@@ -174,6 +175,30 @@ export class PaymentsController {
     return buildApiResponse(req, 'PAYMENT_REFUND_CREATED', 'Yêu cầu hoàn tiền đã được xử lý', data);
   }
 
+  @Get('admin/unmatched-transactions')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(Role.ADMIN)
+  @ApiBearerAuth('access-token')
+  @ApiOperation({ summary: 'Giao dịch lạ chưa match đơn + gợi ý đơn PENDING khớp số tiền (Admin Only)' })
+  async listUnmatchedTransactions(
+    @Req() req: Request,
+    @Query() query: UnmatchedTransactionsQueryDto,
+    @Query('resolved') resolved?: string,
+  ) {
+    const result = await this.paymentsService.listUnmatchedTransactions(
+      query.page || 1,
+      query.limit || 20,
+      resolved === undefined ? false : resolved === 'true',
+    );
+    return buildApiResponse(
+      req,
+      'UNMATCHED_TRANSACTIONS_SUCCESS',
+      'Lấy danh sách giao dịch chưa đối soát thành công',
+      result.items,
+      result.meta,
+    );
+  }
+
   @Get('orders')
   @UseGuards(JwtAuthGuard)
   @ApiBearerAuth('access-token')
@@ -273,6 +298,26 @@ export class PaymentsController {
       req,
       'SUBSCRIPTION_RESUMED',
       'Đã bật lại tự động gia hạn.',
+      data,
+    );
+  }
+
+  @Post('subscriptions/scheduled/cancel')
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth('access-token')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: 'Hủy lịch chuyển gói đang chờ',
+    description:
+      'Hủy bản ghi SCHEDULED khi đổi ý sau downgrade. Chỉ hủy chỗ giữ, ' +
+      'không hoàn tiền đơn đã thanh toán; gói hiện tại được bật lại tự động gia hạn.',
+  })
+  async cancelScheduledSubscription(@Req() req: Request, @CurrentUser() user: AuthenticatedUser) {
+    const data = await this.subscriptionService.cancelScheduledSubscription(user.id);
+    return buildApiResponse(
+      req,
+      'SUBSCRIPTION_SCHEDULED_CANCELLED',
+      'Đã hủy lịch chuyển gói. Số tiền đã thanh toán cho gói hẹn không được hoàn lại.',
       data,
     );
   }
