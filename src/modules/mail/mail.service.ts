@@ -1,315 +1,132 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { OrderStatus } from '@prisma/client';
 import * as brevo from '@getbrevo/brevo';
+import {
+  OrderConfirmationData,
+  OrderStatusUpdateData,
+  RenderedMail,
+  RenewalReminderData,
+} from './mail.types';
+import { renderOrderConfirmationMail } from './templates/order-confirmation.template';
+import { renderOrderStatusUpdateMail } from './templates/order-status-update.template';
+import { renderPasswordResetMail } from './templates/password-reset.template';
+import { renderRenewalReminderMail } from './templates/renewal-reminder.template';
+import { renderVerificationMail } from './templates/verification.template';
+import { mailIdentity } from './templates/mail-theme';
 
-export interface RenewalReminderData {
-  name: string;
-  tier: string;
-  tierLabel: string;
-  price: number;
-  expiresAt: Date;
-  daysRemaining: number;
-  checkoutUrl: string;
-  orderCode: number;
-}
-
-export interface OrderStatusUpdateData {
-  orderId: string;
-  orderCode: number;
-  status: OrderStatus;
-  shippingInfo?: {
-    name?: string;
-    phone?: string;
-    address?: string;
-  } | null;
-}
-
-interface OrderStatusMailMeta {
-  label: string;
-  title: string;
-  message: string;
-  color: string;
-}
-
-const ORDER_STATUS_MAIL_META: Partial<Record<OrderStatus, OrderStatusMailMeta>> = {
-  [OrderStatus.CONFIRMED]: {
-    label: 'Đã xác nhận',
-    title: 'Đơn hàng đã được xác nhận',
-    message:
-      'Shop đã xác nhận đơn hàng của bạn và đang chuẩn bị hàng để giao. Chúng tôi sẽ thông báo khi đơn được gửi đi.',
-    color: '#4CAF50',
-  },
-  [OrderStatus.CANCELLED]: {
-    label: 'Đã hủy',
-    title: 'Đơn hàng đã bị hủy',
-    message:
-      'Đơn hàng của bạn đã được hủy. Nếu bạn đã thanh toán, khoản tiền sẽ được hoàn theo chính sách của shop. Vui lòng liên hệ nếu cần hỗ trợ.',
-    color: '#E53935',
-  },
-};
-
-export interface OrderConfirmationItem {
-  name: string;
-  quantity: number;
-  color?: string | null;
-  price: number;
-}
-
-export interface OrderConfirmationData {
-  orderId: string;
-  orderCode: number;
-  items: OrderConfirmationItem[];
-  itemsTotal: number;
-  shippingFee: number;
-  discountAmount: number;
-  total: number;
-  shippingInfo?: {
-    name?: string;
-    phone?: string;
-    address?: string;
-    note?: string;
-  } | null;
-}
+export { OrderConfirmationData, OrderStatusUpdateData, RenewalReminderData } from './mail.types';
 
 @Injectable()
 export class MailService {
   private readonly logger = new Logger(MailService.name);
-  private readonly client: brevo.BrevoClient;
+  private readonly client: brevo.BrevoClient | null;
   private readonly senderEmail: string;
   private readonly senderName: string;
+  private readonly replyToEmail?: string;
 
   constructor(private readonly configService: ConfigService) {
     const apiKey = this.configService.get<string>('BREVO_API_KEY');
-    const from = this.configService.get<string>('MAIL_FROM', '"FashionAI" <noreply@fashionai.com>');
-
-    // Parse "Name <email@domain.com>" format
-    const match = from.match(/^"?([^"<]+)"?\s*<(.+)>$/);
-    this.senderName = match ? match[1].trim() : 'FashionAI';
-    this.senderEmail = match ? match[2].trim() : 'noreply@fashionai.com';
+    const from = this.configService.get<string>(
+      'MAIL_FROM',
+      `"${mailIdentity.fromName}" <noreply@fashionai.com>`,
+    );
+    const sender = this.parseMailbox(from);
+    this.senderName = sender.name || mailIdentity.fromName;
+    this.senderEmail = sender.email;
+    this.replyToEmail = this.configService.get<string>('MAIL_REPLY_TO')?.trim() || undefined;
 
     if (apiKey) {
       this.client = new brevo.BrevoClient({ auth: { apiKey: () => apiKey } } as any);
       this.logger.log('Brevo email service initialized');
     } else {
-      this.logger.warn('BREVO_API_KEY not configured. E-mails will be logged to console in dev mode.');
-      this.client = null as any;
+      this.logger.warn('BREVO_API_KEY not configured. E-mails will be suppressed.');
+      this.client = null;
     }
   }
 
   async sendVerificationEmail(email: string, otp: string): Promise<void> {
-    const subject = '[FashionAI] Mã xác nhận địa chỉ email của bạn';
-    const html = `
-      <div style="font-family: Arial, sans-serif; padding: 20px;">
-        <h2>Xác nhận địa chỉ Email</h2>
-        <p>Cảm ơn bạn đã đăng ký tài khoản tại <strong>FashionAI</strong>.</p>
-        <p>Vui lòng nhập mã OTP bên dưới trong ứng dụng để xác nhận email của bạn:</p>
-        <p style="font-size: 32px; font-weight: bold; letter-spacing: 8px; text-align: center; background: #f5f5f5; padding: 16px; border-radius: 8px;">${otp}</p>
-        <p>Mã này có hiệu lực trong 5 phút. Không chia sẻ mã này cho bất kỳ ai.</p>
-      </div>
-    `;
-
-    await this.sendMail(email, subject, html);
+    await this.sendMail(email, 'verification', renderVerificationMail({ email, otp }));
   }
 
   async sendPasswordResetEmail(email: string, token: string): Promise<void> {
-    const frontendUrl = this.configService.get<string>('FRONTEND_URL', 'http://localhost:3000');
-    const resetLink = `${frontendUrl}/reset-password?token=${token}`;
-    const subject = '[FashionAI] Yêu cầu đặt lại mật khẩu';
-    const html = `
-      <div style="font-family: Arial, sans-serif; padding: 20px;">
-        <h2>Đặt lại mật khẩu</h2>
-        <p>Chúng tôi nhận được yêu cầu đặt lại mật khẩu cho tài khoản FashionAI của bạn.</p>
-        <p>Vui lòng nhấp vào đường dẫn bên dưới để đặt lại mật khẩu:</p>
-        <p><a href="${resetLink}" style="background-color: #2196F3; color: white; padding: 10px 20px; text-decoration: none; border-radius: 5px; display: inline-block;">Đặt lại mật khẩu</a></p>
-        <p>Hoặc truy cập link: <a href="${resetLink}">${resetLink}</a></p>
-        <p>Đường dẫn này có hiệu lực trong 1 giờ. Nếu bạn không gửi yêu cầu này, vui lòng bỏ qua email.</p>
-      </div>
-    `;
-
-    await this.sendMail(email, subject, html);
+    const resetUrl = this.buildFrontendUrl('/reset-password', { token });
+    await this.sendMail(email, 'password-reset', renderPasswordResetMail({ email, resetUrl }));
   }
 
-  async sendOrderConfirmationEmail(
-    email: string,
-    order: OrderConfirmationData,
-  ): Promise<void> {
-    const frontendUrl = this.configService.get<string>(
-      'FRONTEND_URL',
-      'http://localhost:3000',
+  async sendOrderConfirmationEmail(email: string, order: OrderConfirmationData): Promise<void> {
+    const detailUrl = this.buildFrontendUrl(`/orders/${encodeURIComponent(order.orderId)}`);
+    await this.sendMail(
+      email,
+      'order-confirmation',
+      renderOrderConfirmationMail({ ...order, detailUrl }),
     );
-    const detailLink = `${frontendUrl}/orders/${order.orderId}`;
-    const fmt = (n: number) => `${Math.round(n).toLocaleString('vi-VN')}đ`;
-
-    const itemRows = order.items
-      .map((item) => {
-        const variant = [item.color].filter(Boolean).join(' / ');
-        return `
-          <tr>
-            <td style="padding: 8px; border-bottom: 1px solid #eee;">
-              ${item.name}${variant ? ` <span style="color:#888;">(${variant})</span>` : ''}
-            </td>
-            <td style="padding: 8px; border-bottom: 1px solid #eee; text-align:center;">${item.quantity}</td>
-            <td style="padding: 8px; border-bottom: 1px solid #eee; text-align:right;">${fmt(item.price * item.quantity)}</td>
-          </tr>`;
-      })
-      .join('');
-
-    const ship = order.shippingInfo;
-    const shippingBlock = ship
-      ? `
-        <h3 style="margin-bottom: 4px;">Thông tin giao hàng</h3>
-        <p style="margin: 2px 0;">${ship.name ?? ''}${ship.phone ? ` — ${ship.phone}` : ''}</p>
-        <p style="margin: 2px 0;">${ship.address ?? ''}</p>
-        ${ship.note ? `<p style="margin: 2px 0; color:#888;">Ghi chú: ${ship.note}</p>` : ''}`
-      : '';
-
-    const subject = `[FashionAI] Xác nhận đơn hàng #${order.orderCode}`;
-    const html = `
-      <div style="font-family: Arial, sans-serif; padding: 20px; max-width: 600px; margin: 0 auto;">
-        <h2>Cảm ơn bạn đã đặt hàng!</h2>
-        <p>Đơn hàng <strong>#${order.orderCode}</strong> đã được thanh toán thành công.</p>
-        <table style="width: 100%; border-collapse: collapse; margin: 16px 0;">
-          <thead>
-            <tr style="background:#f5f5f5;">
-              <th style="padding: 8px; text-align:left;">Sản phẩm</th>
-              <th style="padding: 8px; text-align:center;">SL</th>
-              <th style="padding: 8px; text-align:right;">Thành tiền</th>
-            </tr>
-          </thead>
-          <tbody>${itemRows}</tbody>
-        </table>
-        <p style="margin: 2px 0; text-align:right;">Tạm tính: ${fmt(order.itemsTotal)}</p>
-        <p style="margin: 2px 0; text-align:right;">Phí vận chuyển: ${fmt(order.shippingFee)}</p>
-        ${order.discountAmount > 0 ? `<p style="margin: 2px 0; text-align:right;">Giảm giá: -${fmt(order.discountAmount)}</p>` : ''}
-        <p style="margin: 8px 0; text-align:right; font-size: 18px;"><strong>Tổng cộng: ${fmt(order.total)}</strong></p>
-        ${shippingBlock}
-        <p style="margin-top: 24px;">
-          <a href="${detailLink}" style="background-color: #4CAF50; color: white; padding: 12px 24px; text-decoration: none; border-radius: 5px; display: inline-block;">Xem chi tiết đơn hàng</a>
-        </p>
-        <p style="color:#888;">Hoặc truy cập: <a href="${detailLink}">${detailLink}</a></p>
-      </div>
-    `;
-
-    await this.sendMail(email, subject, html);
   }
 
-  async sendOrderStatusUpdateEmail(
-    email: string,
-    data: OrderStatusUpdateData,
-  ): Promise<void> {
-    const frontendUrl = this.configService.get<string>(
-      'FRONTEND_URL',
-      'http://localhost:3000',
+  async sendOrderStatusUpdateEmail(email: string, data: OrderStatusUpdateData): Promise<void> {
+    const detailUrl = this.buildFrontendUrl(`/orders/${encodeURIComponent(data.orderId)}`);
+    await this.sendMail(
+      email,
+      'order-status-update',
+      renderOrderStatusUpdateMail({ ...data, detailUrl }),
     );
-    const detailLink = `${frontendUrl}/orders/${data.orderId}`;
-    const meta = ORDER_STATUS_MAIL_META[data.status] ?? {
-      label: data.status,
-      title: 'Cập nhật đơn hàng',
-      message: `Đơn hàng #${data.orderCode} của bạn đã được cập nhật trạng thái.`,
-      color: '#4CAF50',
-    };
-
-    const ship = data.shippingInfo;
-    const shippingBlock = ship
-      ? `
-        <h3 style="margin-bottom: 4px;">Thông tin giao hàng</h3>
-        <p style="margin: 2px 0;">${ship.name ?? ''}${ship.phone ? ` — ${ship.phone}` : ''}</p>
-        <p style="margin: 2px 0;">${ship.address ?? ''}</p>`
-      : '';
-
-    const subject = `[FashionAI] Đơn hàng #${data.orderCode} — ${meta.label}`;
-    const html = `
-      <div style="font-family: Arial, sans-serif; padding: 20px; max-width: 600px; margin: 0 auto;">
-        <h2>${meta.title}</h2>
-        <p>${meta.message}</p>
-        <p style="margin: 8px 0;">Trạng thái hiện tại:
-          <strong style="color: ${meta.color};">${meta.label}</strong>
-        </p>
-        ${shippingBlock}
-        <p style="margin-top: 24px;">
-          <a href="${detailLink}" style="background-color: ${meta.color}; color: white; padding: 12px 24px; text-decoration: none; border-radius: 5px; display: inline-block;">Xem chi tiết đơn hàng</a>
-        </p>
-        <p style="color:#888;">Hoặc truy cập: <a href="${detailLink}">${detailLink}</a></p>
-      </div>
-    `;
-
-    await this.sendMail(email, subject, html);
   }
 
   async sendRenewalReminderEmail(email: string, data: RenewalReminderData): Promise<void> {
-    const { name, tierLabel, price, expiresAt, checkoutUrl, orderCode } = data;
-    const subject = `[FashionAI] Gói ${tierLabel} của bạn sắp hết hạn`;
-
-    const html = `
-<!DOCTYPE html>
-<html lang="vi">
-<head>
-  <meta charset="UTF-8">
-  <style>
-    body { font-family: Arial, sans-serif; color: #333; }
-    .container { max-width: 600px; margin: 0 auto; padding: 20px; }
-    .header { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 20px; text-align: center; border-radius: 8px 8px 0 0; }
-    .content { background: #f9f9f9; padding: 20px; border-radius: 0 0 8px 8px; }
-    .cta-button { display: inline-block; background: #667eea; color: white; padding: 12px 24px; text-decoration: none; border-radius: 4px; margin: 20px 0; }
-    .footer { text-align: center; color: #999; font-size: 12px; margin-top: 20px; }
-  </style>
-</head>
-<body>
-  <div class="container">
-    <div class="header">
-      <h1>Gia hạn Gói ${tierLabel}</h1>
-    </div>
-    <div class="content">
-      <p>Xin chào ${name},</p>
-      <p>Gói <strong>${tierLabel}</strong> của bạn sắp hết hạn vào <strong>${expiresAt.toLocaleDateString('vi-VN')}</strong>.</p>
-      <p>Để tiếp tục sử dụng các tính năng premium của FashionAI, vui lòng gia hạn gói ngay.</p>
-
-      <div style="background: #fff3cd; padding: 12px; border-left: 4px solid #ffc107; margin: 15px 0; border-radius: 4px;">
-        <strong style="font-size: 18px;">Giá: ${price.toLocaleString('vi-VN')}đ</strong> cho 30 ngày
-      </div>
-
-      <p style="text-align: center;">
-        <a href="${checkoutUrl}" class="cta-button" style="font-size: 16px;">Gia Hạn Ngay</a>
-      </p>
-
-      <p style="color: #666; font-size: 12px;">
-        Nếu nút trên không hoạt động, vui lòng sao chép và dán đường link này vào trình duyệt:<br>
-        <span style="word-break: break-all; color: #0066cc;">${checkoutUrl}</span>
-      </p>
-
-      <p style="margin-top: 30px; color: #999; font-size: 12px;">
-        Mã đơn: #${orderCode}
-      </p>
-    </div>
-    <div class="footer">
-      <p>© 2026 FashionAI. Mọi quyền được bảo lưu.</p>
-    </div>
-  </div>
-</body>
-</html>
-    `;
-
-    await this.sendMail(email, subject, html);
+    const subscriptionUrl = this.buildFrontendUrl('/subscription');
+    await this.sendMail(
+      email,
+      'renewal-reminder',
+      renderRenewalReminderMail({ ...data, subscriptionUrl }),
+    );
   }
 
-  private async sendMail(to: string, subject: string, html: string): Promise<void> {
+  private async sendMail(to: string, kind: string, mail: RenderedMail): Promise<void> {
     if (!this.client) {
-      this.logger.log(`Dev mail suppressed | subject=${subject}`);
+      this.logger.log(`Mail suppressed | kind=${kind}`);
       return;
     }
 
     try {
-      const result = await this.client.transactionalEmails.sendTransacEmail({
+      const payload: Record<string, unknown> = {
         sender: { email: this.senderEmail, name: this.senderName },
         to: [{ email: to }],
-        subject,
-        htmlContent: html,
-      });
-      this.logger.log(`Email sent | subject=${subject} | messageId=${result.messageId}`);
+        subject: mail.subject,
+        htmlContent: mail.html,
+        textContent: mail.text,
+      };
+      if (this.replyToEmail) payload.replyTo = { email: this.replyToEmail };
+
+      const result = await this.client.transactionalEmails.sendTransacEmail(payload as any);
+      this.logger.log(`Email sent | kind=${kind} | messageId=${result.messageId}`);
     } catch (err: any) {
-      const details = err.response?.body || err.message;
-      this.logger.error(`Failed to send email | subject=${subject} | error=${JSON.stringify(details)}`, err.stack);
+      const status = err?.response?.statusCode ?? err?.statusCode ?? err?.status;
+      this.logger.error(
+        `Failed to send email | kind=${kind} | status=${status ?? 'unknown'} | error=${err?.message ?? String(err)}`,
+      );
+      throw err;
     }
+  }
+
+  private buildFrontendUrl(pathname: string, params?: Record<string, string>): string {
+    const base = this.configService.get<string>('FRONTEND_URL', 'http://localhost:3000');
+    const url = new URL(base);
+    if (url.username || url.password || url.search || url.hash) {
+      throw new Error('Invalid FRONTEND_URL');
+    }
+    url.pathname = pathname;
+    url.search = '';
+    if (params) {
+      for (const [key, value] of Object.entries(params)) {
+        url.searchParams.set(key, value);
+      }
+    }
+    return url.toString();
+  }
+
+  private parseMailbox(value: string): { name: string; email: string } {
+    if (/\r|\n/.test(value)) throw new Error('Invalid MAIL_FROM');
+    const match = value.match(/^"?([^"<]+)"?\s*<([^>]+)>$/);
+    if (match) return { name: match[1].trim(), email: match[2].trim() };
+    return { name: mailIdentity.fromName, email: value.trim() };
   }
 }

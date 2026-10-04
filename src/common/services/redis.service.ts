@@ -1,6 +1,7 @@
 import { Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import Redis from 'ioredis';
+import { normalizeRedisUrl } from '../redis/redis-url.util';
 
 const MAX_CONNECT_RETRIES = 3;
 
@@ -14,7 +15,7 @@ export class RedisService implements OnModuleInit, OnModuleDestroy {
   constructor(private readonly configService: ConfigService) {}
 
   onModuleInit() {
-    const redisUrl = this.configService.get<string>('REDIS_URL');
+    const redisUrl = normalizeRedisUrl(this.configService.get<string>('REDIS_URL'));
     const host = this.configService.get<string>('REDIS_HOST', 'localhost');
     const port = this.configService.get<number>('REDIS_PORT', 6379);
     const password = this.configService.get<string>('REDIS_PASSWORD');

@@ -29,6 +29,7 @@ import { RequestIdMiddleware } from './common/middleware/request-id.middleware';
 import { RateLimitGuard } from './common/guards/rate-limit.guard';
 import { RedisModule } from './common/redis/redis.module';
 import { AppLoggingModule } from './common/logging/app-logging.module';
+import { parseRedisUrl } from './common/redis/redis-url.util';
 
 @Module({
   imports: [
@@ -40,7 +41,7 @@ import { AppLoggingModule } from './common/logging/app-logging.module';
     BullModule.forRootAsync({
       inject: [ConfigService],
       useFactory: (configService: ConfigService) => {
-        const redisUrl = configService.get<string>('REDIS_URL');
+        const redisUrl = parseRedisUrl(configService.get<string>('REDIS_URL'));
         const defaultJobOptions = {
           attempts: 3,
           backoff: { type: 'exponential', delay: 5000 },
@@ -49,18 +50,17 @@ import { AppLoggingModule } from './common/logging/app-logging.module';
         };
 
         if (redisUrl) {
-          const url = new URL(redisUrl);
           return {
             connection: {
-              host: url.hostname,
-              port: Number(url.port || 6379),
-              username: url.username || undefined,
-              password: url.password ? decodeURIComponent(url.password) : undefined,
-              db: Number(url.pathname.replace('/', '') || 0),
+              host: redisUrl.hostname,
+              port: Number(redisUrl.port || 6379),
+              username: redisUrl.username || undefined,
+              password: redisUrl.password ? decodeURIComponent(redisUrl.password) : undefined,
+              db: Number(redisUrl.pathname.replace('/', '') || 0),
               // rediss:// (vd Upstash) yêu cầu TLS. Parse URL ra object làm mất
               // scheme nên phải khai báo lại tls, nếu không ioredis bắt tay plain TCP
               // với endpoint chỉ nhận TLS -> queue.add() treo vô hạn (retry ngầm).
-              tls: url.protocol === 'rediss:' ? {} : undefined,
+              tls: redisUrl.protocol === 'rediss:' ? {} : undefined,
               maxRetriesPerRequest: 3,
             },
             defaultJobOptions,
