@@ -29,6 +29,7 @@ export class ReviewsService {
         userId,
         status: OrderStatus.COMPLETED,
         items: { some: { productId } },
+        ...(dto.orderId ? { id: dto.orderId } : {}),
       },
       select: { id: true },
     });
@@ -224,15 +225,24 @@ export class ReviewsService {
       throw new BadRequestException('Bạn không có quyền sửa đánh giá này');
     }
 
-    return this.prisma.review.update({
-      where: { id: reviewId },
-      data: {
-        comment: dto.comment ?? review.comment,
-        images: dto.images ? JSON.parse(JSON.stringify(dto.images)) : review.images,
-      },
-      include: {
-        user: { select: { id: true, name: true, avatarUrl: true } },
-      },
+    return this.prisma.$transaction(async (tx) => {
+      const updated = await tx.review.update({
+        where: { id: reviewId },
+        data: {
+          rating: dto.rating ?? review.rating,
+          comment: dto.comment ?? review.comment,
+          images: dto.images ? JSON.parse(JSON.stringify(dto.images)) : review.images,
+        },
+        include: {
+          user: { select: { id: true, name: true, avatarUrl: true } },
+        },
+      });
+
+      if (dto.rating !== undefined && dto.rating !== review.rating) {
+        await this.updateProductRating(tx, review.productId);
+      }
+
+      return updated;
     });
   }
 
