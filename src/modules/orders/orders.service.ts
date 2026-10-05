@@ -39,6 +39,12 @@ type IOrderWithRelations = Prisma.OrderGetPayload<{
 
 type IOrderProduct = Product;
 type ResolvedCreateOrderDto = CreateOrderDto & { shippingInfo: NonNullable<CreateOrderDto['shippingInfo']> };
+type FindUserOrdersOptions = {
+  page?: number;
+  limit?: number;
+  status?: string;
+  search?: string;
+};
 type QuotePayload = {
   userId: string;
   fingerprint: string;
@@ -280,13 +286,59 @@ export class OrdersService {
     return this.toPublicOrder(order);
   }
 
-  async findAll(userId: string) {
-    const orders = await this.prisma.order.findMany({
-      where: { userId },
-      orderBy: { createdAt: 'desc' },
-      include: this.orderInclude(),
-    });
-    return orders.map((order) => this.toPublicOrder(order));
+  async findAll(userId: string, options: FindUserOrdersOptions = {}) {
+    const page = Math.max(1, options.page ?? 1);
+    const limit = Math.min(Math.max(1, options.limit ?? 20), 100);
+    const skip = (page - 1) * limit;
+    const status = options.status && Object.values(OrderStatus).includes(options.status as OrderStatus)
+      ? options.status as OrderStatus
+      : undefined;
+    const search = options.search?.trim();
+    const numericSearch = search ? Number(search.replace(/^ORD-/i, '')) : NaN;
+
+    const where: Prisma.OrderWhereInput = {
+      userId,
+      ...(status ? { status } : {}),
+      ...(search
+        ? {
+            OR: [
+              ...(Number.isInteger(numericSearch) && numericSearch > 0 && numericSearch <= MAX_INT4
+                ? [{ orderCode: numericSearch }]
+                : []),
+              {
+                items: {
+                  some: {
+                    product: {
+                      name: { contains: search, mode: 'insensitive' },
+                    },
+                  },
+                },
+              },
+            ],
+          }
+        : {}),
+    };
+
+    const [orders, total] = await Promise.all([
+      this.prisma.order.findMany({
+        where,
+        skip,
+        take: limit,
+        orderBy: { createdAt: 'desc' },
+        include: this.orderInclude(),
+      }),
+      this.prisma.order.count({ where }),
+    ]);
+
+    return {
+      items: orders.map((order) => this.toPublicOrder(order)),
+      meta: {
+        total,
+        page,
+        limit,
+        totalPages: Math.ceil(total / limit),
+      },
+    };
   }
 
   async findOne(userId: string, id: string) {
