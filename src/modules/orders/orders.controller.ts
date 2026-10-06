@@ -60,9 +60,21 @@ export class OrdersController {
 
   @Get()
   @ApiOperation({ summary: 'Danh sách đơn hàng của tôi' })
-  async findAll(@Req() req: Request, @CurrentUser() user: AuthenticatedUser) {
-    const data = await this.ordersService.findAll(user.id);
-    return buildApiResponse(req, 'ORDERS_FETCH_SUCCESS', 'Lấy danh sách đơn hàng thành công', data);
+  async findAll(
+    @Req() req: Request,
+    @CurrentUser() user: AuthenticatedUser,
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
+    @Query('status') status?: string,
+    @Query('search') search?: string,
+  ) {
+    const data = await this.ordersService.findAll(user.id, {
+      page: Number(page) || 1,
+      limit: Number(limit) || 20,
+      status,
+      search,
+    });
+    return buildApiResponse(req, 'ORDERS_FETCH_SUCCESS', 'Lấy danh sách đơn hàng thành công', data.items, data.meta);
   }
 
   @Get('all')
