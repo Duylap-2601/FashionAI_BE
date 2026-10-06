@@ -153,4 +153,19 @@ export class UsersController {
       data,
     );
   }
+
+  @Get(':id/measurements')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(Role.ADMIN)
+  @ApiBearerAuth('access-token')
+  @ApiOperation({ summary: 'Xem số đo cơ thể của 1 người dùng (Admin Only)' })
+  async getMeasurementsAdmin(@Req() req: Request, @Param('id') id: string) {
+    const data = await this.usersService.getMeasurements(id);
+    return buildApiResponse(
+      req,
+      'ADMIN_USER_MEASUREMENTS_SUCCESS',
+      'Lấy số đo cơ thể thành công',
+      data,
+    );
+  }
 }

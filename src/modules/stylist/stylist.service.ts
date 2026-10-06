@@ -44,6 +44,7 @@ export interface ParsedStylistResult {
   outfitCombinations: string[];
   stylingTips: string;
   verdict: string;
+  warnings: string[];
 }
 
 @Injectable()
@@ -168,6 +169,7 @@ export class StylistService {
         genderPreference: cachedResult.genderPreference,
         fitAdvice: cachedResult.fitAdvice,
         productCompatibilityScore: (cachedResult.analysisResult as any)?.productCompatibilityScore ?? null,
+        warnings: (cachedResult.analysisResult as any)?.warnings ?? [],
         analysisResult: cachedResult.analysisResult as any,
         model: cachedResult.model ?? this.MODEL,
         createdAt: cachedResult.createdAt,
@@ -241,6 +243,7 @@ export class StylistService {
         genderPreference: dto.genderPreference,
         fitAdvice: parsedResult.fitAdvice ?? null,
         productCompatibilityScore: parsedResult.productCompatibilityScore ?? null,
+        warnings: parsedResult.warnings ?? [],
         analysisResult: parsedResult,
         model: this.MODEL,
         createdAt: record.createdAt,
@@ -325,13 +328,16 @@ export class StylistService {
       );
     }
 
+    const occasionIsDefault = !dto.occasion?.trim();
     parts.push(
       '',
       'TRANG PHỤC CẦN TƯ VẤN:',
       product
         ? `Sản phẩm "${product.name}" như mô tả trên.`
         : `Mô tả của người dùng: ${dto.garmentDescription}`,
-      `- Dịp mặc: ${dto.occasion?.trim() || 'Công sở chuyên nghiệp'}`,
+      occasionIsDefault
+        ? `- Dịp mặc: Công sở chuyên nghiệp (người dùng KHÔNG tự chọn, đây là giá trị mặc định khi họ không nhập dịp mặc)`
+        : `- Dịp mặc: ${dto.occasion!.trim()}`,
     );
 
     if (dto.stylePreference?.trim()) {
@@ -373,6 +379,8 @@ export class StylistService {
       '- Trả lời hoàn toàn bằng tiếng Việt tự nhiên, dễ hiểu.',
       '- Giọng văn lịch sự, thực tế, không phán xét ngoại hình.',
       '- Không dùng markdown, không thêm giải thích ngoài JSON.',
+      '- Nếu "Dịp mặc" và "Sở thích phong cách" có vẻ mâu thuẫn với nhau (ví dụ dịp mặc trang trọng nhưng phong cách lại năng động/thể thao, hoặc ngược lại), hãy tự chọn ưu tiên hợp lý hơn (thường ưu tiên dịp mặc vì tính chất bắt buộc của hoàn cảnh) và GIẢI THÍCH NGẮN trong "warnings". Nếu dịp mặc đang dùng giá trị mặc định (xem chú thích ở trên), cũng cần nêu trong "warnings" để người dùng biết nên tự nhập dịp mặc cụ thể hơn.',
+      '- Nếu không có mâu thuẫn và không dùng giá trị mặc định nào, trả "warnings": [] (mảng rỗng).',
       '- Chỉ trả về JSON hợp lệ đúng cấu trúc sau:',
       '{',
       '  "bodyType": "Nhận xét dáng người bằng tiếng Việt",',
@@ -386,7 +394,8 @@ export class StylistService {
       '  ,"colorSuggestions": ["Màu gợi ý 1", "Màu gợi ý 2", "Màu gợi ý 3"],',
       '  "outfitCombinations": ["Bộ phối 1", "Bộ phối 2", "Bộ phối 3"],',
       '  "stylingTips": "Mẹo phối đồ cụ thể bằng tiếng Việt",',
-      '  "verdict": "Kết luận sản phẩm có phù hợp không và lý do bằng tiếng Việt"',
+      '  "verdict": "Kết luận sản phẩm có phù hợp không và lý do bằng tiếng Việt",',
+      '  "warnings": ["Câu cảnh báo nếu dịp mặc và phong cách mâu thuẫn hoặc dùng giá trị mặc định, nêu rõ đã ưu tiên hướng nào"]',
       '}',
     );
 
@@ -576,6 +585,14 @@ export class StylistService {
         ? fitAdviceRaw.trim()
         : null;
 
+    // warnings là field phụ (cảnh báo xung đột occasion/stylePreference) — không
+    // bắt buộc như các field dùng requireString/toArray ở trên, nên parse an toàn,
+    // không throw nếu Gemini thiếu field hoặc trả sai kiểu.
+    const warningsRaw = raw.warnings;
+    const warnings = Array.isArray(warningsRaw)
+      ? warningsRaw.filter((w): w is string => typeof w === 'string' && w.trim() !== '')
+      : [];
+
     return {
       bodyType: requireString('bodyType'),
       skinTone: requireString('skinTone'),
@@ -587,6 +604,7 @@ export class StylistService {
       outfitCombinations: toArray('outfitCombinations'),
       stylingTips: requireString('stylingTips'),
       verdict: requireString('verdict'),
+      warnings,
     };
   }
 

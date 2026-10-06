@@ -47,4 +47,14 @@ export class StylistResponseDto {
 
   @ApiProperty({ example: 'Rất phù hợp! Chiếc vest này sẽ làm bạn tự tin và chuyên nghiệp.' })
   verdict!: string;
+
+  @ApiPropertyOptional({
+    type: [String],
+    example: [
+      'Dịp dạ tiệc và phong cách năng động/thể thao có thể không ăn khớp — đã ưu tiên gợi ý theo dịp mặc',
+    ],
+    description:
+      'Cảnh báo khi dịp mặc và phong cách yêu thích mâu thuẫn, hoặc khi dịp mặc đang dùng giá trị mặc định do người dùng không nhập. Rỗng nếu không có vấn đề.',
+  })
+  warnings?: string[];
 }

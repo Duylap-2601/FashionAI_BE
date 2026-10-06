@@ -4,7 +4,7 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-import { NotificationType, OrderStatus, PaymentStatus, Prisma, Product, RefundStatus, Role, ShipmentStatus } from '@prisma/client';
+import { GarmentType, NotificationType, OrderStatus, PaymentStatus, Prisma, Product, RefundStatus, Role, ShipmentStatus } from '@prisma/client';
 import { createHash, createHmac, timingSafeEqual } from 'crypto';
 import { PrismaService } from '../../database/prisma.service';
 import { MailQueueService } from '../mail/mail-queue.service';
@@ -29,6 +29,8 @@ import { UserAddressesService } from '../users/user-addresses.service';
 import {
   MEASUREMENT_LABELS,
   MeasurementField,
+  REQUIRED_MEASUREMENTS_BY_CATEGORY,
+  REQUIRED_MEASUREMENTS_BY_TYPE,
   getMissingMeasurements,
 } from '../../common/constants/measurement.constants';
 import { ONLINE_REFUND_PROVIDERS } from '../../common/constants/payment.constants';
@@ -289,14 +291,14 @@ export class OrdersService {
     return orders.map((order) => this.toPublicOrder(order));
   }
 
-  async findOne(userId: string, id: string) {
+  async findOne(userId: string, id: string, isAdmin = false) {
     const where = this.resolveOrderWhere(id);
     if (!where) {
       throw new NotFoundException(`Không tìm thấy đơn hàng có ID ${id}`);
     }
 
     const order = await this.prisma.order.findFirst({
-      where: { ...where, userId },
+      where: isAdmin ? where : { ...where, userId },
       include: this.orderInclude(),
     });
 
@@ -926,6 +928,36 @@ export class OrdersService {
     return snapshot;
   }
 
+  // measurementSnapshot lưu đủ 16 field cho MỌI item bất kể loại trang phục (xem
+  // buildMeasurementSnapshot). Hàm này lọc lại chỉ còn field thợ cần cho đúng
+  // garmentType của item đó, kèm nhãn tiếng Việt + đơn vị, để hiển thị cho admin/thợ
+  // may mà không phải tự tra 16 field thô. Không đổi cách lưu, chỉ lọc ở tầng response.
+  private buildMeasurementDisplay(item: {
+    measurementSnapshot: Prisma.JsonValue;
+    productCategorySnapshot: string | null;
+    product?: { category: string; garmentType: string | null } | null;
+  }): Array<{ field: string; label: string; value: number; unit: string }> {
+    const snapshot = item.measurementSnapshot as Partial<Record<MeasurementField, unknown>> | null;
+    if (!snapshot) return [];
+
+    const garmentType = item.product?.garmentType;
+    const requiredFields: readonly MeasurementField[] =
+      garmentType && garmentType in REQUIRED_MEASUREMENTS_BY_TYPE
+        ? REQUIRED_MEASUREMENTS_BY_TYPE[garmentType as GarmentType]
+        : REQUIRED_MEASUREMENTS_BY_CATEGORY[
+            (item.product?.category ?? item.productCategorySnapshot) as keyof typeof REQUIRED_MEASUREMENTS_BY_CATEGORY
+          ] ?? [];
+
+    return requiredFields
+      .filter((field) => snapshot[field] !== null && snapshot[field] !== undefined)
+      .map((field) => ({
+        field,
+        label: MEASUREMENT_LABELS[field],
+        value: Number(snapshot[field]),
+        unit: 'cm',
+      }));
+  }
+
   private orderInclude() {
     return {
       items: {
@@ -1070,6 +1102,7 @@ export class OrdersService {
         quantity: item.quantity,
         color: item.color,
         measurementSnapshot: item.measurementSnapshot,
+        measurementDisplay: this.buildMeasurementDisplay(item),
         measurementReview: item.measurementReview,
         productNameSnapshot: item.productNameSnapshot,
         fabricSnapshot: item.fabricSnapshot,

@@ -100,13 +100,13 @@ export class OrdersController {
   }
 
   @Get(':id')
-  @ApiOperation({ summary: 'Chi tiết đơn hàng' })
+  @ApiOperation({ summary: 'Chi tiết đơn hàng (user xem đơn của mình, admin xem được mọi đơn)' })
   async findOne(
     @Req() req: Request,
     @CurrentUser() user: AuthenticatedUser,
     @Param('id') id: string,
   ) {
-    const data = await this.ordersService.findOne(user.id, id);
+    const data = await this.ordersService.findOne(user.id, id, user.role === Role.ADMIN);
     return buildApiResponse(req, 'ORDER_FETCH_SUCCESS', 'Lấy chi tiết đơn hàng thành công', data);
   }
 
