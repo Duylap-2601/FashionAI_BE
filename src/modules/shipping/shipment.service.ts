@@ -1,5 +1,5 @@
 import { Injectable, Logger, NotFoundException } from '@nestjs/common';
-import { OrderStatus, Prisma, ShipmentStatus } from '@prisma/client';
+import { Prisma, ShipmentStatus } from '@prisma/client';
 import { PrismaService } from '../../database/prisma.service';
 import { ShippingService } from './shipping.service';
 import { ShippingProviderType } from './constants/shipping-provider.enum';
@@ -47,6 +47,7 @@ export class ShipmentService {
           where: { id: pendingShipment.id },
           data: {
             status: this.mapProviderStatus(result.status),
+            rawStatus: result.rawStatus ?? 'ready_to_pick',
             providerOrderCode: result.providerOrderCode,
             shippingFee: new Prisma.Decimal(result.shippingFee),
             shippingFeeVnd: BigInt(Math.round(result.shippingFee)),
@@ -57,19 +58,14 @@ export class ShipmentService {
           },
         });
 
-        await tx.order.update({
-          where: { id: order.id },
-          data: { status: OrderStatus.SHIPPING },
-        });
-
         await tx.orderEvent.create({
           data: {
             orderId: order.id,
             shipmentId: updated.id,
             type: 'SHIPMENT_CREATED',
             source: 'SYSTEM',
-            fromStatus: OrderStatus.CONFIRMED,
-            toStatus: OrderStatus.SHIPPING,
+            fromStatus: order.status,
+            toStatus: order.status,
             publicMessage: 'Vận đơn đã được tạo và đang chờ đơn vị vận chuyển xử lý.',
             deduplicationKey: `shipment:${requestKey}:created`,
           },

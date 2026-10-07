@@ -75,6 +75,7 @@ enum LiveTryOnSessionStatus {
 }
 
 enum OrderStatus {
+  CREATED
   PENDING_PAYMENT
   PENDING
   PAID
@@ -101,6 +102,7 @@ enum PaymentStatus {
   PENDING
   PAID
   FAILED
+  EXPIRED
   REFUND_REQUIRED
   REFUND_PENDING
   REFUNDED
@@ -120,6 +122,7 @@ enum RefundStatus {
 
 enum ShipmentStatus {
   PENDING
+  UNKNOWN
   READY_TO_PICK
   CREATED
   PICKING
@@ -600,7 +603,7 @@ model Order {
   amountPaidVnd           BigInt         @default(0) @map("amount_paid_vnd")
   amountRefundedVnd       BigInt         @default(0) @map("amount_refunded_vnd")
   currency                String         @default("VND")
-  status                  OrderStatus    @default(PENDING)
+  status                  OrderStatus    @default(CREATED)
   shippingInfo            Json?          @map("shipping_info")
   shippingAddressSnapshot Json?          @map("shipping_address_snapshot")
   shippingQuoteSnapshot   Json?          @map("shipping_quote_snapshot")
