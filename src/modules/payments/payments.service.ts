@@ -21,8 +21,6 @@ import { RedisService } from '../../common/services/redis.service';
 import { MailQueueService } from '../mail/mail-queue.service';
 import { NotificationService } from '../notification/notification.service';
 import { SubscriptionService } from './subscription.service';
-import { OutboxService } from '../outbox/services/outbox.service';
-import { OUTBOX_EVENT_TYPE } from '../outbox/constants/outbox.constants';
 import {
   TIER_PRICES,
   RENEWAL_REMINDER_DAYS_BEFORE,
@@ -51,7 +49,6 @@ export class PaymentsService {
     private readonly mailQueueService: MailQueueService,
     private readonly notificationService: NotificationService,
     private readonly subscriptionService: SubscriptionService,
-    private readonly outboxService: OutboxService,
     private readonly gatewayRegistry: PaymentGatewayRegistry,
     private readonly redisService: RedisService,
   ) {}
@@ -111,12 +108,11 @@ export class PaymentsService {
       throw new NotFoundException(`Không tìm thấy đơn hàng có ID ${orderId}`);
     }
 
-    if (order.status === OrderStatus.PAID) {
+    if (order.paymentStatus === PaymentStatus.PAID) {
       throw new BadRequestException('Đơn hàng này đã được thanh toán.');
     }
 
-    const payableStatuses: OrderStatus[] = [OrderStatus.PENDING, OrderStatus.PENDING_PAYMENT];
-    if (!payableStatuses.includes(order.status)) {
+    if (order.status !== OrderStatus.CREATED || order.paymentStatus !== PaymentStatus.PENDING) {
       throw new BadRequestException(
         `Không thể thanh toán đơn hàng ở trạng thái ${order.status}.`,
       );
@@ -206,7 +202,7 @@ export class PaymentsService {
           targetTier,
           amount,
           prorationSnapshot: (proration ?? undefined) as Prisma.InputJsonValue | undefined,
-          status: OrderStatus.PENDING,
+          status: OrderStatus.CREATED,
           paymentStatus: PaymentStatus.PENDING,
         },
       }),
@@ -408,7 +404,6 @@ export class PaymentsService {
       this.prisma.order.update({
         where: { id: order.id },
         data: {
-          status: order.status === OrderStatus.PENDING_PAYMENT ? OrderStatus.PENDING : order.status,
           paymentProvider: gateway.code,
           checkoutUrl,
           checkoutExpiresAt: expiresAt,
@@ -1053,7 +1048,8 @@ export class PaymentsService {
       if (Number.isFinite(transferAmount)) {
         const orders = await this.prisma.order.findMany({
           where: {
-            status: OrderStatus.PENDING,
+            status: OrderStatus.CREATED,
+            paymentStatus: PaymentStatus.PENDING,
             createdAt: {
               gte: new Date(anchor.getTime() - windowMs),
               lte: new Date(anchor.getTime() + windowMs),
@@ -1270,7 +1266,7 @@ export class PaymentsService {
       throw new NotFoundException(`Không tìm thấy đơn hàng mã ${orderCode}`);
     }
 
-    if (order.status !== OrderStatus.PENDING) {
+    if (order.status !== OrderStatus.CREATED || order.paymentStatus !== PaymentStatus.PENDING) {
       return { message: 'Order is not pending' };
     }
 
@@ -1284,7 +1280,7 @@ export class PaymentsService {
           orderId: order.id,
           type: 'PAYMENT_CANCELLED',
           source: 'PAYMENT',
-          fromStatus: OrderStatus.PENDING,
+          fromStatus: OrderStatus.CREATED,
           toStatus: OrderStatus.CANCELLED,
           publicMessage: 'Giao dịch thanh toán đã bị hủy.',
           deduplicationKey: `payment:${provider}:${paymentData?.transaction?.transaction_id ?? Date.now()}:cancelled`,
@@ -1347,14 +1343,14 @@ export class PaymentsService {
       );
     }
 
-    if (order.status === OrderStatus.PAID) {
+    if (order.paymentStatus === PaymentStatus.PAID) {
       this.logger.log(`Đơn hàng #${orderCode} đã được xử lý trước đó.`);
       return { message: 'Order already processed' };
     }
 
     // Đơn đã hủy/hết hạn không được âm thầm chuyển sang PAID: tiền đã vào thì cần
     // người vận hành xử lý hoàn, không phải giao hàng.
-    if (order.status !== OrderStatus.PENDING) {
+    if (order.status !== OrderStatus.CREATED || order.paymentStatus !== PaymentStatus.PENDING) {
       this.logger.warn(
         `Nhận thanh toán cho đơn #${orderCode} ở trạng thái ${order.status} | provider=${provider}`,
       );
@@ -1378,14 +1374,14 @@ export class PaymentsService {
 
     try {
       const claimed = await this.prisma.$transaction(async (tx) => {
-        // Chốt trạng thái bằng chính câu UPDATE có điều kiện status=PENDING. IPN và
+        // Chốt trạng thái bằng chính câu UPDATE có điều kiện CREATED + payment PENDING. IPN và
         // bank webhook ghi vào hai `provider` khác nhau nên unique index
         // (provider, transactionId) không chặn được chúng; nếu chỉ dựa vào lần đọc
         // ở trên thì cả hai đều thấy PENDING và trừ tồn kho hai lần cho một đơn.
         const claim = await tx.order.updateMany({
-          where: { id: order.id, status: OrderStatus.PENDING },
+          where: { id: order.id, status: OrderStatus.CREATED, paymentStatus: PaymentStatus.PENDING },
           data: {
-            status: OrderStatus.PAID,
+            status: order.targetTier ? OrderStatus.COMPLETED : OrderStatus.PROCESSING,
             paymentStatus: PaymentStatus.PAID,
             amountPaidVnd: BigInt(Number(order.amount)),
             // Link đã dùng xong, không cho tái sử dụng.
@@ -1426,8 +1422,8 @@ export class PaymentsService {
             orderId: order.id,
             type: 'PAYMENT_SUCCEEDED',
             source: 'PAYMENT',
-            fromStatus: OrderStatus.PENDING,
-            toStatus: OrderStatus.PAID,
+            fromStatus: OrderStatus.CREATED,
+            toStatus: order.targetTier ? OrderStatus.COMPLETED : OrderStatus.PROCESSING,
             publicMessage: 'Thanh toán đã được xác minh thành công.',
             deduplicationKey: `payment:${provider}:${paymentData?.transId ?? paymentData?.reference ?? Date.now()}`,
           },
@@ -1495,7 +1491,8 @@ export class PaymentsService {
         data: {
           orderId: order.id,
           orderCode: order.orderCode,
-          status: OrderStatus.PAID,
+          internalStatus: isSubscription ? OrderStatus.COMPLETED : OrderStatus.PROCESSING,
+          paymentStatus: PaymentStatus.PAID,
           ...(isSubscription ? { targetTier: order.targetTier, subscriptionMode } : {}),
         },
       })
@@ -1504,24 +1501,6 @@ export class PaymentsService {
     if (isSubscription) {
       return { message: 'Payment processed and user tier updated successfully' };
     }
-
-    // Enqueue outbox event để worker tạo shipment (không gọi provider trong transaction).
-    // Fire-and-forget để không block response - lỗi đã được log trong catch.
-    this.outboxService
-      .enqueueEvent({
-        type: OUTBOX_EVENT_TYPE.SHIPMENT_CREATE_REQUESTED,
-        aggregateType: 'Order',
-        aggregateId: order.id,
-        payload: { orderId: order.id, orderCode: order.orderCode, userId: order.userId },
-      })
-      .then((event) =>
-        this.logger.log(
-          `Enqueued SHIPMENT_CREATE_REQUESTED | eventKey=${event.eventKey} | orderId=${order.id} | orderCode=${order.orderCode}`,
-        ),
-      )
-      .catch((err) =>
-        this.logger.error(`Failed to enqueue SHIPMENT_CREATE_REQUESTED for order ${orderCode}: ${err?.message}`),
-      );
 
     // Gửi email xác nhận đơn hàng cho user. Fire-and-forget để không block response.
     this.sendOrderConfirmationEmail(order.id).catch((err) =>
@@ -1776,7 +1755,7 @@ export class PaymentsService {
           where: {
             userId: sub.userId,
             targetTier: sub.tier,
-            status: OrderStatus.PENDING,
+            status: OrderStatus.CREATED,
             checkoutExpiresAt: { gt: new Date() },
           },
           orderBy: { createdAt: 'desc' },
@@ -1794,7 +1773,7 @@ export class PaymentsService {
                 userId: sub.userId,
                 targetTier: sub.tier,
                 amount: TIER_PRICES[sub.tier],
-                status: OrderStatus.PENDING,
+                status: OrderStatus.CREATED,
                 paymentStatus: PaymentStatus.PENDING,
               },
             }),

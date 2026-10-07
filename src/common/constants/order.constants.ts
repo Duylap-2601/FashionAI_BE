@@ -1,14 +1,12 @@
-import { OrderStatus } from '@prisma/client';
+import { PaymentStatus } from '@prisma/client';
 
 /**
- * Các trạng thái nghĩa là tiền đã về. Đơn sản phẩm sau khi PAID còn đi tiếp qua
- * CONFIRMED → SHIPPING → DELIVERED, nên thống kê doanh thu chỉ đếm PAID sẽ hụt
- * ngay khi admin xác nhận đơn.
+ * Các trạng thái thanh toán nghĩa là tiền đã về. Không suy luận doanh thu từ
+ * vòng đời fulfilment của Order.status.
  */
-export const PAID_STATUSES: OrderStatus[] = [
-  OrderStatus.PAID,
-  OrderStatus.CONFIRMED,
-  OrderStatus.SHIPPING,
-  OrderStatus.DELIVERED,
-  OrderStatus.COMPLETED,
+export const COLLECTED_PAYMENT_STATUSES: PaymentStatus[] = [
+  PaymentStatus.PAID,
+  PaymentStatus.PARTIALLY_REFUNDED,
+  PaymentStatus.REFUNDED,
+  PaymentStatus.COD_COLLECTED,
 ];

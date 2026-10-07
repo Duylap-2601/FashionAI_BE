@@ -40,6 +40,7 @@ import { ONLINE_REFUND_PROVIDERS } from '../../common/constants/payment.constant
 type IOrderWithRelations = Prisma.OrderGetPayload<{
   include: ReturnType<OrdersService['orderInclude']>;
 }> & { user?: unknown };
+type IShipmentWithOrder = IOrderWithRelations['shipments'][number];
 
 type IOrderProduct = Product;
 type ResolvedCreateOrderDto = CreateOrderDto & { shippingInfo: NonNullable<CreateOrderDto['shippingInfo']> };
@@ -229,7 +230,7 @@ export class OrdersService {
             taxVnd: 0,
             totalVnd: this.toVnd(total),
             currency: 'VND',
-            status: OrderStatus.PENDING,
+            status: OrderStatus.CREATED,
             paymentStatus: PaymentStatus.PENDING,
             refundStatus: RefundStatus.NONE,
             fulfillmentFlowVersion: 1,
@@ -285,7 +286,7 @@ export class OrdersService {
           type: 'ORDER_CREATED',
           source: 'USER',
           actorId: userId,
-          toStatus: OrderStatus.PENDING,
+          toStatus: OrderStatus.CREATED,
           publicMessage: 'Đơn hàng đã được tạo và đang chờ thanh toán.',
           deduplicationKey: `order:${created.id}:created`,
         });
@@ -398,7 +399,7 @@ export class OrdersService {
 
   async cancel(userId: string, id: string) {
     const order = await this.findOrderForOwner(userId, id);
-    if (order.status !== OrderStatus.PENDING) {
+    if (order.status !== OrderStatus.CREATED) {
       throw new BadRequestException('Chỉ có thể hủy đơn hàng đang chờ xử lý');
     }
 
@@ -407,7 +408,7 @@ export class OrdersService {
     // thay vì param thô để tránh lỗi cast khi client gửi orderCode.
     const { count } = await this.prisma.$transaction(async (tx) => {
       const result = await tx.order.updateMany({
-        where: { id: order.id, userId, status: OrderStatus.PENDING, OR: [{ paymentStatus: PaymentStatus.PENDING }, { paymentStatus: null }] },
+        where: { id: order.id, userId, status: OrderStatus.CREATED, OR: [{ paymentStatus: PaymentStatus.PENDING }, { paymentStatus: null }] },
         data: {
           status: OrderStatus.CANCELLED,
           checkoutUrl: null,
@@ -420,7 +421,7 @@ export class OrdersService {
           type: 'ORDER_CANCELLED',
           source: 'USER',
           actorId: userId,
-          fromStatus: OrderStatus.PENDING,
+          fromStatus: OrderStatus.CREATED,
           toStatus: OrderStatus.CANCELLED,
           publicMessage: 'Khách hàng đã hủy đơn trước khi thanh toán.',
           deduplicationKey: `order:${order.id}:cancel:user`,
@@ -547,16 +548,19 @@ export class OrdersService {
       );
     }
 
-    const verifiedOnlyStatuses: OrderStatus[] = [OrderStatus.SHIPPING, OrderStatus.DELIVERED, OrderStatus.PAID];
+    const verifiedOnlyStatuses: OrderStatus[] = [OrderStatus.SHIPPING, OrderStatus.DELIVERED, OrderStatus.PAID, OrderStatus.CREATED];
     if (isNewFlow && verifiedOnlyStatuses.includes(status)) {
       throw new BadRequestException('Trạng thái này phải do thanh toán hoặc vận chuyển đã xác minh cập nhật.');
     }
 
-    if (isNewFlow && status === OrderStatus.MEASUREMENT_CONFIRMED) {
+    if (isNewFlow && status === OrderStatus.PROCESSING && order.status === OrderStatus.MEASUREMENT_REVIEW) {
       await this.assertNoOpenMeasurementReviews(order.id);
     }
 
     await this.prisma.$transaction(async (tx) => {
+      if (isNewFlow && status === OrderStatus.PROCESSING && order.status === OrderStatus.MEASUREMENT_REVIEW) {
+        await this.resolveSubmittedMeasurementReviews(tx, order.id);
+      }
       await tx.order.update({
         where: { id: order.id },
         data: { status, ...(status === OrderStatus.CANCELLED && order.paymentStatus === PaymentStatus.PAID ? { refundStatus: RefundStatus.REQUIRED } : {}) },
@@ -604,14 +608,15 @@ export class OrdersService {
       ? await this.prisma.orderItem.findFirst({ where: { id: itemId, orderId: order.id } })
       : null;
     if (!order || !item) throw new NotFoundException('Không tìm thấy item thuộc đơn hàng');
-    if (order.fulfillmentFlowVersion !== 1 || order.status !== OrderStatus.MEASUREMENT_REVIEW) {
+    if (order.fulfillmentFlowVersion !== 1 || order.status !== OrderStatus.PROCESSING) {
       throw new BadRequestException('Chỉ mở yêu cầu số đo khi đơn đang ở bước kiểm tra số đo.');
     }
 
     const review = { status: 'OPEN', message: dto.message, openedAt: new Date().toISOString() };
     await this.prisma.$transaction(async (tx) => {
+      await tx.order.update({ where: { id: order.id }, data: { status: OrderStatus.MEASUREMENT_REVIEW } });
       await tx.orderItem.update({ where: { id: item.id }, data: { measurementReview: review as Prisma.InputJsonValue } });
-      await this.createOrderEvent(tx, { orderId: order.id, type: 'MEASUREMENT_REVIEW_OPENED', source: 'ADMIN', actorId, publicMessage: dto.message, internalNote: dto.internalNote });
+      await this.createOrderEvent(tx, { orderId: order.id, type: 'MEASUREMENT_REVIEW_OPENED', source: 'ADMIN', actorId, fromStatus: OrderStatus.PROCESSING, toStatus: OrderStatus.MEASUREMENT_REVIEW, publicMessage: dto.message, internalNote: dto.internalNote });
     });
 
     return this.findOne(order.userId, order.id);
@@ -710,8 +715,12 @@ export class OrdersService {
   async createShipment(id: string, dto: CreateShipmentDto, actorId: string) {
     const order = await this.findOrderByIdentifier(id);
     if (!order) throw new NotFoundException(`Không tìm thấy đơn hàng có ID ${id}`);
-    if (order.fulfillmentFlowVersion !== 1 || order.status !== OrderStatus.READY_TO_SHIP || order.paymentStatus !== PaymentStatus.PAID) {
-      throw new BadRequestException('Chỉ tạo vận đơn cho đơn may đo READY_TO_SHIP đã thanh toán.');
+    const shipmentCreatableStatuses: OrderStatus[] = [OrderStatus.PROCESSING, OrderStatus.READY_TO_SHIP];
+    if (order.fulfillmentFlowVersion !== 1 || !shipmentCreatableStatuses.includes(order.status) || order.paymentStatus !== PaymentStatus.PAID) {
+      throw new BadRequestException('Chỉ tạo vận đơn cho đơn may đo PROCESSING/READY_TO_SHIP đã thanh toán.');
+    }
+    if (order.status === OrderStatus.PROCESSING) {
+      await this.assertNoOpenMeasurementReviews(order.id);
     }
 
     const requestKey = dto.requestKey ?? `order:${order.id}:shipment:${order.updatedAt.getTime()}`;
@@ -741,6 +750,7 @@ export class OrdersService {
         where: { id: pendingShipment.id },
         data: {
           status: result.status,
+          rawStatus: result.rawStatus ?? 'ready_to_pick',
           providerOrderCode: result.providerOrderCode,
           shippingFee: new Prisma.Decimal(result.shippingFee),
           shippingFeeVnd: BigInt(Math.round(result.shippingFee)),
@@ -750,8 +760,10 @@ export class OrdersService {
           lastSyncedAt: new Date(),
         },
       });
-      await tx.order.update({ where: { id: order.id }, data: { status: OrderStatus.SHIPPING } });
-      await this.createOrderEvent(tx, { orderId: order.id, shipmentId: created.id, type: 'SHIPMENT_CREATED', source: 'ADMIN', actorId, fromStatus: OrderStatus.READY_TO_SHIP, toStatus: OrderStatus.SHIPPING, fromShipmentStatus: pendingShipment.status, toShipmentStatus: result.status, publicMessage: 'Vận đơn đã được tạo và đang chờ đơn vị vận chuyển xử lý.', deduplicationKey: `shipment:${requestKey}:created` });
+      if (order.status === OrderStatus.PROCESSING) {
+        await tx.order.update({ where: { id: order.id }, data: { status: OrderStatus.READY_TO_SHIP } });
+      }
+      await this.createOrderEvent(tx, { orderId: order.id, shipmentId: created.id, type: 'SHIPMENT_CREATED', source: 'ADMIN', actorId, fromStatus: order.status, toStatus: OrderStatus.READY_TO_SHIP, fromShipmentStatus: pendingShipment.status, toShipmentStatus: result.status, publicMessage: 'Vận đơn đã được tạo và đang chờ đơn vị vận chuyển xử lý.', deduplicationKey: `shipment:${requestKey}:created`, metadata: { rawStatus: result.rawStatus ?? 'ready_to_pick' } as Prisma.InputJsonValue });
       return created;
     });
 
@@ -781,8 +793,15 @@ export class OrdersService {
 
   async confirmDelivery(userId: string, id: string, note?: string) {
     const order = await this.findOrderForOwner(userId, id);
-    if (order.status !== OrderStatus.SHIPPING && order.status !== OrderStatus.DELIVERED) {
-      throw new BadRequestException('Chỉ có thể xác nhận khi đơn hàng đang giao hoặc đã được giao (status = SHIPPING hoặc DELIVERED).');
+    if (order.status === OrderStatus.COMPLETED) {
+      return this.toPublicOrder(order);
+    }
+    if (order.status !== OrderStatus.READY_TO_SHIP) {
+      throw new BadRequestException('Chỉ có thể xác nhận khi đơn hàng đã sẵn sàng giao và vận đơn đã giao thành công.');
+    }
+    const currentShipment = this.getCurrentShipment(order);
+    if (!currentShipment || this.normalizeRawStatus(currentShipment.rawStatus) !== 'delivered') {
+      throw new BadRequestException('Chỉ có thể xác nhận sau khi đơn vị vận chuyển báo đã giao hàng.');
     }
 
     const fromStatus = order.status;
@@ -1151,7 +1170,22 @@ export class OrdersService {
       return review?.status === 'OPEN';
     });
     if (hasOpen) {
-      throw new BadRequestException('Còn yêu cầu bổ sung số đo chưa được khách gửi lại.');
+      throw new BadRequestException('Còn yêu cầu bổ sung số đo chưa được xử lý xong.');
+    }
+  }
+
+  private async resolveSubmittedMeasurementReviews(tx: Prisma.TransactionClient, orderId: string) {
+    const items = await tx.orderItem.findMany({ where: { orderId }, select: { id: true, measurementReview: true } });
+    for (const item of items) {
+      const review = item.measurementReview as { status?: string; [key: string]: unknown } | null;
+      if (review?.status === 'SUBMITTED') {
+        await tx.orderItem.update({
+          where: { id: item.id },
+          data: {
+            measurementReview: { ...review, status: 'RESOLVED', resolvedAt: new Date().toISOString() } as Prisma.InputJsonValue,
+          },
+        });
+      }
     }
   }
 
@@ -1233,6 +1267,9 @@ export class OrdersService {
       (sum, item) => sum + Number(item.price) * item.quantity,
       0,
     );
+    const currentShipment = this.getCurrentShipment(order);
+    const activeShipment = this.getActiveShipment(order);
+    const displayStatus = this.resolveDisplayStatus(order, currentShipment);
     return {
       id: order.id,
       orderCode: order.orderCode,
@@ -1241,6 +1278,7 @@ export class OrdersService {
       amount: Number(order.amount),
       itemsTotal,
       status: order.status,
+      displayStatus,
       paymentStatus: order.paymentStatus,
       refundStatus: order.refundStatus,
       fulfillmentFlowVersion: order.fulfillmentFlowVersion,
@@ -1303,21 +1341,10 @@ export class OrdersService {
         processedAt: refund.processedAt,
         failedReason: refund.failedReason,
       })),
-      shipment: (order.shipments ?? [])[0]
-        ? {
-            id: order.shipments[0].id,
-            provider: order.shipments[0].provider,
-            providerOrderCode: order.shipments[0].providerOrderCode,
-            status: order.shipments[0].status,
-            rawStatus: order.shipments[0].rawStatus,
-            shippingFeeVnd: order.shipments[0].shippingFeeVnd === null || order.shipments[0].shippingFeeVnd === undefined ? null : Number(order.shipments[0].shippingFeeVnd),
-            shippingFee: order.shipments[0].shippingFee === null || order.shipments[0].shippingFee === undefined ? null : Number(order.shipments[0].shippingFee),
-            quotedShippingFee: order.shipments[0].quotedShippingFee === null || order.shipments[0].quotedShippingFee === undefined ? null : Number(order.shipments[0].quotedShippingFee),
-            actualShippingFee: order.shipments[0].actualShippingFee === null || order.shipments[0].actualShippingFee === undefined ? null : Number(order.shipments[0].actualShippingFee),
-            expectedDeliveryTime: order.shipments[0].expectedDeliveryTime,
-            lastSyncedAt: order.shipments[0].lastSyncedAt,
-          }
-        : null,
+      activeShipment: activeShipment ? this.toPublicShipment(activeShipment) : null,
+      currentShipment: currentShipment ? this.toPublicShipment(currentShipment) : null,
+      shipmentHistory: (order.shipments ?? []).map((shipment) => this.toPublicShipment(shipment)),
+      shipment: currentShipment ? this.toPublicShipment(currentShipment) : null,
       history: (order.events ?? []).map((event) => ({
         id: event.id,
         type: event.type,
@@ -1327,13 +1354,127 @@ export class OrdersService {
         occurredAt: event.occurredAt,
         publicMessage: event.publicMessage,
         shipmentId: event.shipmentId,
+        fromShipmentStatus: event.fromShipmentStatus,
+        toShipmentStatus: event.toShipmentStatus,
+        metadata: event.metadata,
       })),
       allowedActions: {
-        cancel: order.status === OrderStatus.PENDING && (!order.paymentStatus || order.paymentStatus === PaymentStatus.PENDING),
+        cancel: order.status === OrderStatus.CREATED && (!order.paymentStatus || order.paymentStatus === PaymentStatus.PENDING),
+        confirmDelivery: order.status === OrderStatus.READY_TO_SHIP && this.normalizeRawStatus(this.getCurrentShipment(order)?.rawStatus) === 'delivered',
+        startShipmentCreation: order.status === OrderStatus.PROCESSING && order.paymentStatus === PaymentStatus.PAID,
+        createReplacementShipment: order.status === OrderStatus.READY_TO_SHIP && !this.getActiveShipment(order),
         updateMeasurement: order.status === OrderStatus.MEASUREMENT_REVIEW,
       },
       user: order.user,
     };
+  }
+
+  private getCurrentShipment(order: IOrderWithRelations) {
+    return (order.shipments ?? [])[0] ?? null;
+  }
+
+  private getActiveShipment(order: IOrderWithRelations) {
+    return (order.shipments ?? []).find((shipment) => {
+      const rawStatus = this.normalizeRawStatus(shipment.rawStatus);
+      const terminalStatuses: ShipmentStatus[] = [
+        ShipmentStatus.DELIVERED,
+        ShipmentStatus.RETURNED,
+        ShipmentStatus.CANCELLED,
+        ShipmentStatus.FAILED,
+      ];
+      return !terminalStatuses.includes(shipment.status) && !['delivered', 'returned', 'cancel'].includes(rawStatus);
+    }) ?? null;
+  }
+
+  private toPublicShipment(shipment: IShipmentWithOrder) {
+    return {
+      id: shipment.id,
+      provider: shipment.provider,
+      providerOrderCode: shipment.providerOrderCode,
+      status: shipment.status,
+      rawStatus: shipment.rawStatus,
+      shippingFeeVnd: shipment.shippingFeeVnd === null || shipment.shippingFeeVnd === undefined ? null : Number(shipment.shippingFeeVnd),
+      shippingFee: shipment.shippingFee === null || shipment.shippingFee === undefined ? null : Number(shipment.shippingFee),
+      quotedShippingFee: shipment.quotedShippingFee === null || shipment.quotedShippingFee === undefined ? null : Number(shipment.quotedShippingFee),
+      actualShippingFee: shipment.actualShippingFee === null || shipment.actualShippingFee === undefined ? null : Number(shipment.actualShippingFee),
+      expectedDeliveryTime: shipment.expectedDeliveryTime,
+      providerEventAt: shipment.providerEventAt,
+      lastSyncedAt: shipment.lastSyncedAt,
+      createdAt: shipment.createdAt,
+      updatedAt: shipment.updatedAt,
+    };
+  }
+
+  private resolveDisplayStatus(order: IOrderWithRelations, currentShipment: IShipmentWithOrder | null) {
+    if (order.status === OrderStatus.CANCELLED || order.status === OrderStatus.COMPLETED) {
+      return {
+        source: 'ORDER',
+        code: order.status,
+        label: this.labelOrderStatus(order.status),
+        providerTerminal: false,
+        orderFinal: true,
+        issue: false,
+      };
+    }
+
+    if (currentShipment?.providerOrderCode) {
+      const rawCode = this.normalizeRawStatus(currentShipment.rawStatus) || String(currentShipment.status).toLowerCase();
+      const catalog = this.ghnStatusCatalog(rawCode);
+      return {
+        source: currentShipment.provider || 'GHN',
+        code: currentShipment.rawStatus ?? rawCode,
+        label: catalog.label,
+        providerTerminal: catalog.providerTerminal,
+        orderFinal: false,
+        issue: catalog.issue,
+      };
+    }
+
+    return {
+      source: 'ORDER',
+      code: order.status,
+      label: this.labelOrderStatus(order.status),
+      providerTerminal: false,
+      orderFinal: false,
+      issue: false,
+    };
+  }
+
+  private normalizeRawStatus(status?: string | null) {
+    return (status ?? '').trim().toLowerCase();
+  }
+
+  private labelOrderStatus(status: OrderStatus) {
+    return ORDER_STATUS_MESSAGE[status] ?? status;
+  }
+
+  private ghnStatusCatalog(status: string) {
+    const labels: Record<string, { label: string; providerTerminal: boolean; issue: boolean }> = {
+      ready_to_pick: { label: 'Chờ lấy hàng', providerTerminal: false, issue: false },
+      picking: { label: 'Đang lấy hàng', providerTerminal: false, issue: false },
+      money_collect_picking: { label: 'Đang thu tiền khi lấy hàng', providerTerminal: false, issue: false },
+      picked: { label: 'Đã lấy hàng', providerTerminal: false, issue: false },
+      storing: { label: 'Đang lưu kho', providerTerminal: false, issue: false },
+      sorting: { label: 'Đang phân loại', providerTerminal: false, issue: false },
+      transporting: { label: 'Đang trung chuyển', providerTerminal: false, issue: false },
+      delivering: { label: 'Đang giao hàng', providerTerminal: false, issue: false },
+      money_collect_delivering: { label: 'Đang thu tiền khi giao hàng', providerTerminal: false, issue: false },
+      delivered: { label: 'Đã giao hàng', providerTerminal: true, issue: false },
+      delivery_fail: { label: 'Giao hàng không thành công', providerTerminal: false, issue: true },
+      waiting_to_return: { label: 'Chờ hoàn hàng', providerTerminal: false, issue: false },
+      return: { label: 'Đang hoàn hàng', providerTerminal: false, issue: false },
+      return_transporting: { label: 'Đang trung chuyển hoàn hàng', providerTerminal: false, issue: false },
+      return_sorting: { label: 'Đang phân loại hoàn hàng', providerTerminal: false, issue: false },
+      returning: { label: 'Đang trả hàng', providerTerminal: false, issue: false },
+      return_fail: { label: 'Hoàn hàng không thành công', providerTerminal: false, issue: true },
+      returned: { label: 'Đã hoàn hàng', providerTerminal: true, issue: false },
+      cancel: { label: 'Vận đơn đã hủy', providerTerminal: true, issue: false },
+      exception: { label: 'Vận đơn gặp sự cố', providerTerminal: false, issue: true },
+      lost: { label: 'Thất lạc hàng', providerTerminal: true, issue: true },
+      damage: { label: 'Hàng bị hư hỏng', providerTerminal: true, issue: true },
+      scrap: { label: 'Hàng bị hủy', providerTerminal: true, issue: true },
+    };
+    return labels[status] ?? { label: status || 'Trạng thái vận chuyển chưa xác định', providerTerminal: false, issue: false };
   }
 
   private buildShipmentInput(order: IOrderWithRelations) {
