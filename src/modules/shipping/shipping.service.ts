@@ -1,6 +1,6 @@
 import { BadRequestException, Injectable, NotFoundException, UnauthorizedException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { GhnLocationLevel, OrderStatus, Prisma, ShipmentStatus } from '@prisma/client';
+import { GhnLocationLevel, Prisma, ShipmentStatus } from '@prisma/client';
 import { PrismaService } from '../../database/prisma.service';
 import { RedisService } from '../../common/services/redis.service';
 import { CalculateShippingFeeDto } from './dto/calculate-shipping-fee.dto';
@@ -297,31 +297,37 @@ export class ShippingService {
         throw error;
       }
 
-      // Keep the raw provider audit record, but never regress completed shipment state.
-      const terminalStatuses: ShipmentStatus[] = [
-        ShipmentStatus.DELIVERED,
-        ShipmentStatus.RETURNED,
-        ShipmentStatus.CANCELLED,
-      ];
-      if (terminalStatuses.includes(shipment.status)) {
-        return { ignored: true, reason: `Shipment already in terminal status ${shipment.status}` };
+      const incomingProviderEventAt = providerEventAt ?? new Date();
+      if (shipment.providerEventAt && providerEventAt && providerEventAt < shipment.providerEventAt) {
+        await tx.orderEvent.create({
+          data: {
+            orderId: shipment.orderId,
+            shipmentId: shipment.id,
+            type: source === 'STAGING_SIMULATOR' ? 'SHIPMENT_SIMULATED' : source === 'ADMIN_SYNC' ? 'SHIPMENT_SYNCED' : 'SHIPMENT_WEBHOOK',
+            source: source === 'STAGING_SIMULATOR' ? 'STAGING' : source === 'ADMIN_SYNC' ? 'ADMIN' : 'SHIPPING',
+            fromStatus: shipment.order.status,
+            toStatus: shipment.order.status,
+            fromShipmentStatus: shipment.status,
+            toShipmentStatus: shipment.status,
+            publicMessage: 'Đã nhận cập nhật vận chuyển cũ hơn trạng thái hiện tại.',
+            internalNote: this.buildShipmentInternalNote(rawStatus, payload),
+            deduplicationKey: `${eventKey}:stale`,
+            metadata: { rawStatus, providerEventAt: incomingProviderEventAt.toISOString(), stale: true } as Prisma.InputJsonValue,
+          },
+        });
+        return { ignored: true, reason: 'Stale provider event' };
       }
 
-      const nextOrderStatus = this.mapShipmentToOrderStatus(shipmentStatus, shipment.order.status);
       await tx.shipment.update({
         where: { id: shipment.id },
         data: {
           status: shipmentStatus,
           rawStatus: rawStatus ?? shipmentStatus,
           trackingData: payload as Prisma.InputJsonValue,
-          providerEventAt: providerEventAt ?? new Date(),
+          providerEventAt: incomingProviderEventAt,
           lastSyncedAt: new Date(),
         },
       });
-
-      if (nextOrderStatus && nextOrderStatus !== shipment.order.status) {
-        await tx.order.update({ where: { id: shipment.orderId }, data: { status: nextOrderStatus } });
-      }
 
       await tx.orderEvent.create({
         data: {
@@ -330,12 +336,13 @@ export class ShippingService {
           type: source === 'STAGING_SIMULATOR' ? 'SHIPMENT_SIMULATED' : source === 'ADMIN_SYNC' ? 'SHIPMENT_SYNCED' : 'SHIPMENT_WEBHOOK',
           source: source === 'STAGING_SIMULATOR' ? 'STAGING' : source === 'ADMIN_SYNC' ? 'ADMIN' : 'SHIPPING',
           fromStatus: shipment.order.status,
-          toStatus: nextOrderStatus,
+          toStatus: shipment.order.status,
           fromShipmentStatus: shipment.status,
           toShipmentStatus: shipmentStatus,
           publicMessage: this.buildShipmentPublicMessage(shipmentStatus),
           internalNote: this.buildShipmentInternalNote(rawStatus, payload),
           deduplicationKey: eventKey,
+          metadata: { rawStatus, providerEventAt: incomingProviderEventAt.toISOString(), source } as Prisma.InputJsonValue,
         },
       });
 
@@ -356,46 +363,6 @@ export class ShippingService {
     if (provided !== expected) {
       throw new UnauthorizedException('Invalid GHN webhook secret');
     }
-  }
-
-  private mapShipmentToOrderStatus(status: ShipmentStatus, current: OrderStatus) {
-    // Terminal order states should not be changed by delayed webhooks
-    const terminalOrderStatuses: OrderStatus[] = [
-      OrderStatus.CANCELLED,
-      OrderStatus.RETURNED,
-      OrderStatus.EXPIRED,
-    ];
-    if (terminalOrderStatuses.includes(current)) {
-      return current;
-    }
-
-    if (status === ShipmentStatus.DELIVERED) return OrderStatus.DELIVERED;
-
-    const processingStatuses: ShipmentStatus[] = [
-      ShipmentStatus.READY_TO_PICK,
-      ShipmentStatus.CREATED,
-      ShipmentStatus.PICKING,
-    ];
-    if (processingStatuses.includes(status)) {
-      return OrderStatus.SHIPPING;
-    }
-
-    const inTransitStatuses: ShipmentStatus[] = [
-      ShipmentStatus.PICKED,
-      ShipmentStatus.SHIPPING,
-      ShipmentStatus.IN_TRANSIT,
-      ShipmentStatus.DELIVERING,
-    ];
-    if (inTransitStatuses.includes(status)) {
-      return OrderStatus.SHIPPING;
-    }
-
-    if (status === ShipmentStatus.DELIVERY_FAILED) return current;
-    if (status === ShipmentStatus.RETURNING) return OrderStatus.RETURNING;
-    if (status === ShipmentStatus.RETURNED) return OrderStatus.RETURNED;
-    if (status === ShipmentStatus.CANCELLED) return current;
-
-    return current;
   }
 
   private buildShipmentPublicMessage(status: ShipmentStatus) {

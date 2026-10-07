@@ -33,10 +33,11 @@ export interface IGhnTrackingData {
 @Injectable()
 export class GhnMapper {
   mapStatus(status?: string | null): ShipmentStatus {
-    switch ((status || '').toLowerCase()) {
+    switch ((status || '').trim().toLowerCase()) {
       case 'ready_to_pick':
         return ShipmentStatus.READY_TO_PICK;
       case 'picking':
+      case 'money_collect_picking':
         return ShipmentStatus.PICKING;
       case 'picked':
         return ShipmentStatus.PICKED;
@@ -45,6 +46,7 @@ export class GhnMapper {
       case 'storing':
         return ShipmentStatus.IN_TRANSIT;
       case 'delivering':
+      case 'money_collect_delivering':
         return ShipmentStatus.DELIVERING;
       case 'delivered':
         return ShipmentStatus.DELIVERED;
@@ -68,7 +70,7 @@ export class GhnMapper {
       case 'cancelled':
         return ShipmentStatus.CANCELLED;
       default:
-        return ShipmentStatus.FAILED;
+        return ShipmentStatus.UNKNOWN;
     }
   }
 
@@ -144,6 +146,7 @@ export class GhnMapper {
       provider: ShippingProviderType.GHN,
       providerOrderCode: String(data.order_code ?? ''),
       status: ShipmentStatus.CREATED,
+      rawStatus: 'ready_to_pick',
       shippingFee: Number(data.total_fee ?? 0),
       expectedDeliveryTime: data.expected_delivery_time ? new Date(data.expected_delivery_time) : undefined,
       raw: response,

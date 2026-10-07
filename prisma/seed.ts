@@ -1,5 +1,5 @@
 import 'dotenv/config';
-import { PrismaClient, Role, UserTier, GarmentCategory, ProductStatus, CouponDiscountType } from '@prisma/client';
+import { PrismaClient, Role, UserTier, GarmentCategory, GarmentType, ProductStatus, CouponDiscountType } from '@prisma/client';
 import * as bcrypt from 'bcrypt';
 
 const prisma = new PrismaClient();
@@ -108,6 +108,7 @@ async function main() {
       name: 'Áo Sơ Mi Trắng Slim-Fit Công Sở',
       description: 'Áo sơ mi nam chất liệu cotton thoáng mát, đường may tinh tế phù hợp cho môi trường công sở.',
       category: GarmentCategory.UPPER,
+      garmentType: GarmentType.SHIRT,
       color: 'Trắng',
       price: 350000,
       garmentUrl: 'https://raw.githubusercontent.com/fashn-ai/fashn-python/main/examples/garments/shirt.jpg',
@@ -117,6 +118,7 @@ async function main() {
       name: 'Áo Blazer Nam Navy Blue Elegance',
       description: 'Áo khoác blazer phong cách Hàn Quốc trẻ trung, dễ phối đồ.',
       category: GarmentCategory.UPPER,
+      garmentType: GarmentType.JACKET,
       color: 'Xanh Navy',
       price: 1250000,
       garmentUrl: 'https://raw.githubusercontent.com/fashn-ai/fashn-python/main/examples/garments/blazer.jpg',
@@ -126,6 +128,7 @@ async function main() {
       name: 'Quần Tây Nam Khaki Dáng Suông',
       description: 'Quần tây tây vải tuýt cao cấp chống nhăn, tôn dáng.',
       category: GarmentCategory.LOWER,
+      garmentType: GarmentType.PANTS,
       color: 'Khaki',
       price: 490000,
       garmentUrl: 'https://raw.githubusercontent.com/fashn-ai/fashn-python/main/examples/garments/pants.jpg',
@@ -135,7 +138,12 @@ async function main() {
 
   for (const productData of sampleProducts) {
     const existing = await prisma.product.findFirst({ where: { name: productData.name } });
-    if (!existing) {
+    if (existing) {
+      await prisma.product.update({
+        where: { id: existing.id },
+        data: productData,
+      });
+    } else {
       await prisma.product.create({
         data: {
           ...productData,

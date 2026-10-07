@@ -54,6 +54,7 @@ export interface CreateShipmentResult {
   provider: ShippingProviderType;
   providerOrderCode: string;
   status: ShipmentStatus;
+  rawStatus?: string;
   shippingFee: number;
   expectedDeliveryTime?: Date;
   raw?: unknown;

@@ -1,19 +1,20 @@
 import { ApiProperty } from '@nestjs/swagger';
 import { OrderStatus } from '@prisma/client';
-import { IsEnum, IsNotEmpty, IsOptional, IsString } from 'class-validator';
+import { IsIn, IsNotEmpty, IsOptional, IsString } from 'class-validator';
+import { CANONICAL_ORDER_STATUSES } from '../constants/order-flow.constants';
 
 export class UpdateOrderStatusDto {
   @ApiProperty({
-    enum: OrderStatus,
+    enum: CANONICAL_ORDER_STATUSES,
     description: 'Trạng thái đơn hàng mới',
-    example: OrderStatus.CONFIRMED,
+    example: OrderStatus.PROCESSING,
   })
-  @IsEnum(OrderStatus)
+  @IsIn(CANONICAL_ORDER_STATUSES)
   @IsNotEmpty()
   status!: OrderStatus;
 
-  @ApiProperty({ enum: OrderStatus, required: false, description: 'Trạng thái hiện tại client đang thấy để chống ghi đè cạnh tranh' })
-  @IsEnum(OrderStatus)
+  @ApiProperty({ enum: CANONICAL_ORDER_STATUSES, required: false, description: 'Trạng thái hiện tại client đang thấy để chống ghi đè cạnh tranh' })
+  @IsIn(CANONICAL_ORDER_STATUSES)
   @IsOptional()
   expectedStatus?: OrderStatus;
 
