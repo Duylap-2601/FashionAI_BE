@@ -2,7 +2,7 @@ import { INestApplication } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import crypto from 'crypto';
 import request from 'supertest';
-import { OrderStatus, UserTier } from '@prisma/client';
+import { OrderStatus, PaymentStatus, UserTier } from '@prisma/client';
 import { PaymentsController } from '../../src/modules/payments/payments.controller';
 import { PaymentsService } from '../../src/modules/payments/payments.service';
 import { SubscriptionService } from '../../src/modules/payments/subscription.service';
@@ -34,7 +34,7 @@ describe('SePay IPN (e2e)', () => {
 
   beforeEach(async () => {
     prisma = createPrismaMock();
-    // processOrderSuccess chốt trạng thái bằng updateMany({..., status: PENDING}),
+    // processOrderSuccess chốt trạng thái bằng updateMany({..., status: CREATED, paymentStatus: PENDING}),
     // nên mock phải báo đúng 1 row được claim mới đi tiếp vào các bước ghi.
     prisma.order.updateMany.mockResolvedValue({ count: 1 });
 
@@ -79,7 +79,8 @@ describe('SePay IPN (e2e)', () => {
     userId: 'user-1',
     targetTier: null,
     amount: 350000,
-    status: OrderStatus.PENDING,
+    status: OrderStatus.CREATED,
+    paymentStatus: PaymentStatus.PENDING,
   };
 
   function orderPaidPayload(amount = 350000) {
@@ -127,7 +128,7 @@ describe('SePay IPN (e2e)', () => {
       .send(rawBody);
   }
 
-  it('đánh dấu đơn sản phẩm là PAID mà không đổi tier', async () => {
+  it('đánh dấu thanh toán đơn sản phẩm và chuyển sang PROCESSING mà không đổi tier', async () => {
     prisma.order.findUnique.mockResolvedValue(pendingProductOrder);
 
     const res = await post(orderPaidPayload()).expect(200);
@@ -204,10 +205,11 @@ describe('SePay IPN (e2e)', () => {
     expect(prisma.$transaction).not.toHaveBeenCalled();
   });
 
-  it('idempotent: đơn đã PAID không xử lý lại', async () => {
+  it('idempotent: đơn đã thanh toán không xử lý lại', async () => {
     prisma.order.findUnique.mockResolvedValue({
       ...pendingProductOrder,
-      status: OrderStatus.PAID,
+      status: OrderStatus.PROCESSING,
+      paymentStatus: PaymentStatus.PAID,
     });
 
     await post(orderPaidPayload()).expect(200);
@@ -291,7 +293,7 @@ describe('SePay IPN (e2e)', () => {
   });
 
   describe('mock-success (chỉ dùng ngoài production)', () => {
-    it('đánh dấu đơn PENDING là PAID', async () => {
+    it('đánh dấu đơn CREATED là PAID', async () => {
       prisma.order.findUnique.mockResolvedValue(pendingProductOrder);
 
       await request(app.getHttpServer())
