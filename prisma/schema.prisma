@@ -207,6 +207,7 @@ model User {
   liveTryOnPolicyAudits   LiveTryOnPolicyAudit[]
   addresses               UserAddress[]
   orderIdempotencyKeys    OrderIdempotencyKey[]
+  couponRedemptions       CouponRedemption[]
 
   @@map("users")
 }
@@ -357,19 +358,19 @@ model Product {
   status        ProductStatus   @default(ACTIVE)
   colors        Json? // [{ name: string, hex: string }]
   material      String?
-  avgRating     Decimal?        @default(0) @db.Decimal(2, 1) @map("avg_rating")
+  avgRating     Decimal?        @default(0) @map("avg_rating") @db.Decimal(2, 1)
   reviewCount   Int             @default(0) @map("review_count")
   createdAt     DateTime        @default(now()) @map("created_at")
   updatedAt     DateTime        @updatedAt @map("updated_at")
 
-  images         ProductImage[]
-  tryOnResults   TryOnResult[]
+  images            ProductImage[]
+  tryOnResults      TryOnResult[]
   liveTryOnSessions LiveTryOnSession[]
-  stylistResults StylistResult[]
-  orderItems     OrderItem[]
-  rackItems      RackItem[]
-  reviews        Review[]
-  collections    ProductCollection[]
+  stylistResults    StylistResult[]
+  orderItems        OrderItem[]
+  rackItems         RackItem[]
+  reviews           Review[]
+  collections       ProductCollection[]
 
   @@map("products")
 }
@@ -381,13 +382,13 @@ model Review {
   orderId   String   @map("order_id") @db.Uuid
   rating    Int
   comment   String?  @db.Text
-  images    Json?    // [{ url: string }]
+  images    Json? // [{ url: string }]
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
 
-  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
-  product Product @relation(fields: [productId], references: [id], onDelete: Cascade)
-  order   Order   @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  user    User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  product Product       @relation(fields: [productId], references: [id], onDelete: Cascade)
+  order   Order         @relation(fields: [orderId], references: [id], onDelete: Cascade)
   replies ReviewReply[]
 
   @@unique([userId, productId, orderId])
@@ -463,37 +464,37 @@ model TryOnResult {
 }
 
 model LiveTryOnSession {
-  id                  String                     @id @default(uuid()) @db.Uuid
-  userId              String                     @map("user_id") @db.Uuid
-  productId           String                     @map("product_id") @db.Uuid
-  model               String
-  transport           String                     @default("direct")
-  status              LiveTryOnSessionStatus     @default(ACTIVE)
-  credentialStatus    LiveTryOnCredentialStatus  @default(ISSUING) @map("credential_status")
-  reservationStatus   LiveTryOnReservationStatus @default(RESERVED) @map("reservation_status")
-  idempotencyKey      String                     @map("idempotency_key")
-  idempotencyBodyHash String                     @map("idempotency_body_hash")
-  quotaDate           String                     @map("quota_date")
-  reservedSeconds     Int                        @map("reserved_seconds")
-  allocatedSeconds    Int                        @default(0) @map("allocated_seconds")
-  usedSeconds         Int                        @default(0) @map("used_seconds")
-  tier                UserTier                   @default(FREE)
-  policyVersion       String                     @map("policy_version")
-  rateCreditsPerSecond Int                       @map("rate_credits_per_second")
-  tokenExpiresAt      DateTime?                  @map("token_expires_at")
-  issuedAt            DateTime?                  @map("issued_at")
-  activeStartedAt     DateTime?                  @map("active_started_at")
-  pausedAt            DateTime?                  @map("paused_at")
-  pauseExpiresAt      DateTime?                  @map("pause_expires_at")
-  blockedUntil        DateTime                   @map("blocked_until")
-  clientEndedAt       DateTime?                  @map("client_ended_at")
-  endedReason         String?                    @map("ended_reason")
-  providerSessionId   String?                    @map("provider_session_id")
-  providerMetadata    Json?                      @map("provider_metadata")
-  revision            Int                        @default(1)
-  createdAt           DateTime                   @default(now()) @map("created_at")
-  updatedAt           DateTime                   @updatedAt @map("updated_at")
-  lease               LiveTryOnLease?
+  id                   String                     @id @default(uuid()) @db.Uuid
+  userId               String                     @map("user_id") @db.Uuid
+  productId            String                     @map("product_id") @db.Uuid
+  model                String
+  transport            String                     @default("direct")
+  status               LiveTryOnSessionStatus     @default(ACTIVE)
+  credentialStatus     LiveTryOnCredentialStatus  @default(ISSUING) @map("credential_status")
+  reservationStatus    LiveTryOnReservationStatus @default(RESERVED) @map("reservation_status")
+  idempotencyKey       String                     @map("idempotency_key")
+  idempotencyBodyHash  String                     @map("idempotency_body_hash")
+  quotaDate            String                     @map("quota_date")
+  reservedSeconds      Int                        @map("reserved_seconds")
+  allocatedSeconds     Int                        @default(0) @map("allocated_seconds")
+  usedSeconds          Int                        @default(0) @map("used_seconds")
+  tier                 UserTier                   @default(FREE)
+  policyVersion        String                     @map("policy_version")
+  rateCreditsPerSecond Int                        @map("rate_credits_per_second")
+  tokenExpiresAt       DateTime?                  @map("token_expires_at")
+  issuedAt             DateTime?                  @map("issued_at")
+  activeStartedAt      DateTime?                  @map("active_started_at")
+  pausedAt             DateTime?                  @map("paused_at")
+  pauseExpiresAt       DateTime?                  @map("pause_expires_at")
+  blockedUntil         DateTime                   @map("blocked_until")
+  clientEndedAt        DateTime?                  @map("client_ended_at")
+  endedReason          String?                    @map("ended_reason")
+  providerSessionId    String?                    @map("provider_session_id")
+  providerMetadata     Json?                      @map("provider_metadata")
+  revision             Int                        @default(1)
+  createdAt            DateTime                   @default(now()) @map("created_at")
+  updatedAt            DateTime                   @updatedAt @map("updated_at")
+  lease                LiveTryOnLease?
 
   user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
   product Product @relation(fields: [productId], references: [id], onDelete: Restrict)
@@ -531,7 +532,7 @@ model LiveTryOnLease {
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
 
-  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user    User             @relation(fields: [userId], references: [id], onDelete: Cascade)
   session LiveTryOnSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
 
   @@index([expiresAt])
@@ -584,47 +585,48 @@ model StylistResult {
 }
 
 model Order {
-  id                String      @id @default(uuid()) @db.Uuid
-  orderCode         Int         @unique @map("order_code")
-  userId            String      @map("user_id") @db.Uuid
-  targetTier        UserTier?   @map("target_tier")
-  amount            Decimal     @db.Decimal(10, 2)
-  itemsSubtotalVnd  BigInt?     @map("items_subtotal_vnd")
-  shippingFeeVnd    BigInt?     @map("shipping_fee_vnd")
-  discountVnd       BigInt?     @map("discount_vnd")
-  taxVnd            BigInt?     @default(0) @map("tax_vnd")
-  totalVnd          BigInt?     @map("total_vnd")
-  amountPaidVnd     BigInt      @default(0) @map("amount_paid_vnd")
-  amountRefundedVnd BigInt      @default(0) @map("amount_refunded_vnd")
-  currency          String      @default("VND")
-  status            OrderStatus @default(PENDING)
-  shippingInfo      Json?       @map("shipping_info")
-  shippingAddressSnapshot Json?  @map("shipping_address_snapshot")
-  shippingQuoteSnapshot   Json?  @map("shipping_quote_snapshot")
-  prorationSnapshot       Json?  @map("proration_snapshot")
-  paymentMethod     String?     @map("payment_method")
-  paymentProvider   String?     @map("payment_provider")
-  checkoutUrl       String?     @map("checkout_url")
-  checkoutExpiresAt DateTime?   @map("checkout_expires_at")
-  shippingFee       Decimal?    @map("shipping_fee") @db.Decimal(10, 2)
-  discountAmount    Decimal?    @map("discount_amount") @db.Decimal(10, 2)
-  couponCode        String?     @map("coupon_code")
-  fulfillmentFlowVersion Int?    @map("fulfillment_flow_version")
-  paymentStatus     PaymentStatus? @map("payment_status")
-  refundStatus      RefundStatus @default(NONE) @map("refund_status")
-  refundEvidence    Json?       @map("refund_evidence")
-  createdAt         DateTime    @default(now()) @map("created_at")
-  updatedAt         DateTime    @updatedAt @map("updated_at")
+  id                      String         @id @default(uuid()) @db.Uuid
+  orderCode               Int            @unique @map("order_code")
+  userId                  String         @map("user_id") @db.Uuid
+  targetTier              UserTier?      @map("target_tier")
+  amount                  Decimal        @db.Decimal(10, 2)
+  itemsSubtotalVnd        BigInt?        @map("items_subtotal_vnd")
+  shippingFeeVnd          BigInt?        @map("shipping_fee_vnd")
+  discountVnd             BigInt?        @map("discount_vnd")
+  taxVnd                  BigInt?        @default(0) @map("tax_vnd")
+  totalVnd                BigInt?        @map("total_vnd")
+  amountPaidVnd           BigInt         @default(0) @map("amount_paid_vnd")
+  amountRefundedVnd       BigInt         @default(0) @map("amount_refunded_vnd")
+  currency                String         @default("VND")
+  status                  OrderStatus    @default(PENDING)
+  shippingInfo            Json?          @map("shipping_info")
+  shippingAddressSnapshot Json?          @map("shipping_address_snapshot")
+  shippingQuoteSnapshot   Json?          @map("shipping_quote_snapshot")
+  prorationSnapshot       Json?          @map("proration_snapshot")
+  paymentMethod           String?        @map("payment_method")
+  paymentProvider         String?        @map("payment_provider")
+  checkoutUrl             String?        @map("checkout_url")
+  checkoutExpiresAt       DateTime?      @map("checkout_expires_at")
+  shippingFee             Decimal?       @map("shipping_fee") @db.Decimal(10, 2)
+  discountAmount          Decimal?       @map("discount_amount") @db.Decimal(10, 2)
+  couponCode              String?        @map("coupon_code")
+  fulfillmentFlowVersion  Int?           @map("fulfillment_flow_version")
+  paymentStatus           PaymentStatus? @map("payment_status")
+  refundStatus            RefundStatus   @default(NONE) @map("refund_status")
+  refundEvidence          Json?          @map("refund_evidence")
+  createdAt               DateTime       @default(now()) @map("created_at")
+  updatedAt               DateTime       @updatedAt @map("updated_at")
 
-  user          User           @relation(fields: [userId], references: [id], onDelete: Cascade)
-  payments      Payment[]
-  refunds       Refund[]
-  items         OrderItem[]
-  subscriptions Subscription[]
-  reviews       Review[]
-  shipments     Shipment[]
-  events        OrderEvent[]
-  idempotencyKeys OrderIdempotencyKey[]
+  user             User                  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  payments         Payment[]
+  refunds          Refund[]
+  items            OrderItem[]
+  subscriptions    Subscription[]
+  reviews          Review[]
+  shipments        Shipment[]
+  events           OrderEvent[]
+  idempotencyKeys  OrderIdempotencyKey[]
+  couponRedemption CouponRedemption?
 
   @@index([userId])
   @@index([userId, createdAt])
@@ -634,24 +636,65 @@ model Order {
   @@map("orders")
 }
 
+enum CouponDiscountType {
+  PERCENTAGE
+  FIXED_AMOUNT
+}
+
+model Coupon {
+  id                String             @id @default(uuid()) @db.Uuid
+  code              String             @unique
+  discountType      CouponDiscountType @map("discount_type")
+  discountValue     Decimal            @map("discount_value") @db.Decimal(10, 2)
+  maxDiscountVnd    BigInt?            @map("max_discount_vnd")
+  minOrderVnd       BigInt?            @map("min_order_vnd")
+  usageLimit        Int?               @map("usage_limit")
+  usageLimitPerUser Int?               @map("usage_limit_per_user")
+  usedCount         Int                @default(0) @map("used_count")
+  isActive          Boolean            @default(true) @map("is_active")
+  startsAt          DateTime?          @map("starts_at")
+  expiresAt         DateTime?          @map("expires_at")
+  createdAt         DateTime           @default(now()) @map("created_at")
+  updatedAt         DateTime           @updatedAt @map("updated_at")
+
+  redemptions CouponRedemption[]
+
+  @@map("coupons")
+}
+
+model CouponRedemption {
+  id        String   @id @default(uuid()) @db.Uuid
+  couponId  String   @map("coupon_id") @db.Uuid
+  userId    String   @map("user_id") @db.Uuid
+  orderId   String   @unique @map("order_id") @db.Uuid
+  createdAt DateTime @default(now()) @map("created_at")
+
+  coupon Coupon @relation(fields: [couponId], references: [id], onDelete: Restrict)
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  order  Order  @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  @@index([couponId, userId])
+  @@map("coupon_redemptions")
+}
+
 model OrderItem {
-  id                  String   @id @default(uuid()) @db.Uuid
-  orderId             String   @map("order_id") @db.Uuid
-  productId           String   @map("product_id") @db.Uuid
-  quantity            Int      @default(1)
-  color               String?
-  measurementSnapshot Json?    @map("measurement_snapshot")
-  productNameSnapshot String?  @map("product_name_snapshot")
-  productSkuSnapshot  String?  @map("product_sku_snapshot")
-  productImageSnapshot String? @map("product_image_snapshot")
-  productCategorySnapshot String? @map("product_category_snapshot")
-  brandSnapshot       String?  @map("brand_snapshot")
-  fabricSnapshot      String?  @map("fabric_snapshot")
-  measurementReview   Json?    @map("measurement_review")
-  price               Decimal  @db.Decimal(10, 2)
-  unitPriceVnd        BigInt?  @map("unit_price_vnd")
-  lineTotalVnd        BigInt?  @map("line_total_vnd")
-  createdAt           DateTime @default(now()) @map("created_at")
+  id                      String   @id @default(uuid()) @db.Uuid
+  orderId                 String   @map("order_id") @db.Uuid
+  productId               String   @map("product_id") @db.Uuid
+  quantity                Int      @default(1)
+  color                   String?
+  measurementSnapshot     Json?    @map("measurement_snapshot")
+  productNameSnapshot     String?  @map("product_name_snapshot")
+  productSkuSnapshot      String?  @map("product_sku_snapshot")
+  productImageSnapshot    String?  @map("product_image_snapshot")
+  productCategorySnapshot String?  @map("product_category_snapshot")
+  brandSnapshot           String?  @map("brand_snapshot")
+  fabricSnapshot          String?  @map("fabric_snapshot")
+  measurementReview       Json?    @map("measurement_review")
+  price                   Decimal  @db.Decimal(10, 2)
+  unitPriceVnd            BigInt?  @map("unit_price_vnd")
+  lineTotalVnd            BigInt?  @map("line_total_vnd")
+  createdAt               DateTime @default(now()) @map("created_at")
 
   order   Order   @relation(fields: [orderId], references: [id], onDelete: Cascade)
   product Product @relation(fields: [productId], references: [id], onDelete: Restrict)
@@ -724,24 +767,24 @@ model WebhookEvent {
 }
 
 model OrderEvent {
-  id               String       @id @default(uuid()) @db.Uuid
-  orderId          String       @map("order_id") @db.Uuid
-  shipmentId       String?      @map("shipment_id") @db.Uuid
-  type             String
-  fromStatus       OrderStatus? @map("from_status")
-  toStatus         OrderStatus? @map("to_status")
-  fromPaymentStatus PaymentStatus? @map("from_payment_status")
-  toPaymentStatus   PaymentStatus? @map("to_payment_status")
+  id                 String          @id @default(uuid()) @db.Uuid
+  orderId            String          @map("order_id") @db.Uuid
+  shipmentId         String?         @map("shipment_id") @db.Uuid
+  type               String
+  fromStatus         OrderStatus?    @map("from_status")
+  toStatus           OrderStatus?    @map("to_status")
+  fromPaymentStatus  PaymentStatus?  @map("from_payment_status")
+  toPaymentStatus    PaymentStatus?  @map("to_payment_status")
   fromShipmentStatus ShipmentStatus? @map("from_shipment_status")
   toShipmentStatus   ShipmentStatus? @map("to_shipment_status")
-  source           String
-  actorId          String?      @map("actor_id") @db.Uuid
-  occurredAt       DateTime     @default(now()) @map("occurred_at")
-  recordedAt       DateTime     @default(now()) @map("recorded_at")
-  deduplicationKey String?      @unique @map("deduplication_key")
-  publicMessage    String?      @map("public_message") @db.Text
-  internalNote     String?      @map("internal_note") @db.Text
-  metadata         Json?
+  source             String
+  actorId            String?         @map("actor_id") @db.Uuid
+  occurredAt         DateTime        @default(now()) @map("occurred_at")
+  recordedAt         DateTime        @default(now()) @map("recorded_at")
+  deduplicationKey   String?         @unique @map("deduplication_key")
+  publicMessage      String?         @map("public_message") @db.Text
+  internalNote       String?         @map("internal_note") @db.Text
+  metadata           Json?
 
   order    Order     @relation(fields: [orderId], references: [id], onDelete: Cascade)
   shipment Shipment? @relation(fields: [shipmentId], references: [id], onDelete: SetNull)
@@ -751,24 +794,24 @@ model OrderEvent {
 }
 
 model Payment {
-  id                 String        @id @default(uuid()) @db.Uuid
-  orderId            String        @map("order_id") @db.Uuid
-  method             String?       @map("method")
-  provider           String        @default("SEPAY")
-  transactionId      String?       @map("transaction_id")
-  providerPaymentId  String?       @map("provider_payment_id")
-  status             PaymentStatus @default(PENDING)
-  amountVnd          BigInt?       @map("amount_vnd")
-  currency           String        @default("VND")
-  paidAt             DateTime?     @map("paid_at")
-  failedAt           DateTime?     @map("failed_at")
-  refundedAt         DateTime?     @map("refunded_at")
-  expiresAt          DateTime?     @map("expires_at")
-  failureReason      String?       @map("failure_reason") @db.Text
-  idempotencyKey     String?       @unique @map("idempotency_key")
-  paymentData        Json?         @map("payment_data")
-  createdAt          DateTime      @default(now()) @map("created_at")
-  updatedAt          DateTime      @updatedAt @map("updated_at")
+  id                String        @id @default(uuid()) @db.Uuid
+  orderId           String        @map("order_id") @db.Uuid
+  method            String?       @map("method")
+  provider          String        @default("SEPAY")
+  transactionId     String?       @map("transaction_id")
+  providerPaymentId String?       @map("provider_payment_id")
+  status            PaymentStatus @default(PENDING)
+  amountVnd         BigInt?       @map("amount_vnd")
+  currency          String        @default("VND")
+  paidAt            DateTime?     @map("paid_at")
+  failedAt          DateTime?     @map("failed_at")
+  refundedAt        DateTime?     @map("refunded_at")
+  expiresAt         DateTime?     @map("expires_at")
+  failureReason     String?       @map("failure_reason") @db.Text
+  idempotencyKey    String?       @unique @map("idempotency_key")
+  paymentData       Json?         @map("payment_data")
+  createdAt         DateTime      @default(now()) @map("created_at")
+  updatedAt         DateTime      @updatedAt @map("updated_at")
 
   order   Order    @relation(fields: [orderId], references: [id], onDelete: Cascade)
   refunds Refund[]
@@ -938,15 +981,15 @@ model Subscription {
 }
 
 model Collection {
-  id            String   @id @default(uuid()) @db.Uuid
-  name          String   @unique
-  slug          String   @unique
-  description   String?  @db.Text
-  coverImages   String[] // Array of Cloudinary URLs (3 items for hero banner)
-  isPublished   Boolean  @default(false) @map("is_published")
-  displayOrder  Int      @default(0) @map("display_order")
-  createdAt     DateTime @default(now()) @map("created_at")
-  updatedAt     DateTime @updatedAt @map("updated_at")
+  id           String   @id @default(uuid()) @db.Uuid
+  name         String   @unique
+  slug         String   @unique
+  description  String?  @db.Text
+  coverImages  String[] // Array of Cloudinary URLs (3 items for hero banner)
+  isPublished  Boolean  @default(false) @map("is_published")
+  displayOrder Int      @default(0) @map("display_order")
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
 
   products ProductCollection[]
 
@@ -956,8 +999,8 @@ model Collection {
 }
 
 model ProductCollection {
-  collectionId String @map("collection_id") @db.Uuid
-  productId    String @map("product_id") @db.Uuid
+  collectionId String     @map("collection_id") @db.Uuid
+  productId    String     @map("product_id") @db.Uuid
   collection   Collection @relation(fields: [collectionId], references: [id], onDelete: Cascade)
   product      Product    @relation(fields: [productId], references: [id], onDelete: Cascade)
 

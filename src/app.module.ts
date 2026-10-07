@@ -23,6 +23,7 @@ import { RealtimeModule } from './modules/realtime/realtime.module';
 import { NotificationModule } from './modules/notification/notification.module';
 import { RackModule } from './modules/rack/rack.module';
 import { CollectionsModule } from './modules/collections/collections.module';
+import { CouponsModule } from './modules/coupons/coupons.module';
 import { ShippingModule } from './modules/shipping/shipping.module';
 import { OutboxModule } from './modules/outbox/outbox.module';
 import { RequestIdMiddleware } from './common/middleware/request-id.middleware';
@@ -97,6 +98,7 @@ import { parseRedisUrl } from './common/redis/redis-url.util';
     NotificationModule,
     RackModule,
     CollectionsModule,
+    CouponsModule,
     ShippingModule,
     OutboxModule,
   ],

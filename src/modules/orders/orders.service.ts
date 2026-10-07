@@ -4,7 +4,7 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-import { GarmentType, NotificationType, OrderStatus, PaymentStatus, Prisma, Product, RefundStatus, Role, ShipmentStatus } from '@prisma/client';
+import { CouponDiscountType, GarmentType, NotificationType, OrderStatus, PaymentStatus, Prisma, Product, RefundStatus, Role, ShipmentStatus } from '@prisma/client';
 import { createHash, createHmac, timingSafeEqual } from 'crypto';
 import { PrismaService } from '../../database/prisma.service';
 import { MailQueueService } from '../mail/mail-queue.service';
@@ -21,6 +21,7 @@ import {
   UUID_REGEX,
 } from './constants/order-flow.constants';
 import { CreateMeasurementReviewDto, UpdateItemMeasurementDto } from './dto/measurement-review.dto';
+import { QueryAdminOrdersDto } from './dto/query-admin-orders.dto';
 import { RefundOrderDto } from './dto/refund-order.dto';
 import { CancelShipmentDto, CreateShipmentDto } from './dto/shipment.dto';
 import { ShippingProviderType } from '../shipping/constants/shipping-provider.enum';
@@ -75,7 +76,7 @@ export class OrdersService {
   async quote(userId: string, dto: CreateOrderDto) {
     const resolvedDto = await this.resolveOrderAddress(userId, dto);
     const products = await this.getActiveOrderProducts(dto);
-    const pricing = await this.buildOrderPricing(resolvedDto, products);
+    const pricing = await this.buildOrderPricing(resolvedDto, products, userId);
     const fingerprint = this.buildOrderFingerprint(userId, resolvedDto);
     const quoteToken = this.signQuote({
       userId,
@@ -160,8 +161,8 @@ export class OrdersService {
 
     // Luôn dùng giá trong DB, KHÔNG tin item.price do client gửi lên, tránh gian
     // lận giá (client không thể tự đặt giá sản phẩm).
-    const { itemsTotal, shippingFee, discountAmount, total, couponCode, shippingQuote } =
-      await this.buildOrderPricing(resolvedDto, products);
+    const { itemsTotal, shippingFee, discountAmount, total, couponCode, couponId, shippingQuote } =
+      await this.buildOrderPricing(resolvedDto, products, userId);
 
     if (dto.quoteToken) {
       this.assertQuoteToken(dto.quoteToken, userId, requestFingerprint, total);
@@ -270,6 +271,16 @@ export class OrdersService {
             where: { userId_key: { userId, key: dto.idempotencyKey } },
             create: { userId, key: dto.idempotencyKey, fingerprint: requestFingerprint, orderId: created.id },
             update: { orderId: created.id },
+          });
+        }
+
+        if (couponId) {
+          await tx.couponRedemption.create({
+            data: { couponId, userId, orderId: created.id },
+          });
+          await tx.coupon.update({
+            where: { id: couponId },
+            data: { usedCount: { increment: 1 } },
           });
         }
 
@@ -411,11 +422,44 @@ export class OrdersService {
     return this.findOne(userId, order.id);
   }
 
-  async findAllAdmin(page = 1, limit = 20) {
+  async findAllAdmin(query: QueryAdminOrdersDto) {
+    const page = query.page ?? 1;
+    const limit = query.limit ?? 20;
     const skip = (page - 1) * limit;
+
+    const andFilters: Prisma.OrderWhereInput[] = [];
+
+    if (query.status) {
+      andFilters.push({ status: query.status });
+    }
+    if (query.paymentStatus) {
+      andFilters.push({ paymentStatus: query.paymentStatus });
+    }
+    if (query.fromDate || query.toDate) {
+      andFilters.push({
+        createdAt: {
+          ...(query.fromDate ? { gte: new Date(query.fromDate) } : {}),
+          ...(query.toDate ? { lte: new Date(query.toDate) } : {}),
+        },
+      });
+    }
+    if (query.search?.trim()) {
+      const search = query.search.trim();
+      const orderCode = Number(search.replace(/^ORD-/i, ''));
+      andFilters.push({
+        OR: [
+          ...(Number.isInteger(orderCode) && orderCode > 0 && orderCode <= MAX_INT4 ? [{ orderCode }] : []),
+          { user: { name: { contains: search, mode: Prisma.QueryMode.insensitive } } },
+          { user: { email: { contains: search, mode: Prisma.QueryMode.insensitive } } },
+        ],
+      });
+    }
+
+    const where: Prisma.OrderWhereInput = andFilters.length > 0 ? { AND: andFilters } : {};
 
     const [items, total] = await Promise.all([
       this.prisma.order.findMany({
+        where,
         skip,
         take: limit,
         orderBy: { createdAt: 'desc' },
@@ -426,7 +470,7 @@ export class OrdersService {
           },
         },
       }),
-      this.prisma.order.count(),
+      this.prisma.order.count({ where }),
     ]);
 
     return {
@@ -885,7 +929,7 @@ export class OrdersService {
     return products;
   }
 
-  private async buildOrderPricing(dto: ResolvedCreateOrderDto, products: IOrderProduct[]) {
+  private async buildOrderPricing(dto: ResolvedCreateOrderDto, products: IOrderProduct[], userId: string) {
     const productMap = new Map(products.map((product) => [product.id, product]));
     const itemsTotal = dto.items.reduce((sum, item) => {
       const product = productMap.get(item.productId)!;
@@ -893,7 +937,7 @@ export class OrdersService {
     }, 0);
     const shippingQuote = await this.calculateOrderShippingFee(dto, itemsTotal);
     const shippingFee = shippingQuote.totalFee;
-    const discountAmount = this.resolveDiscountAmount(dto.couponCode, itemsTotal);
+    const { discountAmount, couponId, couponCode } = await this.resolveDiscountAmount(dto.couponCode, itemsTotal, userId);
 
     if (discountAmount > itemsTotal + shippingFee) {
       throw new BadRequestException('Discount amount exceeds order amount');
@@ -908,7 +952,8 @@ export class OrdersService {
       itemsTotal,
       shippingFee,
       discountAmount,
-      couponCode: discountAmount > 0 ? dto.couponCode?.trim().toUpperCase() : undefined,
+      couponId,
+      couponCode: discountAmount > 0 ? couponCode : undefined,
       total,
       shippingQuote: {
         provider: shippingQuote.provider,
@@ -944,20 +989,55 @@ export class OrdersService {
     });
   }
 
-  private resolveDiscountAmount(couponCode: string | undefined, itemsTotal: number) {
+  private async resolveDiscountAmount(
+    couponCode: string | undefined,
+    itemsTotal: number,
+    userId: string,
+  ): Promise<{ discountAmount: number; couponId: string | null; couponCode?: string }> {
     const code = couponCode?.trim().toUpperCase();
-    if (!code) return 0;
+    if (!code) return { discountAmount: 0, couponId: null };
 
-    switch (code) {
-      case 'WELCOME':
-        return Math.min(100000, itemsTotal);
-      case 'STALE10':
-        return Math.round(itemsTotal * 0.1);
-      case 'FASHIONAI':
-        return Math.min(150000, itemsTotal);
-      default:
-        throw new BadRequestException('Coupon code is invalid or expired');
+    const coupon = await this.prisma.coupon.findUnique({ where: { code } });
+    if (!coupon) {
+      throw new BadRequestException('Mã giảm giá không tồn tại');
     }
+    if (!coupon.isActive) {
+      throw new BadRequestException('Mã giảm giá đã bị tắt');
+    }
+
+    const now = new Date();
+    if (coupon.startsAt && coupon.startsAt > now) {
+      throw new BadRequestException('Mã giảm giá chưa đến thời gian áp dụng');
+    }
+    if (coupon.expiresAt && coupon.expiresAt < now) {
+      throw new BadRequestException('Mã giảm giá đã hết hạn');
+    }
+    if (coupon.minOrderVnd !== null && itemsTotal < Number(coupon.minOrderVnd)) {
+      throw new BadRequestException('Đơn hàng chưa đạt giá trị tối thiểu để áp mã này');
+    }
+    if (coupon.usageLimit !== null && coupon.usedCount >= coupon.usageLimit) {
+      throw new BadRequestException('Mã giảm giá đã hết lượt sử dụng');
+    }
+    if (coupon.usageLimitPerUser !== null) {
+      const usedByUser = await this.prisma.couponRedemption.count({
+        where: { couponId: coupon.id, userId },
+      });
+      if (usedByUser >= coupon.usageLimitPerUser) {
+        throw new BadRequestException('Bạn đã sử dụng hết số lượt cho phép của mã giảm giá này');
+      }
+    }
+
+    let discountAmount: number;
+    if (coupon.discountType === CouponDiscountType.PERCENTAGE) {
+      discountAmount = Math.round((itemsTotal * Number(coupon.discountValue)) / 100);
+      if (coupon.maxDiscountVnd !== null) {
+        discountAmount = Math.min(discountAmount, Number(coupon.maxDiscountVnd));
+      }
+    } else {
+      discountAmount = Math.min(Number(coupon.discountValue), itemsTotal);
+    }
+
+    return { discountAmount, couponId: coupon.id, couponCode: coupon.code };
   }
 
   private toVnd(amount: number) {
@@ -1020,6 +1100,7 @@ export class OrdersService {
         },
       },
       payments: true,
+      refunds: true,
       shipments: { orderBy: { createdAt: 'desc' } },
       events: { orderBy: { occurredAt: 'asc' } },
     } satisfies Prisma.OrderInclude;
@@ -1144,6 +1225,17 @@ export class OrdersService {
       shippingFee: order.shippingFee === null || order.shippingFee === undefined ? null : Number(order.shippingFee),
       discountAmount: order.discountAmount === null || order.discountAmount === undefined ? null : Number(order.discountAmount),
       couponCode: order.couponCode,
+      currency: order.currency,
+      itemsSubtotalVnd: order.itemsSubtotalVnd === null || order.itemsSubtotalVnd === undefined ? null : Number(order.itemsSubtotalVnd),
+      shippingFeeVnd: order.shippingFeeVnd === null || order.shippingFeeVnd === undefined ? null : Number(order.shippingFeeVnd),
+      discountVnd: order.discountVnd === null || order.discountVnd === undefined ? null : Number(order.discountVnd),
+      taxVnd: order.taxVnd === null || order.taxVnd === undefined ? null : Number(order.taxVnd),
+      totalVnd: order.totalVnd === null || order.totalVnd === undefined ? null : Number(order.totalVnd),
+      amountPaidVnd: Number(order.amountPaidVnd),
+      amountRefundedVnd: Number(order.amountRefundedVnd),
+      shippingAddressSnapshot: order.shippingAddressSnapshot,
+      shippingQuoteSnapshot: order.shippingQuoteSnapshot,
+      refundEvidence: order.refundEvidence,
       checkoutUrl: order.checkoutUrl,
       checkoutExpiresAt: order.checkoutExpiresAt,
       createdAt: order.createdAt,
@@ -1157,15 +1249,34 @@ export class OrdersService {
         measurementDisplay: this.buildMeasurementDisplay(item),
         measurementReview: item.measurementReview,
         productNameSnapshot: item.productNameSnapshot,
+        productSkuSnapshot: item.productSkuSnapshot,
+        productImageSnapshot: item.productImageSnapshot,
+        productCategorySnapshot: item.productCategorySnapshot,
+        brandSnapshot: item.brandSnapshot,
         fabricSnapshot: item.fabricSnapshot,
         price: Number(item.price),
+        unitPriceVnd: item.unitPriceVnd === null || item.unitPriceVnd === undefined ? null : Number(item.unitPriceVnd),
+        lineTotalVnd: item.lineTotalVnd === null || item.lineTotalVnd === undefined ? null : Number(item.lineTotalVnd),
         product: item.product,
       })),
       payments: (order.payments ?? []).map((payment) => ({
         id: payment.id,
         provider: payment.provider,
         transactionId: payment.transactionId,
+        status: payment.status,
+        amountVnd: payment.amountVnd === null || payment.amountVnd === undefined ? null : Number(payment.amountVnd),
         createdAt: payment.createdAt,
+      })),
+      refunds: (order.refunds ?? []).map((refund) => ({
+        id: refund.id,
+        paymentId: refund.paymentId,
+        provider: refund.provider,
+        amountVnd: Number(refund.amountVnd),
+        reason: refund.reason,
+        status: refund.status,
+        requestedAt: refund.requestedAt,
+        processedAt: refund.processedAt,
+        failedReason: refund.failedReason,
       })),
       shipment: (order.shipments ?? [])[0]
         ? {

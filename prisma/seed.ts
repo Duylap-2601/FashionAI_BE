@@ -1,5 +1,5 @@
 import 'dotenv/config';
-import { PrismaClient, Role, UserTier, GarmentCategory, ProductStatus } from '@prisma/client';
+import { PrismaClient, Role, UserTier, GarmentCategory, ProductStatus, CouponDiscountType } from '@prisma/client';
 import * as bcrypt from 'bcrypt';
 
 const prisma = new PrismaClient();
@@ -148,6 +148,34 @@ async function main() {
   }
 
   console.log('✅ Sample garment products seeded successfully.');
+
+  // Create legacy demo coupons (giữ nguyên hành vi của switch hardcode cũ)
+  const sampleCoupons = [
+    {
+      code: 'WELCOME',
+      discountType: CouponDiscountType.FIXED_AMOUNT,
+      discountValue: 100000,
+    },
+    {
+      code: 'STALE10',
+      discountType: CouponDiscountType.PERCENTAGE,
+      discountValue: 10,
+    },
+    {
+      code: 'FASHIONAI',
+      discountType: CouponDiscountType.FIXED_AMOUNT,
+      discountValue: 150000,
+    },
+  ];
+
+  for (const couponData of sampleCoupons) {
+    await prisma.coupon.upsert({
+      where: { code: couponData.code },
+      update: {},
+      create: couponData,
+    });
+  }
+  console.log('✅ Demo coupons seeded successfully.');
 }
 
 main()
