@@ -553,12 +553,12 @@ export class OrdersService {
       throw new BadRequestException('Trạng thái này phải do thanh toán hoặc vận chuyển đã xác minh cập nhật.');
     }
 
-    if (isNewFlow && status === OrderStatus.PROCESSING && order.status === OrderStatus.MEASUREMENT_REVIEW) {
+    if (isNewFlow && status === OrderStatus.MEASUREMENT_CONFIRMED && order.status === OrderStatus.MEASUREMENT_REVIEW) {
       await this.assertNoOpenMeasurementReviews(order.id);
     }
 
     await this.prisma.$transaction(async (tx) => {
-      if (isNewFlow && status === OrderStatus.PROCESSING && order.status === OrderStatus.MEASUREMENT_REVIEW) {
+      if (isNewFlow && status === OrderStatus.MEASUREMENT_CONFIRMED && order.status === OrderStatus.MEASUREMENT_REVIEW) {
         await this.resolveSubmittedMeasurementReviews(tx, order.id);
       }
       await tx.order.update({
@@ -715,12 +715,8 @@ export class OrdersService {
   async createShipment(id: string, dto: CreateShipmentDto, actorId: string) {
     const order = await this.findOrderByIdentifier(id);
     if (!order) throw new NotFoundException(`Không tìm thấy đơn hàng có ID ${id}`);
-    const shipmentCreatableStatuses: OrderStatus[] = [OrderStatus.PROCESSING, OrderStatus.READY_TO_SHIP];
-    if (order.fulfillmentFlowVersion !== 1 || !shipmentCreatableStatuses.includes(order.status) || order.paymentStatus !== PaymentStatus.PAID) {
-      throw new BadRequestException('Chỉ tạo vận đơn cho đơn may đo PROCESSING/READY_TO_SHIP đã thanh toán.');
-    }
-    if (order.status === OrderStatus.PROCESSING) {
-      await this.assertNoOpenMeasurementReviews(order.id);
+    if (order.fulfillmentFlowVersion !== 1 || order.status !== OrderStatus.READY_TO_SHIP || order.paymentStatus !== PaymentStatus.PAID) {
+      throw new BadRequestException('Chỉ tạo vận đơn cho đơn may đo READY_TO_SHIP đã thanh toán.');
     }
 
     const requestKey = dto.requestKey ?? `order:${order.id}:shipment:${order.updatedAt.getTime()}`;
@@ -728,7 +724,7 @@ export class OrdersService {
       where: { orderId: order.id, status: { notIn: [ShipmentStatus.DELIVERED, ShipmentStatus.RETURNED, ShipmentStatus.CANCELLED] } },
     });
     if (existingShipment?.providerOrderCode) {
-      return { shipment: existingShipment, order: await this.findOne(order.userId, order.id) };
+      return { shipment: this.toPublicShipment(existingShipment), order: await this.findOne(order.userId, order.id) };
     }
 
     const pendingShipment = existingShipment ?? await this.prisma.shipment.create({
@@ -760,14 +756,11 @@ export class OrdersService {
           lastSyncedAt: new Date(),
         },
       });
-      if (order.status === OrderStatus.PROCESSING) {
-        await tx.order.update({ where: { id: order.id }, data: { status: OrderStatus.READY_TO_SHIP } });
-      }
       await this.createOrderEvent(tx, { orderId: order.id, shipmentId: created.id, type: 'SHIPMENT_CREATED', source: 'ADMIN', actorId, fromStatus: order.status, toStatus: OrderStatus.READY_TO_SHIP, fromShipmentStatus: pendingShipment.status, toShipmentStatus: result.status, publicMessage: 'Vận đơn đã được tạo và đang chờ đơn vị vận chuyển xử lý.', deduplicationKey: `shipment:${requestKey}:created`, metadata: { rawStatus: result.rawStatus ?? 'ready_to_pick' } as Prisma.InputJsonValue });
       return created;
     });
 
-    return { shipment, order: await this.findOne(order.userId, order.id) };
+    return { shipment: this.toPublicShipment(shipment), order: await this.findOne(order.userId, order.id) };
   }
 
   async cancelShipment(id: string, dto: CancelShipmentDto, actorId: string) {
@@ -1361,7 +1354,7 @@ export class OrdersService {
       allowedActions: {
         cancel: order.status === OrderStatus.CREATED && (!order.paymentStatus || order.paymentStatus === PaymentStatus.PENDING),
         confirmDelivery: order.status === OrderStatus.READY_TO_SHIP && this.normalizeRawStatus(this.getCurrentShipment(order)?.rawStatus) === 'delivered',
-        startShipmentCreation: order.status === OrderStatus.PROCESSING && order.paymentStatus === PaymentStatus.PAID,
+        startShipmentCreation: order.status === OrderStatus.READY_TO_SHIP && order.paymentStatus === PaymentStatus.PAID,
         createReplacementShipment: order.status === OrderStatus.READY_TO_SHIP && !this.getActiveShipment(order),
         updateMeasurement: order.status === OrderStatus.MEASUREMENT_REVIEW,
       },
