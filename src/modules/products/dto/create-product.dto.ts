@@ -1,6 +1,6 @@
 import { ApiProperty } from '@nestjs/swagger';
 import { GarmentCategory, ProductStatus } from '@prisma/client';
-import { Transform } from 'class-transformer';
+import { Transform, Type } from 'class-transformer';
 import {
   IsArray,
   IsEnum,
@@ -10,8 +10,10 @@ import {
   IsString,
   IsUrl,
   Min,
+  ValidateNested,
 } from 'class-validator';
 import { GarmentType } from '../../../common/constants/measurement.constants';
+import { ProductColorDto } from './product-color.dto';
 
 // Khi gửi qua multipart/form-data, mảng được truyền dưới dạng chuỗi JSON.
 // Helper này parse chuỗi -> mảng; nếu không phải chuỗi (đã là mảng) thì giữ nguyên.
@@ -83,7 +85,21 @@ export class CreateProductDto {
   @IsOptional()
   @Transform(parseJsonArray)
   @IsArray()
-  colors?: Array<{ name: string; hex: string }>;
+  @ValidateNested({ each: true })
+  @Type(() => ProductColorDto)
+  colors?: ProductColorDto[];
+
+  @ApiProperty({
+    description:
+      'Mảng song song với images[] theo đúng thứ tự upload: tên màu (phải khớp 1 trong colors[].name) cho từng ảnh, hoặc null nếu ảnh đó là ảnh chung không gắn màu',
+    required: false,
+    type: 'array',
+    items: { type: 'string', nullable: true },
+  })
+  @IsOptional()
+  @Transform(parseJsonArray)
+  @IsArray()
+  imageColors?: Array<string | null>;
 
   @ApiProperty({
     description: 'URL ảnh garment. Không bắt buộc nếu upload file image.',

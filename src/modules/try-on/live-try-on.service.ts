@@ -23,6 +23,7 @@ import * as crypto from 'crypto';
 import { PrismaService } from '../../database/prisma.service';
 import { AdminSettingsService } from '../admin/admin-settings.service';
 import { AuthenticatedUser } from '../auth/interfaces/authenticated-user.interface';
+import { resolveGarmentUrlForColor } from '../../common/utils/garment-image.util';
 import { CreateLiveSessionDto } from './dto/create-live-session.dto';
 import { DecartRealtimeService } from './decart-realtime.service';
 
@@ -96,15 +97,16 @@ export class LiveTryOnService {
     };
   }
 
-  async getGarment(user: AuthenticatedUser, productId: string) {
+  async getGarment(user: AuthenticatedUser, productId: string, color?: string) {
     const policy = await this.getPolicy(user.tier);
     this.assertEnabledAndEligible(user, policy);
     if (!isUuid(productId)) {
       throw new BadRequestException({ code: 'INVALID_PRODUCT_ID', message: 'productId must be a UUID' });
     }
     const product = await this.resolveLiveProduct(productId, policy);
-    await this.assertGarmentUrlReadable(product.garmentUrl);
-    return this.mapGarment(product);
+    const garmentUrl = resolveGarmentUrlForColor(product.images, product.garmentUrl, color);
+    await this.assertGarmentUrlReadable(garmentUrl);
+    return this.mapGarment(product, color);
   }
 
   async createSession(user: AuthenticatedUser, dto: CreateLiveSessionDto, idempotencyKey: string, origin?: string) {
@@ -139,12 +141,13 @@ export class LiveTryOnService {
     }
 
     const product = await this.resolveLiveProduct(dto.productId, policy);
-    await this.assertGarmentUrlReadable(product.garmentUrl);
+    const garmentUrl = resolveGarmentUrlForColor(product.images, product.garmentUrl, dto.color);
+    await this.assertGarmentUrlReadable(garmentUrl);
     const now = new Date();
     const quotaDate = utcDateKey(now);
     const blockedUntil = new Date(now.getTime() + (policy.tokenTtlSeconds + policy.maxDurationSeconds + policy.graceSeconds + policy.pauseTimeoutSeconds) * 1000);
 
-    const session = await this.reserveSession(user.id, product.id, idempotencyKey, bodyHash, quotaDate, blockedUntil, policy);
+    const session = await this.reserveSession(user.id, product.id, idempotencyKey, bodyHash, quotaDate, blockedUntil, policy, dto.color ?? null);
 
     try {
       const token = await this.decart.createClientToken({ origin, maxDurationSeconds: session.reservedSeconds });
@@ -173,7 +176,7 @@ export class LiveTryOnService {
         remainingSeconds: session.reservedSeconds,
         status: LiveTryOnSessionStatus.ACTIVE,
         revision: session.revision,
-        garment: this.mapGarment(product),
+        garment: this.mapGarment(product, dto.color),
       };
     } catch (error) {
       await this.releaseFailedReservation(session.id, user.id, quotaDate, session.reservedSeconds);
@@ -182,7 +185,7 @@ export class LiveTryOnService {
   }
 
   async getSession(user: AuthenticatedUser, sessionId: string) {
-    const session = await this.prisma.liveTryOnSession.findUnique({ where: { id: sessionId }, include: { product: true } });
+    const session = await this.prisma.liveTryOnSession.findUnique({ where: { id: sessionId }, include: { product: { include: { images: true } } } });
     if (!session || session.userId !== user.id) {
       throw new NotFoundException({ code: 'LIVE_SESSION_NOT_FOUND', message: 'Live Try-On session not found' });
     }
@@ -190,7 +193,7 @@ export class LiveTryOnService {
   }
 
   async pauseSession(user: AuthenticatedUser, sessionId: string, reason?: string) {
-    const session = await this.prisma.liveTryOnSession.findUnique({ where: { id: sessionId }, include: { product: true } });
+    const session = await this.prisma.liveTryOnSession.findUnique({ where: { id: sessionId }, include: { product: { include: { images: true } } } });
     if (!session || session.userId !== user.id) {
       throw new NotFoundException({ code: 'LIVE_SESSION_NOT_FOUND', message: 'Live Try-On session not found' });
     }
@@ -210,13 +213,13 @@ export class LiveTryOnService {
         revision: { increment: 1 },
         endedReason: reason ?? session.endedReason,
       },
-      include: { product: true },
+      include: { product: { include: { images: true } } },
     });
     return this.mapSessionStatus(updated);
   }
 
   async resumeSession(user: AuthenticatedUser, sessionId: string, origin?: string, productId?: string) {
-    const session = await this.prisma.liveTryOnSession.findUnique({ where: { id: sessionId }, include: { product: true } });
+    const session = await this.prisma.liveTryOnSession.findUnique({ where: { id: sessionId }, include: { product: { include: { images: true } } } });
     if (!session || session.userId !== user.id) {
       throw new NotFoundException({ code: 'LIVE_SESSION_NOT_FOUND', message: 'Live Try-On session not found' });
     }
@@ -234,8 +237,11 @@ export class LiveTryOnService {
       throw new ConflictException({ code: 'LIVE_SESSION_EXHAUSTED', message: 'Live session has no remaining seconds' });
     }
 
+    // Màu đã chọn được giữ nguyên từ lúc createSession (session.colorName), client
+    // không gửi lại color khi resume — chỉ productId có thể override như hành vi cũ.
     const product = await this.resolveLiveProduct(productId ?? session.productId, policy);
-    await this.assertGarmentUrlReadable(product.garmentUrl);
+    const garmentUrl = resolveGarmentUrlForColor(product.images, product.garmentUrl, session.colorName);
+    await this.assertGarmentUrlReadable(garmentUrl);
     const token = await this.decart.createClientToken({ origin, maxDurationSeconds: remainingSeconds });
     const now = new Date();
     const updated = await this.prisma.liveTryOnSession.update({
@@ -251,7 +257,7 @@ export class LiveTryOnService {
         revision: { increment: 1 },
         providerMetadata: token.raw ? (token.raw as Prisma.InputJsonValue) : Prisma.JsonNull,
       },
-      include: { product: true },
+      include: { product: { include: { images: true } } },
     });
 
     return {
@@ -263,7 +269,7 @@ export class LiveTryOnService {
       },
       model: updated.model,
       maxDurationSeconds: remainingSeconds,
-      garment: this.mapGarment(updated.product),
+      garment: this.mapGarment(updated.product, updated.colorName),
     };
   }
 
@@ -321,7 +327,7 @@ export class LiveTryOnService {
     };
   }
 
-  private mapSessionStatus(session: { id: string; status: LiveTryOnSessionStatus; reservedSeconds: number; usedSeconds: number; activeStartedAt: Date | null; blockedUntil: Date; pauseExpiresAt: Date | null; revision: number; product: Product }) {
+  private mapSessionStatus(session: { id: string; status: LiveTryOnSessionStatus; reservedSeconds: number; usedSeconds: number; activeStartedAt: Date | null; blockedUntil: Date; pauseExpiresAt: Date | null; revision: number; colorName: string | null; product: Product & { images?: { imageUrl: string; isMain: boolean; colorName: string | null }[] } }) {
     const now = new Date();
     return {
       sessionId: session.id,
@@ -332,7 +338,7 @@ export class LiveTryOnService {
       blockedUntil: session.blockedUntil.toISOString(),
       pauseExpiresAt: session.pauseExpiresAt?.toISOString() ?? null,
       revision: session.revision,
-      garment: this.mapGarment(session.product),
+      garment: this.mapGarment(session.product, session.colorName),
     };
   }
 
@@ -410,6 +416,7 @@ export class LiveTryOnService {
     quotaDate: string,
     blockedUntil: Date,
     policy: LiveTryOnPolicy,
+    colorName: string | null = null,
   ) {
     return this.withSerializableRetry((tx) => this.reserveSessionTx(
       tx,
@@ -420,6 +427,7 @@ export class LiveTryOnService {
       quotaDate,
       blockedUntil,
       policy,
+      colorName,
     ));
   }
 
@@ -432,6 +440,7 @@ export class LiveTryOnService {
     quotaDate: string,
     blockedUntil: Date,
     policy: LiveTryOnPolicy,
+    colorName: string | null = null,
   ) {
       const activeConcurrency = await tx.liveTryOnLease.count({ where: { expiresAt: { gt: new Date() } } });
       if (activeConcurrency >= policy.maxConcurrentSessions) {
@@ -475,6 +484,7 @@ export class LiveTryOnService {
           tier: policy.tier,
           idempotencyKey,
           idempotencyBodyHash: bodyHash,
+          colorName,
           quotaDate,
           reservedSeconds: sessionBudgetSeconds,
           policyVersion: policy.policyVersion,
@@ -560,7 +570,10 @@ export class LiveTryOnService {
   }
 
   private async resolveLiveProduct(productId: string, policy: LiveTryOnPolicy) {
-    const product = await this.prisma.product.findUnique({ where: { id: productId } });
+    const product = await this.prisma.product.findUnique({
+      where: { id: productId },
+      include: { images: true },
+    });
     if (!product) {
       throw new NotFoundException({ code: 'LIVE_GARMENT_NOT_FOUND', message: 'Product not found' });
     }
@@ -576,12 +589,13 @@ export class LiveTryOnService {
     return product;
   }
 
-  private mapGarment(product: Product) {
+  private mapGarment(product: Product & { images?: { imageUrl: string; isMain: boolean; colorName: string | null }[] }, color?: string | null) {
     return {
       productId: product.id,
-      imageUrl: product.garmentUrl,
+      imageUrl: resolveGarmentUrlForColor(product.images ?? [], product.garmentUrl, color),
       prompt: buildPrompt(product),
       category: product.category,
+      color: color ?? null,
     };
   }
 

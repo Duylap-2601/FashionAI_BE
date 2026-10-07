@@ -2,6 +2,7 @@ import { BadRequestException, Injectable, NotFoundException } from '@nestjs/comm
 import { PrismaService } from '../../database/prisma.service';
 import { StorageService } from '../storage/storage.service';
 import { CreateProductDto } from './dto/create-product.dto';
+import { ProductColorDto } from './dto/product-color.dto';
 import { QueryProductDto } from './dto/query-product.dto';
 import { Prisma, ProductStatus } from '@prisma/client';
 
@@ -32,6 +33,8 @@ export class ProductsService {
       throw new BadRequestException('Vui lòng upload ít nhất 1 ảnh sản phẩm hoặc truyền garmentUrl');
     }
 
+    const imageColors = this.resolveImageColors(uploadedImages.length, dto.imageColors, dto.colors);
+
     const createData: Prisma.ProductCreateInput = {
       name: dto.name,
       description: dto.description,
@@ -47,12 +50,13 @@ export class ProductsService {
         create: uploadedImages.map((imageUrl, index) => ({
           imageUrl,
           isMain: index === 0,
+          colorName: imageColors[index] ?? null,
         })),
       },
     };
 
     if (dto.colors !== undefined) {
-      createData.colors = dto.colors;
+      createData.colors = dto.colors as unknown as Prisma.InputJsonValue;
     }
 
     if (dto.material !== undefined) {
@@ -62,6 +66,30 @@ export class ProductsService {
     return this.prisma.product.create({
       data: createData,
       include: { images: true },
+    });
+  }
+
+  // Khớp mảng imageColors (song song với mảng ảnh upload) với danh sách màu hợp lệ
+  // của sản phẩm (colors). Phần tử null/undefined nghĩa là ảnh chung, không gắn màu.
+  private resolveImageColors(
+    imageCount: number,
+    imageColors: Array<string | null> | undefined,
+    colors: ProductColorDto[] | undefined,
+  ): Array<string | null> {
+    if (!imageColors || imageColors.length === 0) {
+      return new Array(imageCount).fill(null);
+    }
+
+    const validNames = new Set((colors ?? []).map((c) => c.name.trim().toLowerCase()));
+
+    return imageColors.map((colorName) => {
+      if (!colorName) return null;
+      if (validNames.size === 0 || !validNames.has(colorName.trim().toLowerCase())) {
+        throw new BadRequestException(
+          `Màu ảnh "${colorName}" không khớp với danh sách màu sản phẩm (colors)`,
+        );
+      }
+      return colorName;
     });
   }
 
@@ -181,10 +209,10 @@ export class ProductsService {
   async update(id: string, dto: Partial<CreateProductDto>) {
     await this.findOne(id);
     // Loại bỏ fields từ FilesInterceptor trước khi pass vào Prisma
-    const { images: _images, image: _image, isMainIndex: _isMainIndex, ...updateData } = dto;
+    const { images: _images, image: _image, isMainIndex: _isMainIndex, imageColors: _imageColors, ...updateData } = dto;
     return this.prisma.product.update({
       where: { id },
-      data: updateData,
+      data: updateData as unknown as Prisma.ProductUpdateInput,
       include: { images: true },
     });
   }
@@ -264,8 +292,9 @@ export class ProductsService {
     productId: string,
     files: Express.Multer.File[],
     mainIndex = 0,
+    imageColorsInput?: Array<string | null>,
   ) {
-    await this.findOne(productId);
+    const product = await this.findOne(productId);
 
     if (files.length === 0) {
       throw new BadRequestException('Danh sách ảnh không được rỗng');
@@ -274,6 +303,12 @@ export class ProductsService {
     if (mainIndex < 0 || mainIndex >= files.length) {
       throw new BadRequestException(`Chỉ số ảnh chính không hợp lệ (0-${files.length - 1})`);
     }
+
+    const imageColors = this.resolveImageColors(
+      files.length,
+      imageColorsInput,
+      product.colors as unknown as ProductColorDto[] | undefined,
+    );
 
     const imageUrls: string[] = [];
     for (const file of files) {
@@ -300,6 +335,7 @@ export class ProductsService {
             productId,
             imageUrl: imageUrls[i],
             isMain: i === mainIndex,
+            colorName: imageColors[i] ?? null,
           },
         });
         createdImages.push(image);

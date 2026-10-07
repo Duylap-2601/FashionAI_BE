@@ -10,6 +10,7 @@ import { PrismaService } from '../../database/prisma.service';
 import { MailQueueService } from '../mail/mail-queue.service';
 import { NotificationService } from '../notification/notification.service';
 import { createWithUniqueOrderCode } from '../../common/utils/order-code.util';
+import { resolveGarmentUrlForColor } from '../../common/utils/garment-image.util';
 import { CreateOrderDto } from './dto/create-order.dto';
 import {
   MAX_INT4,
@@ -134,6 +135,24 @@ export class OrdersService {
       );
     }
 
+    // Nếu sản phẩm có khai báo danh sách màu (colors), màu khách chọn phải khớp
+    // 1 trong số đó (case-insensitive) — tránh lưu màu rác không map được ảnh.
+    // Sản phẩm chưa khai báo colors thì giữ hành vi cũ (chấp nhận mọi string).
+    for (const item of resolvedDto.items) {
+      if (!item.color) continue;
+      const product = productMap.get(item.productId)!;
+      const colors = (product.colors as Array<{ name: string }> | null) ?? [];
+      if (colors.length === 0) continue;
+      const matched = colors.some(
+        (c) => c.name.trim().toLowerCase() === item.color!.trim().toLowerCase(),
+      );
+      if (!matched) {
+        throw new BadRequestException(
+          `Màu "${item.color}" không hợp lệ cho sản phẩm "${product.name}"`,
+        );
+      }
+    }
+
     // Đặt may theo số đo: user phải điền đủ số đo cơ thể bắt buộc dựa trên loại
     // trang phục cụ thể (garmentType) trong đơn. Chụp lại (snapshot) số đo lên
     // từng OrderItem để đóng băng tại thời điểm đặt.
@@ -231,6 +250,11 @@ export class OrdersService {
                   measurementSnapshot:
                     measurementSnapshot as Prisma.InputJsonValue,
                   productNameSnapshot: product.name,
+                  productImageSnapshot: resolveGarmentUrlForColor(
+                    (product as Product & { images?: { imageUrl: string; isMain: boolean; colorName: string | null }[] }).images ?? [],
+                    product.garmentUrl,
+                    item.color,
+                  ),
                   productCategorySnapshot: product.category,
                   brandSnapshot: product.brand,
                   fabricSnapshot: product.material,
@@ -916,6 +940,7 @@ export class OrdersService {
         id: { in: productIds },
         status: 'ACTIVE',
       },
+      include: { images: true },
     });
 
     const productMap = new Map(products.map((product) => [product.id, product]));

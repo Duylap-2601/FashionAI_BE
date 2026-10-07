@@ -432,6 +432,7 @@ model ProductImage {
   productId String   @map("product_id") @db.Uuid
   imageUrl  String   @map("image_url")
   isMain    Boolean  @default(false) @map("is_main")
+  colorName String?  @map("color_name")
   createdAt DateTime @default(now()) @map("created_at")
 
   product Product @relation(fields: [productId], references: [id], onDelete: Cascade)
@@ -474,6 +475,7 @@ model LiveTryOnSession {
   reservationStatus    LiveTryOnReservationStatus @default(RESERVED) @map("reservation_status")
   idempotencyKey       String                     @map("idempotency_key")
   idempotencyBodyHash  String                     @map("idempotency_body_hash")
+  colorName            String?                    @map("color_name")
   quotaDate            String                     @map("quota_date")
   reservedSeconds      Int                        @map("reserved_seconds")
   allocatedSeconds     Int                        @default(0) @map("allocated_seconds")

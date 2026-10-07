@@ -52,12 +52,15 @@ export class TryOnController {
         'garments[0][image]': { type: 'string', format: 'binary', description: 'Ảnh món 1 (nếu không dùng productId)' },
         'garments[0][category]': { type: 'string', enum: ['UPPER', 'LOWER', 'FULL_BODY'], description: 'Phân loại món 1' },
         'garments[0][productId]': { type: 'string', description: 'ID sản phẩm cho món 1 (thay cho ảnh)' },
+        'garments[0][color]': { type: 'string', description: 'Màu đã chọn cho món 1 (chỉ áp dụng khi dùng productId)' },
         'garments[1][image]': { type: 'string', format: 'binary', description: 'Ảnh món 2' },
         'garments[1][category]': { type: 'string', enum: ['UPPER', 'LOWER', 'FULL_BODY'], description: 'Phân loại món 2' },
         'garments[1][productId]': { type: 'string', description: 'ID sản phẩm cho món 2' },
+        'garments[1][color]': { type: 'string', description: 'Màu đã chọn cho món 2 (chỉ áp dụng khi dùng productId)' },
         // Legacy 1 món: vẫn hỗ trợ để tương thích ngược.
         garmentImage: { type: 'string', format: 'binary', description: '[Legacy] Ảnh trang phục đơn' },
         productId: { type: 'string', description: '[Legacy] ID sản phẩm đơn' },
+        color: { type: 'string', description: '[Legacy] Màu đã chọn (chỉ áp dụng khi dùng productId)' },
         garmentCategory: {
           type: 'string',
           enum: ['UPPER', 'LOWER', 'FULL_BODY'],
@@ -110,7 +113,7 @@ export class TryOnController {
   // rơi về shape đơn cũ (garmentImage/garmentCategory/productId) và bọc thành 1 phần tử.
   private parseGarments(body: Record<string, unknown>, files: Express.Multer.File[]): TryOnGarmentInput[] {
     const indexed = new Map<number, TryOnGarmentInput>();
-    const bracket = /^garments\[(\d+)\]\[(image|category|productId)\]$/;
+    const bracket = /^garments\[(\d+)\]\[(image|category|productId|color)\]$/;
 
     const ensure = (idx: number): TryOnGarmentInput => {
       let g = indexed.get(idx);
@@ -139,6 +142,7 @@ export class TryOnController {
         const g = ensure(idx);
         if (entry.category != null) g.category = this.toGarmentCategory(entry.category);
         if (entry.productId != null) g.productId = String(entry.productId);
+        if (entry.color != null) g.color = String(entry.color);
       }
     }
 
@@ -157,6 +161,7 @@ export class TryOnController {
         image: legacyImage,
         productId: legacyProductId,
         category: this.toGarmentCategory(body.garmentCategory) ?? GarmentCategory.UPPER,
+        color: body.color ? String(body.color) : undefined,
       },
     ];
   }
