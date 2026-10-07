@@ -210,6 +210,16 @@ export class ProductsService {
     await this.findOne(id);
     // Loại bỏ fields từ FilesInterceptor trước khi pass vào Prisma
     const { images: _images, image: _image, isMainIndex: _isMainIndex, imageColors: _imageColors, ...updateData } = dto;
+     if (dto.images && Array.isArray(dto.images)) {
+    for (const img of dto.images as Array<{ id: string; colorName?: string | null }>) {
+      if (img?.id) {
+        await this.prisma.productImage.updateMany({
+          where: { id: img.id, productId: id },
+          data: { colorName: img.colorName ?? null },
+        });
+      }
+    }
+  }
     return this.prisma.product.update({
       where: { id },
       data: updateData as unknown as Prisma.ProductUpdateInput,
