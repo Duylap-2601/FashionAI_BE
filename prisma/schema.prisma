@@ -243,14 +243,10 @@ model UserAddress {
   phone         String
   addressLine   String   @map("address_line")
   label         String?
-  ghnAddressModel GhnAddressModel @default(LEGACY_3_LEVEL) @map("ghn_address_model")
-  ghnProvinceId   Int?            @map("ghn_province_id")
-  ghnDistrictId   Int?            @map("ghn_district_id")
-  ghnWardCode     String?         @map("ghn_ward_code")
+  ghnAddressModel GhnAddressModel @default(POST_MERGER_2_LEVEL) @map("ghn_address_model")
   ghnProvinceV3Id String?         @map("ghn_province_v3_id")
   ghnWardV3Id     String?         @map("ghn_ward_v3_id")
   provinceName  String   @map("province_name")
-  districtName  String?  @map("district_name")
   wardName      String   @map("ward_name")
   isDefault     Boolean  @default(false) @map("is_default")
   version       Int      @default(1)

@@ -128,8 +128,13 @@ export class PaymentsService {
 
     if (order.items.length > 0) {
       const snapshot = order.shippingAddressSnapshot ?? order.shippingInfo;
-      const info = snapshot as { address?: string; phone?: string; ghnDistrictId?: number; ghnWardCode?: string } | null;
-      if (!info?.address || !info?.phone || !info?.ghnDistrictId || !info?.ghnWardCode) {
+      const info = snapshot as {
+        address?: string;
+        phone?: string;
+        ghnProvinceV3Id?: string;
+        ghnWardV3Id?: string;
+      } | null;
+      if (!info?.address || !info?.phone || !info?.ghnProvinceV3Id || !info?.ghnWardV3Id) {
         throw new BadRequestException('Đơn hàng thiếu địa chỉ giao hàng hợp lệ. Vui lòng liên hệ hỗ trợ hoặc hủy và đặt lại nếu còn đủ điều kiện.');
       }
       if (!order.shippingAddressSnapshot && order.shippingInfo) {

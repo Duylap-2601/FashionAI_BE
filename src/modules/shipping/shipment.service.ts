@@ -161,12 +161,9 @@ export class ShipmentService {
       note?: string;
       notes?: string;
       provinceName?: string;
-      districtName?: string;
       wardName?: string;
-      ghnDistrictId?: number;
-      ghnWardCode?: string;
-      districtId?: number;
-      wardCode?: string;
+      ghnProvinceV3Id?: string;
+      ghnWardV3Id?: string;
     };
     return shippingInfo;
   }
@@ -182,11 +179,10 @@ export class ShipmentService {
         name: shippingInfo.name as string,
         phone: shippingInfo.phone as string,
         address: (shippingInfo.address as string) || '',
+        provinceId: shippingInfo.ghnProvinceV3Id as string,
+        wardId: shippingInfo.ghnWardV3Id as string,
         provinceName: shippingInfo.provinceName as string,
-        districtName: shippingInfo.districtName as string,
         wardName: shippingInfo.wardName as string,
-        districtId: (shippingInfo.ghnDistrictId as number) ?? (shippingInfo.districtId as number),
-        wardCode: (shippingInfo.ghnWardCode as string) ?? (shippingInfo.wardCode as string),
       },
       items: items.map((item) => ({
         name: (item as any).productNameSnapshot || 'FashionAI item',

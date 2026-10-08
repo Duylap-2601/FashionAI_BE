@@ -18,10 +18,10 @@ import {
 
 const AUTH_USER = { id: 'user-1', email: 'a@b.com', tier: UserTier.FREE };
 const VALID_SHIPPING_SNAPSHOT = {
-  address: '123 Nguyen Trai, Phuong 1, Quan 1, TP Ho Chi Minh',
+  address: '35, đường số 27, Phường Long Bình, Hồ Chí Minh',
   phone: '0900000000',
-  ghnDistrictId: 1442,
-  ghnWardCode: '21211',
+  ghnProvinceV3Id: '1000001',
+  ghnWardV3Id: '1003575',
 };
 
 /** Guard cho phép mọi request và gắn user cố định, để test tập trung vào logic checkout. */

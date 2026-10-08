@@ -10,8 +10,6 @@ type LocationInput = { code: string; parentCode: string | null; name: string; al
 @Injectable()
 export class GhnLocationSyncService {
   private readonly logger = new Logger(GhnLocationSyncService.name);
-  private isSyncing = false;
-  private readonly legacyCatalogGeneration = BigInt(1);
 
   constructor(
     private readonly prisma: PrismaService,
@@ -24,55 +22,12 @@ export class GhnLocationSyncService {
     await this.sync('cron');
   }
 
+
   async sync(trigger: 'cron' | 'admin' | 'startup' = 'admin') {
-    if (this.isSyncing) {
-      this.logger.warn(`GHN location sync skipped | trigger=${trigger} reason=already_running`);
-      return { skipped: true, reason: 'already_running' };
-    }
-
-    this.isSyncing = true;
-    const startedAt = Date.now();
-    const counts = { provinces: 0, districts: 0, wards: 0, errors: 0 };
-
-    try {
-      const provinces = await this.fetchProvincesWithRetry();
-      await this.upsertLocations(GhnLocationLevel.PROVINCE, provinces);
-      counts.provinces = provinces.length;
-
-      await this.eachLimit(provinces, 4, async (province) => {
-        try {
-          const districts = await this.fetchDistrictsWithRetry(province.code);
-          await this.upsertLocations(GhnLocationLevel.DISTRICT, districts);
-          counts.districts += districts.length;
-
-          await this.eachLimit(districts, 4, async (district) => {
-            try {
-              const wards = await this.fetchWardsWithRetry(district.code);
-              await this.upsertLocations(GhnLocationLevel.WARD, wards);
-              counts.wards += wards.length;
-            } catch (error) {
-              counts.errors += 1;
-              this.logger.warn(`GHN ward sync failed | districtCode=${district.code} error=${this.safeError(error)}`);
-            }
-          });
-        } catch (error) {
-          counts.errors += 1;
-          this.logger.warn(`GHN district sync failed | provinceCode=${province.code} error=${this.safeError(error)}`);
-        }
-      });
-
-      this.logger.log(`GHN location sync completed | trigger=${trigger} provinces=${counts.provinces} districts=${counts.districts} wards=${counts.wards} errors=${counts.errors} duration=${Date.now() - startedAt}`);
-      return { skipped: false, counts };
-    } finally {
-      this.isSyncing = false;
-    }
-  }
-
-  async syncPostMerger(trigger: 'cron' | 'admin' | 'startup' = 'admin') {
-    const lockKey = 'ghn:location-sync:post-merger';
+    const lockKey = 'ghn:location-sync';
     const locked = await this.redisService.acquireLock(lockKey, 60);
     if (!locked) {
-      this.logger.warn(`GHN post-merger location sync skipped | trigger=${trigger} reason=already_running`);
+      this.logger.warn(`GHN location sync skipped | trigger=${trigger} reason=already_running`);
       return { skipped: true, reason: 'already_running' };
     }
 
@@ -85,14 +40,14 @@ export class GhnLocationSyncService {
 
     const counts = { provinces: 0, wards: 0 };
     try {
-      const provinces = await this.fetchPostMergerProvinces();
-      if (provinces.length === 0) throw new Error('GHN post-merger province catalog is empty');
-      await this.upsertPostMergerLocations(GhnLocationLevel.PROVINCE, generation, provinces, run.id);
+      const provinces = await this.fetchProvinces();
+      if (provinces.length === 0) throw new Error('GHN province catalog is empty');
+      await this.upsertLocations(GhnLocationLevel.PROVINCE, generation, provinces, run.id);
       counts.provinces = provinces.length;
 
       await this.eachLimit(provinces, 4, async (province) => {
-        const wards = await this.fetchPostMergerWards(province.code);
-        await this.upsertPostMergerLocations(GhnLocationLevel.WARD, generation, wards, run.id);
+        const wards = await this.fetchWards(province.code);
+        await this.upsertLocations(GhnLocationLevel.WARD, generation, wards, run.id);
         counts.wards += wards.length;
       });
 
@@ -117,7 +72,7 @@ export class GhnLocationSyncService {
         });
       });
 
-      this.logger.log(`GHN post-merger location sync completed | trigger=${trigger} provinces=${counts.provinces} wards=${counts.wards} generation=${generation} duration=${Date.now() - startedAt}`);
+      this.logger.log(`GHN location sync completed | trigger=${trigger} provinces=${counts.provinces} wards=${counts.wards} generation=${generation} duration=${Date.now() - startedAt}`);
       return { skipped: false, generation: generation.toString(), counts };
     } catch (error) {
       await this.prisma.ghnLocationSyncRun.update({
@@ -130,37 +85,7 @@ export class GhnLocationSyncService {
     }
   }
 
-  private async upsertLocations(level: GhnLocationLevel, locations: LocationInput[]) {
-    if (locations.length === 0) return;
-    await this.prisma.$transaction(
-      locations.map((location) => this.prisma.ghnLocation.upsert({
-        where: {
-          catalogGeneration_addressModel_level_code: {
-            catalogGeneration: this.legacyCatalogGeneration,
-            addressModel: GhnAddressModel.LEGACY_3_LEVEL,
-            level,
-            code: location.code,
-          },
-        },
-        create: {
-          addressModel: GhnAddressModel.LEGACY_3_LEVEL,
-          catalogGeneration: this.legacyCatalogGeneration,
-          level,
-          code: location.code,
-          parentCode: location.parentCode,
-          name: location.name,
-          isActive: true,
-        },
-        update: {
-          parentCode: location.parentCode,
-          name: location.name,
-          isActive: true,
-        },
-      })),
-    );
-  }
-
-  private async upsertPostMergerLocations(level: GhnLocationLevel, generation: bigint, locations: LocationInput[], syncRunId: string) {
+  private async upsertLocations(level: GhnLocationLevel, generation: bigint, locations: LocationInput[], syncRunId: string) {
     if (locations.length === 0) return;
     await this.prisma.$transaction(
       locations.map((location) => this.prisma.ghnLocation.upsert({
@@ -196,29 +121,14 @@ export class GhnLocationSyncService {
     );
   }
 
-  private async fetchProvincesWithRetry() {
-    const response = await this.withRetry(() => this.ghnClient.post<{ data?: unknown[] }>('/shiip/public-api/master-data/province', {}));
-    return this.normalizeLocations(response.data, null, 'ProvinceID', 'ProvinceName');
-  }
-
-  private async fetchDistrictsWithRetry(provinceCode: string) {
-    const response = await this.withRetry(() => this.ghnClient.post<{ data?: unknown[] }>('/shiip/public-api/master-data/district', { province_id: Number(provinceCode) }));
-    return this.normalizeLocations(response.data, provinceCode, 'DistrictID', 'DistrictName');
-  }
-
-  private async fetchWardsWithRetry(districtCode: string) {
-    const response = await this.withRetry(() => this.ghnClient.post<{ data?: unknown[] }>('/shiip/public-api/master-data/ward', { district_id: Number(districtCode) }));
-    return this.normalizeLocations(response.data, districtCode, 'WardCode', 'WardName');
-  }
-
-  private async fetchPostMergerProvinces() {
+  private async fetchProvinces() {
     const data = await this.fetchPagedV3('/shiip/public-api/v3/master-data/province/all', {}, 'province');
-    return this.normalizePostMergerLocations(data, null);
+    return this.normalizeLocations(data, null);
   }
 
-  private async fetchPostMergerWards(provinceCode: string) {
+  private async fetchWards(provinceCode: string) {
     const data = await this.fetchPagedV3('/shiip/public-api/v3/master-data/ward/all-by-province-id', { province_id: provinceCode }, 'ward');
-    return this.normalizePostMergerLocations(data, provinceCode);
+    return this.normalizeLocations(data, provinceCode);
   }
 
   private async fetchPagedV3(path: string, baseParams: Record<string, unknown>, scope: string) {
@@ -248,7 +158,7 @@ export class GhnLocationSyncService {
     throw new Error(`GHN ${scope} catalog exceeded max page guard`);
   }
 
-  private normalizePostMergerLocations(data: unknown[], parentCode: string | null) {
+  private normalizeLocations(data: unknown[], parentCode: string | null) {
     const seen = new Set<string>();
     const normalized: LocationInput[] = [];
     for (const item of data) {
@@ -280,26 +190,6 @@ export class GhnLocationSyncService {
   private toNonEmptyString(value: unknown) {
     const text = typeof value === 'string' ? value.trim() : typeof value === 'number' ? String(value) : '';
     return text;
-  }
-
-  private normalizeLocations(data: unknown[] | undefined, parentCode: string | null, codeKey: string, nameKey: string) {
-    const items = Array.isArray(data) ? data : [];
-    const seen = new Set<string>();
-    const normalized: LocationInput[] = [];
-
-    for (const item of items) {
-      if (!item || typeof item !== 'object') continue;
-      const record = item as Record<string, unknown>;
-      const rawCode = record[codeKey];
-      const rawName = record[nameKey];
-      const code = typeof rawCode === 'string' ? rawCode.trim() : typeof rawCode === 'number' ? String(rawCode) : '';
-      const name = typeof rawName === 'string' ? rawName.trim() : '';
-      if (!code || !name || seen.has(code)) continue;
-      seen.add(code);
-      normalized.push({ code, parentCode, name });
-    }
-
-    return normalized;
   }
 
   private async withRetry<T>(operation: () => Promise<T>, maxAttempts = 3): Promise<T> {

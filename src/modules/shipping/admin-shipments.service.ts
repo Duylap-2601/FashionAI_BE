@@ -258,7 +258,6 @@ export class AdminShipmentsService {
         phone: typeof receiver.phone === 'string' ? receiver.phone : null,
         address: typeof receiver.address === 'string' ? receiver.address : null,
         provinceName: typeof receiver.provinceName === 'string' ? receiver.provinceName : null,
-        districtName: typeof receiver.districtName === 'string' ? receiver.districtName : null,
         wardName: typeof receiver.wardName === 'string' ? receiver.wardName : null,
       },
       canCancel: !TERMINAL_STATUSES.includes(shipment.status),
