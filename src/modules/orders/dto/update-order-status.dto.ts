@@ -7,7 +7,7 @@ export class UpdateOrderStatusDto {
   @ApiProperty({
     enum: CANONICAL_ORDER_STATUSES,
     description: 'Trạng thái đơn hàng mới',
-    example: OrderStatus.PROCESSING,
+    example: OrderStatus.MEASUREMENT_REVIEW,
   })
   @IsIn(CANONICAL_ORDER_STATUSES)
   @IsNotEmpty()

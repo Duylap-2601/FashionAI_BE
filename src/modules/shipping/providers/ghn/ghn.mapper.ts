@@ -145,7 +145,7 @@ export class GhnMapper {
     return {
       provider: ShippingProviderType.GHN,
       providerOrderCode: String(data.order_code ?? ''),
-      status: ShipmentStatus.CREATED,
+      status: this.mapStatus('ready_to_pick'),
       rawStatus: 'ready_to_pick',
       shippingFee: Number(data.total_fee ?? 0),
       expectedDeliveryTime: data.expected_delivery_time ? new Date(data.expected_delivery_time) : undefined,

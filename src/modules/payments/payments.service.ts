@@ -1369,6 +1369,7 @@ export class PaymentsService {
     }
 
     const isSubscription = Boolean(order.targetTier);
+    const paidOrderStatus = isSubscription ? OrderStatus.COMPLETED : OrderStatus.MEASUREMENT_REVIEW;
 
     let subscriptionMode: 'NEW' | 'RENEWAL' | 'UPGRADE' | 'DOWNGRADE' | undefined;
 
@@ -1381,7 +1382,7 @@ export class PaymentsService {
         const claim = await tx.order.updateMany({
           where: { id: order.id, status: OrderStatus.CREATED, paymentStatus: PaymentStatus.PENDING },
           data: {
-            status: order.targetTier ? OrderStatus.COMPLETED : OrderStatus.PROCESSING,
+            status: paidOrderStatus,
             paymentStatus: PaymentStatus.PAID,
             amountPaidVnd: BigInt(Number(order.amount)),
             // Link đã dùng xong, không cho tái sử dụng.
@@ -1423,7 +1424,7 @@ export class PaymentsService {
             type: 'PAYMENT_SUCCEEDED',
             source: 'PAYMENT',
             fromStatus: OrderStatus.CREATED,
-            toStatus: order.targetTier ? OrderStatus.COMPLETED : OrderStatus.PROCESSING,
+            toStatus: paidOrderStatus,
             publicMessage: 'Thanh toán đã được xác minh thành công.',
             deduplicationKey: `payment:${provider}:${paymentData?.transId ?? paymentData?.reference ?? Date.now()}`,
           },
@@ -1491,7 +1492,7 @@ export class PaymentsService {
         data: {
           orderId: order.id,
           orderCode: order.orderCode,
-          internalStatus: isSubscription ? OrderStatus.COMPLETED : OrderStatus.PROCESSING,
+          internalStatus: paidOrderStatus,
           paymentStatus: PaymentStatus.PAID,
           ...(isSubscription ? { targetTier: order.targetTier, subscriptionMode } : {}),
         },
