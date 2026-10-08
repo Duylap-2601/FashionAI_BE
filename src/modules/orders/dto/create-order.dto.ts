@@ -1,9 +1,11 @@
 import { ApiProperty } from '@nestjs/swagger';
+import { GhnAddressModel } from '@prisma/client';
 import { Type } from 'class-transformer';
 import {
   ArrayMaxSize,
   ArrayMinSize,
   IsArray,
+  IsEnum,
   IsInt,
   IsNotEmpty,
   IsOptional,
@@ -44,6 +46,11 @@ export class CreateOrderItemDto {
 }
 
 export class ShippingInfoDto {
+  @ApiProperty({ enum: GhnAddressModel, required: false, default: GhnAddressModel.LEGACY_3_LEVEL })
+  @IsEnum(GhnAddressModel)
+  @IsOptional()
+  addressModel?: GhnAddressModel;
+
   @ApiProperty({ example: 'Nguyen Van A' })
   @IsString()
   @IsNotEmpty()
@@ -98,6 +105,16 @@ export class ShippingInfoDto {
   @IsString()
   @IsOptional()
   ghnWardCode?: string;
+
+  @ApiProperty({ required: false, example: '1000001' })
+  @IsString()
+  @IsOptional()
+  ghnProvinceV3Id?: string;
+
+  @ApiProperty({ required: false, example: '1003646' })
+  @IsString()
+  @IsOptional()
+  ghnWardV3Id?: string;
 }
 
 export class CreateOrderDto {

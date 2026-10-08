@@ -155,6 +155,14 @@ enum OutboxEventStatus {
   FAILED_DEAD
 }
 
+enum ShipmentCreationState {
+  RESERVED
+  REQUESTING
+  CREATED
+  AMBIGUOUS
+  FAILED
+}
+
 enum AiActionType {
   TRY_ON
   STYLIST
@@ -173,6 +181,18 @@ enum GhnLocationLevel {
   PROVINCE
   DISTRICT
   WARD
+}
+
+enum GhnAddressModel {
+  LEGACY_3_LEVEL
+  POST_MERGER_2_LEVEL
+}
+
+enum GhnLocationSyncRunStatus {
+  RUNNING
+  SUCCEEDED
+  PARTIAL
+  FAILED
 }
 
 model User {
@@ -210,6 +230,7 @@ model User {
   liveTryOnPolicyAudits   LiveTryOnPolicyAudit[]
   addresses               UserAddress[]
   orderIdempotencyKeys    OrderIdempotencyKey[]
+  orderQuotes             OrderQuote[]
   couponRedemptions       CouponRedemption[]
 
   @@map("users")
@@ -222,11 +243,14 @@ model UserAddress {
   phone         String
   addressLine   String   @map("address_line")
   label         String?
-  ghnProvinceId Int      @map("ghn_province_id")
-  ghnDistrictId Int      @map("ghn_district_id")
-  ghnWardCode   String   @map("ghn_ward_code")
+  ghnAddressModel GhnAddressModel @default(LEGACY_3_LEVEL) @map("ghn_address_model")
+  ghnProvinceId   Int?            @map("ghn_province_id")
+  ghnDistrictId   Int?            @map("ghn_district_id")
+  ghnWardCode     String?         @map("ghn_ward_code")
+  ghnProvinceV3Id String?         @map("ghn_province_v3_id")
+  ghnWardV3Id     String?         @map("ghn_ward_v3_id")
   provinceName  String   @map("province_name")
-  districtName  String   @map("district_name")
+  districtName  String?  @map("district_name")
   wardName      String   @map("ward_name")
   isDefault     Boolean  @default(false) @map("is_default")
   version       Int      @default(1)
@@ -245,16 +269,27 @@ model OrderIdempotencyKey {
   userId      String   @map("user_id") @db.Uuid
   key         String
   fingerprint String
+  state       OrderIdempotencyKeyState @default(COMPLETED)
+  requestFingerprint String? @map("request_fingerprint")
+  quoteId     String?  @map("quote_id") @db.Uuid
   orderId     String?  @map("order_id") @db.Uuid
+  expiresAt   DateTime? @map("expires_at")
   createdAt   DateTime @default(now()) @map("created_at")
   updatedAt   DateTime @updatedAt @map("updated_at")
 
   user  User   @relation(fields: [userId], references: [id], onDelete: Cascade)
   order Order? @relation(fields: [orderId], references: [id], onDelete: SetNull)
+  quote OrderQuote? @relation(fields: [quoteId], references: [id], onDelete: SetNull)
 
   @@unique([userId, key])
   @@index([userId, createdAt])
   @@map("order_idempotency_keys")
+}
+
+enum OrderIdempotencyKeyState {
+  PROCESSING
+  COMPLETED
+  FAILED
 }
 
 model AppSetting {
@@ -268,18 +303,96 @@ model AppSetting {
 
 model GhnLocation {
   id         String           @id @default(uuid()) @db.Uuid
+  addressModel GhnAddressModel @default(LEGACY_3_LEVEL) @map("address_model")
+  catalogGeneration BigInt    @default(1) @map("catalog_generation")
   level      GhnLocationLevel
   code       String
   parentCode String?          @map("parent_code")
   name       String
+  aliases    Json?
+  providerStatus Int?         @map("provider_status")
+  lastSeenSyncId String?      @map("last_seen_sync_id") @db.Uuid
   isActive   Boolean          @default(true) @map("is_active")
   createdAt  DateTime         @default(now()) @map("created_at")
   updatedAt  DateTime         @updatedAt @map("updated_at")
 
-  @@unique([level, code])
-  @@index([level, parentCode])
+  @@unique([catalogGeneration, addressModel, level, code])
+  @@index([addressModel, catalogGeneration, level, parentCode, isActive])
   @@index([isActive])
   @@map("ghn_locations")
+}
+
+model GhnCatalogMetadata {
+  addressModel GhnAddressModel @id @map("address_model")
+  publishedGeneration BigInt   @map("published_generation")
+  catalogRevision BigInt       @map("catalog_revision")
+  createdAt DateTime           @default(now()) @map("created_at")
+  updatedAt DateTime           @updatedAt @map("updated_at")
+
+  @@map("ghn_catalog_metadata")
+}
+
+model GhnCatalogPublication {
+  id String @id @default(uuid()) @db.Uuid
+  addressModel GhnAddressModel @map("address_model")
+  catalogRevision BigInt       @map("catalog_revision")
+  catalogGeneration BigInt     @map("catalog_generation")
+  publishedAt DateTime         @default(now()) @map("published_at")
+  retainedUntil DateTime       @map("retained_until")
+
+  @@unique([addressModel, catalogRevision])
+  @@unique([addressModel, catalogGeneration])
+  @@index([retainedUntil])
+  @@map("ghn_catalog_publications")
+}
+
+model GhnLocationSyncRun {
+  id String @id @default(uuid()) @db.Uuid
+  addressModel GhnAddressModel @map("address_model")
+  catalogGeneration BigInt     @map("catalog_generation")
+  fencingToken BigInt?         @map("fencing_token")
+  status GhnLocationSyncRunStatus @default(RUNNING)
+  expectedCounts Json?         @map("expected_counts")
+  fetchedCounts Json?          @map("fetched_counts")
+  errorSummary String?         @map("error_summary") @db.Text
+  startedAt DateTime           @default(now()) @map("started_at")
+  completedAt DateTime?        @map("completed_at")
+
+  @@unique([addressModel, catalogGeneration])
+  @@index([addressModel, status, startedAt])
+  @@map("ghn_location_sync_runs")
+}
+
+model OrderQuote {
+  id String @id @default(uuid()) @db.Uuid
+  tokenHash String @unique @map("token_hash")
+  userId String @map("user_id") @db.Uuid
+  requestFingerprint String @map("request_fingerprint")
+  capabilityVersion String? @map("capability_version")
+  policyVersion String? @map("policy_version")
+  catalogRevision BigInt? @map("catalog_revision")
+  pickupSettingVersionId String? @map("pickup_setting_version_id") @db.Uuid
+  pricing Json
+  providerFacts Json? @map("provider_facts")
+  status OrderQuoteStatus @default(ACTIVE)
+  expiresAt DateTime @map("expires_at")
+  consumedOrderId String? @map("consumed_order_id") @db.Uuid
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  consumedOrder Order? @relation(fields: [consumedOrderId], references: [id], onDelete: SetNull)
+  idempotencyKeys OrderIdempotencyKey[]
+
+  @@index([userId, status, expiresAt])
+  @@index([expiresAt])
+  @@map("order_quotes")
+}
+
+enum OrderQuoteStatus {
+  ACTIVE
+  CONSUMED
+  EXPIRED
 }
 
 model Measurement {
@@ -607,6 +720,7 @@ model Order {
   shippingInfo            Json?          @map("shipping_info")
   shippingAddressSnapshot Json?          @map("shipping_address_snapshot")
   shippingQuoteSnapshot   Json?          @map("shipping_quote_snapshot")
+  pickupSettingVersionId  String?        @map("pickup_setting_version_id") @db.Uuid
   prorationSnapshot       Json?          @map("proration_snapshot")
   paymentMethod           String?        @map("payment_method")
   paymentProvider         String?        @map("payment_provider")
@@ -631,6 +745,7 @@ model Order {
   shipments        Shipment[]
   events           OrderEvent[]
   idempotencyKeys  OrderIdempotencyKey[]
+  quotes           OrderQuote[]
   couponRedemption CouponRedemption?
 
   @@index([userId])
@@ -715,6 +830,16 @@ model Shipment {
   provider             String         @default("GHN")
   providerOrderCode    String?        @map("provider_order_code")
   requestKey           String         @unique @map("request_key")
+  creationState        ShipmentCreationState @default(CREATED) @map("creation_state")
+  attemptNumber        Int            @default(1) @map("attempt_number")
+  clientOrderCode      String?        @map("client_order_code")
+  pickupSettingVersionId String?      @map("pickup_setting_version_id") @db.Uuid
+  reconcileStartedAt   DateTime?      @map("reconcile_started_at")
+  reconciledAt         DateTime?      @map("reconciled_at")
+  reconcileResult      Json?          @map("reconcile_result")
+  blocksReplacement    Boolean        @default(true) @map("blocks_replacement")
+  replacementAuthorizedAt DateTime?   @map("replacement_authorized_at")
+  replacementAuthorizedBy String?     @map("replacement_authorized_by") @db.Uuid
   status               ShipmentStatus @default(PENDING)
   rawStatus            String?        @map("raw_status")
   shippingFee          Decimal?       @map("shipping_fee") @db.Decimal(10, 2)
@@ -733,6 +858,8 @@ model Shipment {
   events OrderEvent[]
 
   @@unique([provider, providerOrderCode])
+  @@unique([orderId, attemptNumber])
+  @@unique([provider, clientOrderCode])
   @@index([orderId])
   @@index([orderId, status])
   @@index([provider, status])

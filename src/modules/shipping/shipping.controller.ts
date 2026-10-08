@@ -53,6 +53,34 @@ export class ShippingController {
     return buildApiResponse(req, 'SHIPPING_LOCATIONS_FETCHED', 'Lấy danh sách địa chỉ giao hàng thành công', data);
   }
 
+  @Get('address-catalog/provinces')
+  @Public()
+  @ApiOperation({ summary: 'Lấy danh sách Tỉnh/Thành theo catalog revision' })
+  async getAddressCatalogProvinces(@Req() req: Request, @Query('model') model: string | undefined, @Query('revision') revision: string) {
+    const data = await this.shippingService.getAddressCatalogProvinces(this.shippingService.parseAddressModel(model), revision);
+    return buildApiResponse(req, 'ADDRESS_CATALOG_PROVINCES_FETCHED', 'Lấy danh sách tỉnh thành thành công', data);
+  }
+
+  @Get('address-catalog/wards')
+  @Public()
+  @ApiOperation({ summary: 'Lấy danh sách Phường/Xã theo catalog revision' })
+  async getAddressCatalogWards(
+    @Req() req: Request,
+    @Query('model') model: string | undefined,
+    @Query('provinceId') provinceId: string,
+    @Query('revision') revision: string,
+  ) {
+    const data = await this.shippingService.getAddressCatalogWards(this.shippingService.parseAddressModel(model), provinceId, revision);
+    return buildApiResponse(req, 'ADDRESS_CATALOG_WARDS_FETCHED', 'Lấy danh sách phường xã thành công', data);
+  }
+
+  @Get('capabilities')
+  @Public()
+  @ApiOperation({ summary: 'Lấy capability địa chỉ/vận chuyển hiện tại' })
+  async getCapabilities(@Req() req: Request) {
+    return buildApiResponse(req, 'SHIPPING_CAPABILITIES_FETCHED', 'Lấy capability giao hàng thành công', await this.shippingService.getCapabilities());
+  }
+
   @Post('ghn-locations/sync')
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(Role.ADMIN)
@@ -60,5 +88,14 @@ export class ShippingController {
   async syncGhnLocations(@Req() req: Request) {
     const data = await this.ghnLocationSyncService.sync('admin');
     return buildApiResponse(req, 'GHN_LOCATIONS_SYNC_TRIGGERED', 'Đã xử lý yêu cầu đồng bộ địa chỉ GHN', data);
+  }
+
+  @Post('ghn-locations/sync-post-merger')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(Role.ADMIN)
+  @ApiOperation({ summary: 'Admin trigger sync GHN master-data địa chỉ sau sáp nhập' })
+  async syncGhnPostMergerLocations(@Req() req: Request) {
+    const data = await this.ghnLocationSyncService.syncPostMerger('admin');
+    return buildApiResponse(req, 'GHN_POST_MERGER_LOCATIONS_SYNC_TRIGGERED', 'Đã xử lý yêu cầu đồng bộ địa chỉ GHN sau sáp nhập', data);
   }
 }
