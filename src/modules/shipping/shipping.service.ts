@@ -136,7 +136,7 @@ export class ShippingService {
       throw new BadRequestException({ code: 'CAPABILITY_DISABLED', message: 'Vui lòng cấu hình địa chỉ lấy hàng GHN sau sáp nhập trong Admin trước khi checkout.' });
     }
 
-    const fromAddressLine = this.configService.get<string>('GHN_FROM_ADDRESS_LINE')?.trim() || 'FashionAI workshop';
+    const fromAddressLine = pickupSettings.addressLine?.trim() || this.configService.get<string>('GHN_FROM_ADDRESS_LINE')?.trim() || 'FashionAI workshop';
     const fromPhone = this.configService.get<string>('GHN_FROM_PHONE')?.trim() || this.configService.get<string>('SHOP_PHONE')?.trim() || '0900000000';
     const fromName = this.configService.get<string>('GHN_FROM_NAME')?.trim() || 'FashionAI workshop';
 

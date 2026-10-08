@@ -15,6 +15,7 @@ export interface GhnPickupSettings {
   wardCode?: string;
   provinceV3Id?: string;
   wardV3Id?: string;
+  addressLine?: string;
   provinceName?: string;
   wardName?: string;
   source: 'database' | 'env' | 'empty';
@@ -135,6 +136,7 @@ export class AdminSettingsService {
         addressModel: GhnAddressModel.POST_MERGER_2_LEVEL,
         provinceV3Id,
         wardV3Id,
+        addressLine: typeof record.addressLine === 'string' ? record.addressLine : undefined,
         provinceName: typeof record.provinceName === 'string' ? record.provinceName : undefined,
         wardName: typeof record.wardName === 'string' ? record.wardName : undefined,
       };
