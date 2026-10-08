@@ -4,7 +4,7 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-import { CouponDiscountType, GarmentType, GhnAddressModel, NotificationType, OrderStatus, PaymentStatus, Prisma, Product, RefundStatus, Role, ShipmentStatus } from '@prisma/client';
+import { CouponDiscountType, GarmentType, NotificationType, OrderStatus, PaymentStatus, Prisma, Product, RefundStatus, Role, ShipmentStatus } from '@prisma/client';
 import { createHash, createHmac, timingSafeEqual } from 'crypto';
 import { PrismaService } from '../../database/prisma.service';
 import { MailQueueService } from '../mail/mail-queue.service';
@@ -877,14 +877,7 @@ export class OrdersService {
       throw new BadRequestException({ code: 'ADDRESS_REQUIRED', message: 'Vui lòng chọn địa chỉ giao hàng.' });
     }
 
-    const addressModel = dto.shippingInfo.addressModel ?? GhnAddressModel.LEGACY_3_LEVEL;
-    const normalizedLocation = addressModel === GhnAddressModel.POST_MERGER_2_LEVEL
-      ? await this.shippingService.validateGhnPostMergerLocation(dto.shippingInfo.ghnProvinceV3Id, dto.shippingInfo.ghnWardV3Id)
-      : await this.shippingService.validateGhnLocation(
-        dto.shippingInfo.ghnProvinceId ?? 0,
-        dto.shippingInfo.ghnDistrictId ?? 0,
-        dto.shippingInfo.ghnWardCode ?? '',
-      );
+    const normalizedLocation = await this.shippingService.validateGhnLocation(dto.shippingInfo.ghnProvinceV3Id, dto.shippingInfo.ghnWardV3Id);
     return {
       ...dto,
       shippingInfo: {
@@ -904,9 +897,8 @@ export class OrdersService {
       shippingAddressId: dto.shippingAddressId ?? null,
       addressVersion: dto.addressVersion ?? null,
       shippingInfo: dto.shippingAddressId ? null : {
-        ghnProvinceId: dto.shippingInfo.ghnProvinceId,
-        ghnDistrictId: dto.shippingInfo.ghnDistrictId,
-        ghnWardCode: dto.shippingInfo.ghnWardCode,
+        ghnProvinceV3Id: dto.shippingInfo.ghnProvinceV3Id,
+        ghnWardV3Id: dto.shippingInfo.ghnWardV3Id,
         address: dto.shippingInfo.address,
         phone: dto.shippingInfo.phone,
       },
@@ -1012,42 +1004,24 @@ export class OrdersService {
       dto.items.reduce((sum, item) => sum + item.quantity * 500, 0),
     );
 
-    if (dto.shippingInfo.addressModel === GhnAddressModel.POST_MERGER_2_LEVEL) {
-      if (!dto.shippingInfo.ghnProvinceV3Id || !dto.shippingInfo.ghnWardV3Id || !dto.shippingInfo.provinceName || !dto.shippingInfo.wardName) {
-        throw new BadRequestException({ code: 'ADDRESS_INVALID', message: 'Địa chỉ sau sáp nhập không đầy đủ.' });
-      }
-      return this.shippingService.calculatePostMergerFee({
-        receiver: {
-          name: dto.shippingInfo.name,
-          phone: dto.shippingInfo.phone,
-          address: dto.shippingInfo.address,
-          provinceId: dto.shippingInfo.ghnProvinceV3Id,
-          provinceName: dto.shippingInfo.provinceName,
-          wardId: dto.shippingInfo.ghnWardV3Id,
-          wardName: dto.shippingInfo.wardName,
-        },
-        weight,
-        dimensions: { length: 25, width: 20, height: 8 },
-        insuranceValue: itemsTotal,
-        codAmount: 0,
-        content: `FashionAI order - ${dto.items.reduce((sum, item) => sum + item.quantity, 0)} items`,
-      });
+    if (!dto.shippingInfo.ghnProvinceV3Id || !dto.shippingInfo.ghnWardV3Id || !dto.shippingInfo.provinceName || !dto.shippingInfo.wardName) {
+      throw new BadRequestException({ code: 'ADDRESS_INVALID', message: 'Địa chỉ giao hàng không đầy đủ.' });
     }
-
-    const { ghnDistrictId, ghnWardCode } = dto.shippingInfo;
-    if (!ghnDistrictId || !ghnWardCode) {
-      throw new BadRequestException('GHN district and ward are required to calculate shipping fee');
-    }
-
     return this.shippingService.calculateFee({
-      toDistrictId: ghnDistrictId,
-      toWardCode: ghnWardCode,
+      receiver: {
+        name: dto.shippingInfo.name,
+        phone: dto.shippingInfo.phone,
+        address: dto.shippingInfo.address,
+        provinceId: dto.shippingInfo.ghnProvinceV3Id,
+        provinceName: dto.shippingInfo.provinceName,
+        wardId: dto.shippingInfo.ghnWardV3Id,
+        wardName: dto.shippingInfo.wardName,
+      },
       weight,
-      length: 25,
-      width: 20,
-      height: 8,
+      dimensions: { length: 25, width: 20, height: 8 },
       insuranceValue: itemsTotal,
       codAmount: 0,
+      content: `FashionAI order - ${dto.items.reduce((sum, item) => sum + item.quantity, 0)} items`,
     });
   }
 
@@ -1503,12 +1477,9 @@ export class OrdersService {
       note?: string;
       notes?: string;
       provinceName?: string;
-      districtName?: string;
       wardName?: string;
-      ghnDistrictId?: number;
-      ghnWardCode?: string;
-      districtId?: number;
-      wardCode?: string;
+      ghnProvinceV3Id?: string;
+      ghnWardV3Id?: string;
     };
     const items = order.items ?? [];
     const weight = Math.max(500, items.reduce((sum, item) => sum + item.quantity * 500, 0));
@@ -1520,11 +1491,10 @@ export class OrdersService {
         name: shippingInfo.name,
         phone: shippingInfo.phone,
         address: shippingInfo.address || '',
+        provinceId: shippingInfo.ghnProvinceV3Id,
+        wardId: shippingInfo.ghnWardV3Id,
         provinceName: shippingInfo.provinceName,
-        districtName: shippingInfo.districtName,
         wardName: shippingInfo.wardName,
-        districtId: shippingInfo.ghnDistrictId ?? shippingInfo.districtId,
-        wardCode: shippingInfo.ghnWardCode ?? shippingInfo.wardCode,
       },
       items: items.map((item) => ({
         name: item.productNameSnapshot || item.product?.name || 'FashionAI item',

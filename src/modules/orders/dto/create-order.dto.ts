@@ -1,11 +1,9 @@
 import { ApiProperty } from '@nestjs/swagger';
-import { GhnAddressModel } from '@prisma/client';
 import { Type } from 'class-transformer';
 import {
   ArrayMaxSize,
   ArrayMinSize,
   IsArray,
-  IsEnum,
   IsInt,
   IsNotEmpty,
   IsOptional,
@@ -46,11 +44,6 @@ export class CreateOrderItemDto {
 }
 
 export class ShippingInfoDto {
-  @ApiProperty({ enum: GhnAddressModel, required: false, default: GhnAddressModel.LEGACY_3_LEVEL })
-  @IsEnum(GhnAddressModel)
-  @IsOptional()
-  addressModel?: GhnAddressModel;
-
   @ApiProperty({ example: 'Nguyen Van A' })
   @IsString()
   @IsNotEmpty()
@@ -61,7 +54,7 @@ export class ShippingInfoDto {
   @IsNotEmpty()
   phone!: string;
 
-  @ApiProperty({ example: '123 Nguyen Trai, Quan 1, TP.HCM' })
+  @ApiProperty({ example: '123 Nguyen Trai, Phuong Long Binh, TP.HCM' })
   @IsString()
   @IsNotEmpty()
   address!: string;
@@ -71,12 +64,7 @@ export class ShippingInfoDto {
   @IsOptional()
   provinceName?: string;
 
-  @ApiProperty({ required: false, example: 'Quận 1' })
-  @IsString()
-  @IsOptional()
-  districtName?: string;
-
-  @ApiProperty({ required: false, example: 'Phường Bến Nghé' })
+  @ApiProperty({ required: false, example: 'Phường Long Bình' })
   @IsString()
   @IsOptional()
   wardName?: string;
@@ -91,27 +79,12 @@ export class ShippingInfoDto {
   @IsOptional()
   notes?: string;
 
-  @ApiProperty({ required: false, example: 202 })
-  @IsInt()
-  @IsOptional()
-  ghnProvinceId?: number;
-
-  @ApiProperty({ required: false, example: 1442 })
-  @IsInt()
-  @IsOptional()
-  ghnDistrictId?: number;
-
-  @ApiProperty({ required: false, example: '21211' })
-  @IsString()
-  @IsOptional()
-  ghnWardCode?: string;
-
   @ApiProperty({ required: false, example: '1000001' })
   @IsString()
   @IsOptional()
   ghnProvinceV3Id?: string;
 
-  @ApiProperty({ required: false, example: '1003646' })
+  @ApiProperty({ required: false, example: '1003575' })
   @IsString()
   @IsOptional()
   ghnWardV3Id?: string;

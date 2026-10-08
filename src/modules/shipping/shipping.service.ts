@@ -2,29 +2,10 @@ import { BadRequestException, ConflictException, Injectable, NotFoundException, 
 import { ConfigService } from '@nestjs/config';
 import { GhnAddressModel, GhnLocationLevel, Prisma, ShipmentStatus } from '@prisma/client';
 import { PrismaService } from '../../database/prisma.service';
-import { RedisService } from '../../common/services/redis.service';
-import { CalculateShippingFeeDto } from './dto/calculate-shipping-fee.dto';
 import { ShippingProviderType } from './constants/shipping-provider.enum';
 import { ShippingProviderFactory } from './shipping-provider.factory';
 import { GhnShippingProvider } from './providers/ghn/ghn.provider';
 import { AdminSettingsService } from '../admin/admin-settings.service';
-
-export interface ShippingLocationWard {
-  code: string;
-  name: string;
-}
-
-export interface ShippingLocationDistrict {
-  id: number;
-  name: string;
-  wards: ShippingLocationWard[];
-}
-
-export interface ShippingLocationProvince {
-  id: number;
-  name: string;
-  districts: ShippingLocationDistrict[];
-}
 
 export interface AddressCatalogLocation {
   id: string;
@@ -35,59 +16,13 @@ export interface AddressCatalogLocation {
 
 @Injectable()
 export class ShippingService {
-  private locationsCache: { expiresAt: number; revision: string; data: ShippingLocationProvince[] } | null = null;
-  private readonly LOCATIONS_CACHE_TTL_SECONDS = 24 * 60 * 60;
-
   constructor(
     private readonly configService: ConfigService,
     private readonly prisma: PrismaService,
     private readonly factory: ShippingProviderFactory,
     private readonly ghnProvider: GhnShippingProvider,
     private readonly adminSettingsService: AdminSettingsService,
-    private readonly redisService: RedisService,
   ) {}
-
-  async calculateFee(dto: CalculateShippingFeeDto) {
-    const providerType = this.getConfiguredProvider();
-
-    const pickupSettings = await this.adminSettingsService.getGhnPickupSettings();
-    return this.factory.get(providerType).calculateFee({
-      from: {
-        address: 'FashionAI workshop',
-        districtId: pickupSettings.districtId,
-        wardCode: pickupSettings.wardCode,
-      },
-      to: {
-        address: '',
-        districtId: dto.toDistrictId,
-        wardCode: dto.toWardCode,
-      },
-      weight: dto.weight,
-      dimensions: dto.length && dto.width && dto.height
-        ? { length: dto.length, width: dto.width, height: dto.height }
-        : undefined,
-      insuranceValue: dto.insuranceValue,
-      codAmount: dto.codAmount,
-    });
-  }
-
-  async createShipment(
-    input: Parameters<ReturnType<ShippingProviderFactory['get']>['createShipment']>[0],
-    idempotencyKey?: string,
-  ) {
-    const pickupSettings = await this.adminSettingsService.getGhnPickupSettings();
-    return this.factory.get(this.getConfiguredProvider()).createShipment(
-      {
-        ...input,
-        sender: {
-          ...input.sender,
-          districtId: input.sender.addressModel === GhnAddressModel.POST_MERGER_2_LEVEL ? input.sender.districtId : input.sender.districtId ?? pickupSettings.districtId,
-          wardCode: input.sender.addressModel === GhnAddressModel.POST_MERGER_2_LEVEL ? input.sender.wardCode : input.sender.wardCode ?? pickupSettings.wardCode,
-        },
-      },
-      idempotencyKey,
-    );
-  }
 
   async cancelShipment(provider: ShippingProviderType, providerOrderCode: string) {
     return this.factory.get(provider).cancelShipment(providerOrderCode);
@@ -101,21 +36,14 @@ export class ShippingService {
     return ShippingProviderType.GHN;
   }
 
-  async getProvinces() {
-    const catalog = await this.getPublishedCatalog(GhnAddressModel.LEGACY_3_LEVEL);
-    const cached = await this.getCachedJson<{ id: number; name: string }[]>(this.locationsCacheKey('legacy-provinces', catalog.revision.toString()));
-    if (cached) return cached;
-
-    const provinces = await this.prisma.ghnLocation.findMany({
-      where: { addressModel: GhnAddressModel.LEGACY_3_LEVEL, catalogGeneration: catalog.generation, level: GhnLocationLevel.PROVINCE, isActive: true },
-      orderBy: { name: 'asc' },
-    });
-    const result = provinces.map((item) => ({ id: Number(item.code), name: item.name })).filter((item) => Number.isFinite(item.id));
-    await this.setCachedJson(this.locationsCacheKey('legacy-provinces', catalog.revision.toString()), result);
-    return result;
+  async createShipment(
+    input: Parameters<ReturnType<ShippingProviderFactory['get']>['createShipment']>[0],
+    idempotencyKey?: string,
+  ) {
+    return this.factory.get(this.getConfiguredProvider()).createShipment(input, idempotencyKey);
   }
 
-  async calculatePostMergerFee(params: {
+  async calculateFee(params: {
     receiver: {
       name?: string;
       phone?: string;
@@ -132,17 +60,16 @@ export class ShippingService {
     content?: string;
   }) {
     const pickupSettings = await this.adminSettingsService.getGhnPickupSettings();
-    if (pickupSettings.addressModel !== GhnAddressModel.POST_MERGER_2_LEVEL || !pickupSettings.provinceV3Id || !pickupSettings.wardV3Id || !pickupSettings.provinceName || !pickupSettings.wardName) {
-      throw new BadRequestException({ code: 'CAPABILITY_DISABLED', message: 'Vui lòng cấu hình địa chỉ lấy hàng GHN sau sáp nhập trong Admin trước khi checkout.' });
+    if (!pickupSettings.provinceV3Id || !pickupSettings.wardV3Id || !pickupSettings.provinceName || !pickupSettings.wardName) {
+      throw new BadRequestException({ code: 'CAPABILITY_DISABLED', message: 'Vui lòng cấu hình địa chỉ lấy hàng GHN trong Admin trước khi checkout.' });
     }
 
     const fromAddressLine = pickupSettings.addressLine?.trim() || this.configService.get<string>('GHN_FROM_ADDRESS_LINE')?.trim() || 'FashionAI workshop';
     const fromPhone = this.configService.get<string>('GHN_FROM_PHONE')?.trim() || this.configService.get<string>('SHOP_PHONE')?.trim() || '0900000000';
     const fromName = this.configService.get<string>('GHN_FROM_NAME')?.trim() || 'FashionAI workshop';
 
-    return this.ghnProvider.previewFee({
+    return this.ghnProvider.calculateFee({
       sender: {
-        addressModel: GhnAddressModel.POST_MERGER_2_LEVEL,
         name: fromName,
         phone: fromPhone,
         address: [fromAddressLine, pickupSettings.wardName, pickupSettings.provinceName].filter(Boolean).join(', '),
@@ -152,7 +79,6 @@ export class ShippingService {
         wardName: pickupSettings.wardName,
       },
       receiver: {
-        addressModel: GhnAddressModel.POST_MERGER_2_LEVEL,
         name: params.receiver.name,
         phone: params.receiver.phone,
         address: params.receiver.address,
@@ -169,76 +95,7 @@ export class ShippingService {
     });
   }
 
-  async getDistricts(provinceId: number) {
-    const catalog = await this.getPublishedCatalog(GhnAddressModel.LEGACY_3_LEVEL);
-    const cacheKey = this.locationsCacheKey('legacy-districts', `${catalog.revision}:${provinceId}`);
-    const cached = await this.getCachedJson<{ id: number; name: string }[]>(cacheKey);
-    if (cached) return cached;
-
-    const districts = await this.prisma.ghnLocation.findMany({
-      where: { addressModel: GhnAddressModel.LEGACY_3_LEVEL, catalogGeneration: catalog.generation, level: GhnLocationLevel.DISTRICT, parentCode: String(provinceId), isActive: true },
-      orderBy: { name: 'asc' },
-    });
-    const result = districts.map((item) => ({ id: Number(item.code), name: item.name })).filter((item) => Number.isFinite(item.id));
-    await this.setCachedJson(cacheKey, result);
-    return result;
-  }
-
-  async getWards(districtId: number) {
-    const catalog = await this.getPublishedCatalog(GhnAddressModel.LEGACY_3_LEVEL);
-    const cacheKey = this.locationsCacheKey('legacy-wards', `${catalog.revision}:${districtId}`);
-    const cached = await this.getCachedJson<{ code: string; name: string }[]>(cacheKey);
-    if (cached) return cached;
-
-    const wards = await this.prisma.ghnLocation.findMany({
-      where: { addressModel: GhnAddressModel.LEGACY_3_LEVEL, catalogGeneration: catalog.generation, level: GhnLocationLevel.WARD, parentCode: String(districtId), isActive: true },
-      orderBy: { name: 'asc' },
-    });
-    const result = wards.map((item) => ({ code: item.code, name: item.name }));
-    await this.setCachedJson(cacheKey, result);
-    return result;
-  }
-
-  private locationsCacheKey(scope: string, parentId?: number | string) {
-    return parentId === undefined ? `ghn:locations:${scope}` : `ghn:locations:${scope}:${parentId}`;
-  }
-
-  private async getCachedJson<T>(key: string): Promise<T | null> {
-    const raw = await this.redisService.get(key);
-    if (!raw) return null;
-    try {
-      return JSON.parse(raw) as T;
-    } catch {
-      return null;
-    }
-  }
-
-  private async setCachedJson(key: string, value: unknown) {
-    await this.redisService.set(key, JSON.stringify(value), this.LOCATIONS_CACHE_TTL_SECONDS);
-  }
-
-  async validateGhnLocation(provinceId: number, districtId: number, wardCode: string) {
-    const catalog = await this.getPublishedCatalog(GhnAddressModel.LEGACY_3_LEVEL);
-    const [province, district, ward] = await Promise.all([
-      this.prisma.ghnLocation.findFirst({ where: { addressModel: GhnAddressModel.LEGACY_3_LEVEL, catalogGeneration: catalog.generation, level: GhnLocationLevel.PROVINCE, code: String(provinceId), isActive: true } }),
-      this.prisma.ghnLocation.findFirst({ where: { addressModel: GhnAddressModel.LEGACY_3_LEVEL, catalogGeneration: catalog.generation, level: GhnLocationLevel.DISTRICT, code: String(districtId), parentCode: String(provinceId), isActive: true } }),
-      this.prisma.ghnLocation.findFirst({ where: { addressModel: GhnAddressModel.LEGACY_3_LEVEL, catalogGeneration: catalog.generation, level: GhnLocationLevel.WARD, code: wardCode, parentCode: String(districtId), isActive: true } }),
-    ]);
-    if (!province) throw new BadRequestException({ code: 'ADDRESS_INVALID', message: 'Tỉnh/Thành không hợp lệ.' });
-    if (!district) throw new BadRequestException({ code: 'ADDRESS_INVALID', message: 'Quận/Huyện không thuộc Tỉnh/Thành đã chọn.' });
-    if (!ward) throw new BadRequestException({ code: 'ADDRESS_INVALID', message: 'Phường/Xã không thuộc Quận/Huyện đã chọn.' });
-    return {
-      ghnAddressModel: GhnAddressModel.LEGACY_3_LEVEL,
-      ghnProvinceId: Number(province.code),
-      ghnDistrictId: Number(district.code),
-      ghnWardCode: ward.code,
-      provinceName: province.name,
-      districtName: district.name,
-      wardName: ward.name,
-    };
-  }
-
-  async validateGhnPostMergerLocation(provinceId: string | undefined, wardId: string | undefined) {
+  async validateGhnLocation(provinceId: string | undefined, wardId: string | undefined) {
     const normalizedProvinceId = provinceId?.trim();
     const normalizedWardId = wardId?.trim();
     if (!normalizedProvinceId || !normalizedWardId) {
@@ -266,100 +123,39 @@ export class ShippingService {
     };
   }
 
-  async getLocations() {
-    const now = Date.now();
-    const catalog = await this.getPublishedCatalog(GhnAddressModel.LEGACY_3_LEVEL);
-    const revision = catalog.revision.toString();
-    if (this.locationsCache && this.locationsCache.revision === revision && this.locationsCache.expiresAt > now) {
-      return this.locationsCache.data;
-    }
-
-    const where = { addressModel: GhnAddressModel.LEGACY_3_LEVEL, catalogGeneration: catalog.generation, isActive: true };
-    const [provinceRows, districtRows, wardRows] = await Promise.all([
-      this.prisma.ghnLocation.findMany({ where: { ...where, level: GhnLocationLevel.PROVINCE }, orderBy: { name: 'asc' } }),
-      this.prisma.ghnLocation.findMany({ where: { ...where, level: GhnLocationLevel.DISTRICT }, orderBy: { name: 'asc' } }),
-      this.prisma.ghnLocation.findMany({ where: { ...where, level: GhnLocationLevel.WARD }, orderBy: { name: 'asc' } }),
-    ]);
-
-    const wardsByDistrict = new Map<string, ShippingLocationWard[]>();
-    for (const ward of wardRows) {
-      if (!ward.parentCode) continue;
-      const list = wardsByDistrict.get(ward.parentCode) ?? [];
-      list.push({ code: ward.code, name: ward.name });
-      wardsByDistrict.set(ward.parentCode, list);
-    }
-
-    const districtsByProvince = new Map<string, ShippingLocationDistrict[]>();
-    for (const district of districtRows) {
-      if (!district.parentCode) continue;
-      const districtId = Number(district.code);
-      if (!Number.isFinite(districtId)) continue;
-      const list = districtsByProvince.get(district.parentCode) ?? [];
-      list.push({ id: districtId, name: district.name, wards: wardsByDistrict.get(district.code) ?? [] });
-      districtsByProvince.set(district.parentCode, list);
-    }
-
-    const data = provinceRows
-      .map((province) => {
-        const provinceId = Number(province.code);
-        if (!Number.isFinite(provinceId)) return null;
-        return {
-          id: provinceId,
-          name: province.name,
-          districts: districtsByProvince.get(province.code) ?? [],
-        };
-      })
-      .filter((item): item is ShippingLocationProvince => item !== null);
-
-    this.locationsCache = {
-      expiresAt: now + this.LOCATIONS_CACHE_TTL_SECONDS * 1000,
-      revision,
-      data,
-    };
-
-    return data;
-  }
-
-  async getAddressCatalogProvinces(model: GhnAddressModel, revision: string) {
+  async getAddressCatalogProvinces(revision: string) {
     if (!revision) throw new BadRequestException({ code: 'VALIDATION_ERROR', message: 'Thiếu catalog revision.' });
-    const catalog = await this.getPublishedCatalog(model, revision);
+    const catalog = await this.getPublishedCatalog(GhnAddressModel.POST_MERGER_2_LEVEL, revision);
     const rows = await this.prisma.ghnLocation.findMany({
-      where: { addressModel: model, catalogGeneration: catalog.generation, level: GhnLocationLevel.PROVINCE, isActive: true },
+      where: { addressModel: GhnAddressModel.POST_MERGER_2_LEVEL, catalogGeneration: catalog.generation, level: GhnLocationLevel.PROVINCE, isActive: true },
       orderBy: { name: 'asc' },
     });
     return rows.map((row) => this.toAddressCatalogLocation(row, catalog.revision));
   }
 
-  async getAddressCatalogWards(model: GhnAddressModel, provinceId: string, revision: string) {
+  async getAddressCatalogWards(provinceId: string, revision: string) {
     if (!revision) throw new BadRequestException({ code: 'VALIDATION_ERROR', message: 'Thiếu catalog revision.' });
     if (!provinceId?.trim()) throw new BadRequestException({ code: 'VALIDATION_ERROR', message: 'Thiếu provinceId.' });
-    const catalog = await this.getPublishedCatalog(model, revision);
+    const catalog = await this.getPublishedCatalog(GhnAddressModel.POST_MERGER_2_LEVEL, revision);
     const rows = await this.prisma.ghnLocation.findMany({
-      where: { addressModel: model, catalogGeneration: catalog.generation, level: GhnLocationLevel.WARD, parentCode: provinceId, isActive: true },
+      where: { addressModel: GhnAddressModel.POST_MERGER_2_LEVEL, catalogGeneration: catalog.generation, level: GhnLocationLevel.WARD, parentCode: provinceId, isActive: true },
       orderBy: { name: 'asc' },
     });
     return rows.map((row) => this.toAddressCatalogLocation(row, catalog.revision));
   }
 
   async getCapabilities() {
-    const postMergerCatalog = await this.prisma.ghnCatalogMetadata.findUnique({ where: { addressModel: GhnAddressModel.POST_MERGER_2_LEVEL } });
+    const catalog = await this.prisma.ghnCatalogMetadata.findUnique({ where: { addressModel: GhnAddressModel.POST_MERGER_2_LEVEL } });
     return {
       capabilityVersion: 'ghn-address-2026-01',
       policyVersion: 'FASHION_SINGLE_PARCEL_V1',
       serverTime: new Date().toISOString(),
-      catalogRevision: postMergerCatalog?.catalogRevision.toString() ?? null,
-      catalogEnabled: Boolean(postMergerCatalog),
-      newAddressWriteEnabled: false,
-      newAddressCheckoutEnabled: false,
-      legacyCheckoutAllowed: true,
+      catalogRevision: catalog?.catalogRevision.toString() ?? null,
+      catalogEnabled: Boolean(catalog),
+      newAddressWriteEnabled: true,
+      newAddressCheckoutEnabled: true,
       upgradeRequired: false,
     };
-  }
-
-  parseAddressModel(value: string | undefined): GhnAddressModel {
-    if (value === GhnAddressModel.POST_MERGER_2_LEVEL) return GhnAddressModel.POST_MERGER_2_LEVEL;
-    if (!value || value === GhnAddressModel.LEGACY_3_LEVEL) return GhnAddressModel.LEGACY_3_LEVEL;
-    throw new BadRequestException({ code: 'VALIDATION_ERROR', message: 'Mô hình địa chỉ không hợp lệ.' });
   }
 
   private async getPublishedCatalog(model: GhnAddressModel, revision?: string) {

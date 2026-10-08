@@ -1,7 +1,7 @@
 import { Injectable } from '@nestjs/common';
-import { GhnAddressModel, ShipmentStatus } from '@prisma/client';
+import { ShipmentStatus } from '@prisma/client';
 import { ShippingProviderType } from '../../constants/shipping-provider.enum';
-import { CalculateShippingFeeInput, CreateShipmentInput, CreateShipmentResult, PreviewShippingFeeInput, ShipmentTracking, ShippingFee } from '../../types/shipping.types';
+import { CreateShipmentInput, CreateShipmentResult, PreviewShippingFeeInput, ShipmentTracking, ShippingFee } from '../../types/shipping.types';
 
 export interface IGhnEnvelope<T> {
   code?: number;
@@ -80,45 +80,18 @@ export class GhnMapper {
     }
   }
 
-  toFeeRequest(input: CalculateShippingFeeInput, fromDistrictId?: number, fromWardCode?: string) {
-    const resolvedFromDistrictId = input.from.districtId ?? fromDistrictId;
-    const resolvedFromWardCode = input.from.wardCode ?? fromWardCode;
-    return {
-      ...(resolvedFromDistrictId ? { from_district_id: resolvedFromDistrictId } : {}),
-      ...(resolvedFromWardCode ? { from_ward_code: resolvedFromWardCode } : {}),
-      to_district_id: input.to.districtId,
-      to_ward_code: input.to.wardCode,
-      service_type_id: this.resolveServiceType(input.weight),
-      weight: input.weight,
-      length: input.dimensions?.length ?? 25,
-      width: input.dimensions?.width ?? 20,
-      height: input.dimensions?.height ?? 8,
-      insurance_value: input.insuranceValue ?? 0,
-      cod_value: input.codAmount ?? 0,
-    };
-  }
-
-  toCreateOrderRequest(input: CreateShipmentInput, fromDistrictId?: number, fromWardCode?: string) {
-    const senderIsPostMerger = input.sender.addressModel === GhnAddressModel.POST_MERGER_2_LEVEL;
-    const receiverIsPostMerger = input.receiver.addressModel === GhnAddressModel.POST_MERGER_2_LEVEL;
-    const resolvedFromDistrictId = senderIsPostMerger ? undefined : input.sender.districtId ?? fromDistrictId;
-    const resolvedFromWardCode = senderIsPostMerger ? undefined : input.sender.wardCode ?? fromWardCode;
+  toCreateOrderRequest(input: CreateShipmentInput) {
     return {
       payment_type_id: 1,
       required_note: 'KHONGCHOXEMHANG',
       client_order_code: input.clientOrderCode,
-      ...(senderIsPostMerger ? { is_new_from_address: true } : {}),
-      ...(receiverIsPostMerger ? { is_new_to_address: true } : {}),
-      ...(resolvedFromDistrictId ? { from_district_id: resolvedFromDistrictId } : {}),
-      ...(resolvedFromWardCode ? { from_ward_code: resolvedFromWardCode } : {}),
+      is_new_from_address: true,
+      is_new_to_address: true,
       to_name: input.receiver.name,
       to_phone: input.receiver.phone,
       to_address: input.receiver.address,
       to_ward_name: input.receiver.wardName,
       to_province_name: input.receiver.provinceName,
-      ...(receiverIsPostMerger ? {} : { to_district_name: input.receiver.districtName }),
-      ...(receiverIsPostMerger ? {} : { to_ward_code: input.receiver.wardCode }),
-      ...(receiverIsPostMerger ? {} : { to_district_id: input.receiver.districtId }),
       service_type_id: this.resolveServiceType(input.weight),
       weight: input.weight,
       length: input.dimensions?.length ?? 25,
@@ -138,25 +111,21 @@ export class GhnMapper {
   }
 
   toPreviewOrderRequest(input: PreviewShippingFeeInput) {
-    const senderIsPostMerger = input.sender.addressModel === GhnAddressModel.POST_MERGER_2_LEVEL;
-    const receiverIsPostMerger = input.receiver.addressModel === GhnAddressModel.POST_MERGER_2_LEVEL;
     return {
       payment_type_id: 1,
       required_note: 'KHONGCHOXEMHANG',
-      ...(senderIsPostMerger ? { is_new_from_address: true } : {}),
-      ...(receiverIsPostMerger ? { is_new_to_address: true } : {}),
+      is_new_from_address: true,
+      is_new_to_address: true,
       from_name: input.sender.name ?? 'FashionAI workshop',
       from_phone: input.sender.phone ?? '0900000000',
       from_address: input.sender.address,
       from_ward_name: input.sender.wardName,
       from_province_name: input.sender.provinceName,
-      ...(senderIsPostMerger ? {} : { from_district_id: input.sender.districtId, from_ward_code: input.sender.wardCode }),
       to_name: input.receiver.name ?? 'FashionAI customer',
       to_phone: input.receiver.phone ?? '0900000000',
       to_address: input.receiver.address,
       to_ward_name: input.receiver.wardName,
       to_province_name: input.receiver.provinceName,
-      ...(receiverIsPostMerger ? {} : { to_district_name: input.receiver.districtName, to_ward_code: input.receiver.wardCode, to_district_id: input.receiver.districtId }),
       service_type_id: this.resolveServiceType(input.weight),
       weight: input.weight,
       length: input.dimensions?.length ?? 25,
@@ -165,19 +134,6 @@ export class GhnMapper {
       insurance_value: input.insuranceValue ?? 0,
       cod_amount: input.codAmount ?? 0,
       content: input.content ?? 'FashionAI order',
-    };
-  }
-
-  toShippingFee(response: IGhnEnvelope<IGhnFeeData>): ShippingFee {
-    const data = response.data ?? {};
-    return {
-      provider: ShippingProviderType.GHN,
-      totalFee: Number(data.total ?? 0),
-      serviceFee: data.service_fee,
-      insuranceFee: data.insurance_fee,
-      codFee: data.cod_fee,
-      expectedDeliveryTime: data.expected_delivery_time ? new Date(data.expected_delivery_time) : undefined,
-      raw: response,
     };
   }
 

@@ -1,9 +1,7 @@
 import { BadGatewayException, Injectable } from '@nestjs/common';
-import { ConfigService } from '@nestjs/config';
 import { ShippingProviderType } from '../../constants/shipping-provider.enum';
 import { IShippingProvider } from '../../interfaces/shipping-provider.interface';
-import { CalculateShippingFeeInput, CreateShipmentInput, PreviewShippingFeeInput } from '../../types/shipping.types';
-import { getGhnConfig } from './ghn.config';
+import { CreateShipmentInput, PreviewShippingFeeInput } from '../../types/shipping.types';
 import { GhnClient } from './ghn.client';
 import { GhnMapper, IGhnCreateOrderData, IGhnEnvelope, IGhnFeeData, IGhnTrackingData } from './ghn.mapper';
 
@@ -14,16 +12,9 @@ export class GhnShippingProvider implements IShippingProvider {
   constructor(
     private readonly client: GhnClient,
     private readonly mapper: GhnMapper,
-    private readonly configService: ConfigService,
   ) {}
 
-  async calculateFee(input: CalculateShippingFeeInput) {
-    const config = getGhnConfig(this.configService);
-    const response = await this.client.post<IGhnEnvelope<IGhnFeeData>>('/shiip/public-api/v2/shipping-order/fee', this.mapper.toFeeRequest(input, config.fromDistrictId, config.fromWardCode));
-    return this.mapper.toShippingFee(response);
-  }
-
-  async previewFee(input: PreviewShippingFeeInput) {
+  async calculateFee(input: PreviewShippingFeeInput) {
     const response = await this.client.post<IGhnEnvelope<IGhnFeeData>>('/shiip/public-api/v2/shipping-order/preview', this.mapper.toPreviewOrderRequest(input));
     const result = this.mapper.toPreviewShippingFee(response);
     if (!Number.isFinite(result.totalFee) || result.totalFee < 0) {
@@ -33,8 +24,7 @@ export class GhnShippingProvider implements IShippingProvider {
   }
 
   async createShipment(input: CreateShipmentInput) {
-    const config = getGhnConfig(this.configService);
-    const response = await this.client.post<IGhnEnvelope<IGhnCreateOrderData>>('/shiip/public-api/v2/shipping-order/create', this.mapper.toCreateOrderRequest(input, config.fromDistrictId, config.fromWardCode));
+    const response = await this.client.post<IGhnEnvelope<IGhnCreateOrderData>>('/shiip/public-api/v2/shipping-order/create', this.mapper.toCreateOrderRequest(input));
     const result = this.mapper.toCreateShipmentResult(response);
     if (!result.providerOrderCode) {
       throw new BadGatewayException('GHN did not return order_code');
