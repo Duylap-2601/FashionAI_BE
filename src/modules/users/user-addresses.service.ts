@@ -1,13 +1,17 @@
-import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ConflictException, HttpException, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { Prisma, UserAddress } from '@prisma/client';
 import { PrismaService } from '../../database/prisma.service';
 import { ShippingService } from '../shipping/shipping.service';
 import { UpsertUserAddressDto } from './dto/user-address.dto';
 
 const ADDRESS_LIMIT = 10;
+// Street line ngắn hơn mức này gần như chắc chắn không phải địa chỉ thật
+// (GHN cũng thường trả TO_ADDRESS_CONFLICT cho các case này).
+const MIN_ADDRESS_LINE_LENGTH = 5;
 
 @Injectable()
 export class UserAddressesService {
+  private readonly logger = new Logger(UserAddressesService.name);
   constructor(
     private readonly prisma: PrismaService,
     private readonly shippingService: ShippingService,
@@ -21,7 +25,7 @@ export class UserAddressesService {
   }
 
   async create(userId: string, dto: UpsertUserAddressDto) {
-    const normalized = await this.normalizeInput(dto);
+    const normalized = await this.normalizeInput(dto, true);
     return this.prisma.$transaction(async (tx) => {
       await this.lockUser(tx, userId);
       const count = await tx.userAddress.count({ where: { userId } });
@@ -35,7 +39,15 @@ export class UserAddressesService {
   }
 
   async update(userId: string, id: string, dto: UpsertUserAddressDto) {
-    const normalized = await this.normalizeInput(dto);
+    const current = await this.prisma.userAddress.findFirst({
+      where: { id, userId },
+      select: { ghnProvinceV3Id: true, ghnWardV3Id: true },
+    });
+    const locationChanged =
+      !current ||
+      current.ghnProvinceV3Id !== dto.ghnProvinceV3Id?.trim() ||
+      current.ghnWardV3Id !== dto.ghnWardV3Id?.trim();
+    const normalized = await this.normalizeInput(dto, locationChanged);
     return this.prisma.$transaction(async (tx) => {
       await this.lockUser(tx, userId);
       const current = await tx.userAddress.findFirst({ where: { id, userId } });
@@ -98,14 +110,57 @@ export class UserAddressesService {
     };
   }
 
-  private async normalizeInput(dto: UpsertUserAddressDto) {
+  private async normalizeInput(dto: UpsertUserAddressDto, probeDeliverability: boolean) {
     const recipientName = dto.recipientName.trim();
     const phone = this.normalizePhone(dto.phone);
     const addressLine = dto.addressLine.trim();
     const label = dto.label?.trim() || null;
     if (!recipientName || !addressLine) throw new BadRequestException({ code: 'ADDRESS_INVALID', message: 'Vui lòng nhập đầy đủ tên người nhận và địa chỉ.' });
+    if (addressLine.length < MIN_ADDRESS_LINE_LENGTH) {
+      throw new BadRequestException({ code: 'ADDRESS_INVALID', message: 'Vui lòng nhập số nhà và tên đường đầy đủ.' });
+    }
     const location = await this.shippingService.validateGhnLocation(dto.ghnProvinceV3Id, dto.ghnWardV3Id);
+    if (probeDeliverability) {
+      await this.probeDeliverability({ name: recipientName, phone, addressLine }, location);
+    }
     return { recipientName, phone, addressLine, label, ...location };
+  }
+
+  /**
+   * Hỏi GHN thử một preview kiện 500g để bắt địa chỉ GHN không giao được
+   * (sai phường/xã, khu vực khóa) ngay lúc lưu, thay vì đợi tới checkout.
+   * Chỉ reject khi GHN khẳng định địa chỉ sai; mọi lỗi khác (mất mạng,
+   * chưa cấu hình pickup, route theo kiện thực tế) thì cho lưu và để
+   * quote-time validation quyết định.
+   */
+  private async probeDeliverability(
+    contact: { name: string; phone: string; addressLine: string },
+    location: { ghnProvinceV3Id: string; ghnWardV3Id: string; provinceName: string; wardName: string },
+  ) {
+    try {
+      await this.shippingService.calculateFee({
+        receiver: {
+          name: contact.name,
+          phone: contact.phone,
+          address: [contact.addressLine, location.wardName, location.provinceName].filter(Boolean).join(', '),
+          provinceId: location.ghnProvinceV3Id,
+          provinceName: location.provinceName,
+          wardId: location.ghnWardV3Id,
+          wardName: location.wardName,
+        },
+        weight: 500,
+        dimensions: { length: 25, width: 20, height: 8 },
+        insuranceValue: 0,
+        codAmount: 0,
+        content: 'FashionAI address check',
+      });
+    } catch (error) {
+      if (error instanceof HttpException) {
+        const res = error.getResponse() as { code?: string };
+        if (res?.code === 'ADDRESS_RECONFIRM_REQUIRED') throw error;
+      }
+      this.logger.warn(`GHN address probe skipped, quote-time validation remains | error=${error instanceof Error ? error.message : 'unknown'}`);
+    }
   }
 
   private normalizePhone(value: string) {
