@@ -4,7 +4,7 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-import { CouponDiscountType, GarmentType, NotificationType, OrderStatus, PaymentStatus, Prisma, Product, RefundStatus, Role, ShipmentStatus } from '@prisma/client';
+import { CouponDiscountType, GarmentType, GhnAddressModel, NotificationType, OrderStatus, PaymentStatus, Prisma, Product, RefundStatus, Role, ShipmentStatus } from '@prisma/client';
 import { createHash, createHmac, timingSafeEqual } from 'crypto';
 import { PrismaService } from '../../database/prisma.service';
 import { MailQueueService } from '../mail/mail-queue.service';
@@ -877,11 +877,14 @@ export class OrdersService {
       throw new BadRequestException({ code: 'ADDRESS_REQUIRED', message: 'Vui lòng chọn địa chỉ giao hàng.' });
     }
 
-    const normalizedLocation = await this.shippingService.validateGhnLocation(
-      dto.shippingInfo.ghnProvinceId ?? 0,
-      dto.shippingInfo.ghnDistrictId ?? 0,
-      dto.shippingInfo.ghnWardCode ?? '',
-    );
+    const addressModel = dto.shippingInfo.addressModel ?? GhnAddressModel.LEGACY_3_LEVEL;
+    const normalizedLocation = addressModel === GhnAddressModel.POST_MERGER_2_LEVEL
+      ? await this.shippingService.validateGhnPostMergerLocation(dto.shippingInfo.ghnProvinceV3Id, dto.shippingInfo.ghnWardV3Id)
+      : await this.shippingService.validateGhnLocation(
+        dto.shippingInfo.ghnProvinceId ?? 0,
+        dto.shippingInfo.ghnDistrictId ?? 0,
+        dto.shippingInfo.ghnWardCode ?? '',
+      );
     return {
       ...dto,
       shippingInfo: {
@@ -1004,15 +1007,37 @@ export class OrdersService {
   }
 
   private calculateOrderShippingFee(dto: ResolvedCreateOrderDto, itemsTotal: number) {
-    const { ghnDistrictId, ghnWardCode } = dto.shippingInfo;
-    if (!ghnDistrictId || !ghnWardCode) {
-      throw new BadRequestException('GHN district and ward are required to calculate shipping fee');
-    }
-
     const weight = Math.max(
       500,
       dto.items.reduce((sum, item) => sum + item.quantity * 500, 0),
     );
+
+    if (dto.shippingInfo.addressModel === GhnAddressModel.POST_MERGER_2_LEVEL) {
+      if (!dto.shippingInfo.ghnProvinceV3Id || !dto.shippingInfo.ghnWardV3Id || !dto.shippingInfo.provinceName || !dto.shippingInfo.wardName) {
+        throw new BadRequestException({ code: 'ADDRESS_INVALID', message: 'Địa chỉ sau sáp nhập không đầy đủ.' });
+      }
+      return this.shippingService.calculatePostMergerFee({
+        receiver: {
+          name: dto.shippingInfo.name,
+          phone: dto.shippingInfo.phone,
+          address: dto.shippingInfo.address,
+          provinceId: dto.shippingInfo.ghnProvinceV3Id,
+          provinceName: dto.shippingInfo.provinceName,
+          wardId: dto.shippingInfo.ghnWardV3Id,
+          wardName: dto.shippingInfo.wardName,
+        },
+        weight,
+        dimensions: { length: 25, width: 20, height: 8 },
+        insuranceValue: itemsTotal,
+        codAmount: 0,
+        content: `FashionAI order - ${dto.items.reduce((sum, item) => sum + item.quantity, 0)} items`,
+      });
+    }
+
+    const { ghnDistrictId, ghnWardCode } = dto.shippingInfo;
+    if (!ghnDistrictId || !ghnWardCode) {
+      throw new BadRequestException('GHN district and ward are required to calculate shipping fee');
+    }
 
     return this.shippingService.calculateFee({
       toDistrictId: ghnDistrictId,

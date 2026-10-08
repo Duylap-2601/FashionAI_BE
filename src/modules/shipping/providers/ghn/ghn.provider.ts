@@ -2,7 +2,7 @@ import { BadGatewayException, Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { ShippingProviderType } from '../../constants/shipping-provider.enum';
 import { IShippingProvider } from '../../interfaces/shipping-provider.interface';
-import { CalculateShippingFeeInput, CreateShipmentInput } from '../../types/shipping.types';
+import { CalculateShippingFeeInput, CreateShipmentInput, PreviewShippingFeeInput } from '../../types/shipping.types';
 import { getGhnConfig } from './ghn.config';
 import { GhnClient } from './ghn.client';
 import { GhnMapper, IGhnCreateOrderData, IGhnEnvelope, IGhnFeeData, IGhnTrackingData } from './ghn.mapper';
@@ -21,6 +21,15 @@ export class GhnShippingProvider implements IShippingProvider {
     const config = getGhnConfig(this.configService);
     const response = await this.client.post<IGhnEnvelope<IGhnFeeData>>('/shiip/public-api/v2/shipping-order/fee', this.mapper.toFeeRequest(input, config.fromDistrictId, config.fromWardCode));
     return this.mapper.toShippingFee(response);
+  }
+
+  async previewFee(input: PreviewShippingFeeInput) {
+    const response = await this.client.post<IGhnEnvelope<IGhnFeeData>>('/shiip/public-api/v2/shipping-order/preview', this.mapper.toPreviewOrderRequest(input));
+    const result = this.mapper.toPreviewShippingFee(response);
+    if (!Number.isFinite(result.totalFee) || result.totalFee < 0) {
+      throw new BadGatewayException({ code: 'SHIPPING_PROVIDER_UNAVAILABLE', message: 'GHN preview did not return a valid fee' });
+    }
+    return result;
   }
 
   async createShipment(input: CreateShipmentInput) {

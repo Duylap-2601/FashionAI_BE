@@ -1,6 +1,6 @@
-import { Injectable } from '@nestjs/common';
+import { BadRequestException, Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { GarmentCategory, UserTier } from '@prisma/client';
+import { GarmentCategory, GhnAddressModel, UserTier } from '@prisma/client';
 import { PrismaService } from '../../database/prisma.service';
 import { UpdateGhnPickupSettingsDto } from './dto/ghn-pickup-settings.dto';
 import { UpdateLiveTryOnSettingsDto } from './dto/live-try-on-settings.dto';
@@ -9,9 +9,14 @@ const GHN_PICKUP_SETTING_KEY = 'shipping.ghn.pickup_address';
 const LIVE_TRY_ON_SETTING_KEY = 'try_on.live.policy';
 
 export interface GhnPickupSettings {
+  addressModel?: GhnAddressModel;
   provinceId?: number;
   districtId?: number;
   wardCode?: string;
+  provinceV3Id?: string;
+  wardV3Id?: string;
+  provinceName?: string;
+  wardName?: string;
   source: 'database' | 'env' | 'empty';
 }
 
@@ -59,11 +64,9 @@ export class AdminSettingsService {
   }
 
   async updateGhnPickupSettings(dto: UpdateGhnPickupSettingsDto): Promise<GhnPickupSettings> {
-    const value = {
-      provinceId: dto.provinceId,
-      districtId: dto.districtId,
-      wardCode: dto.wardCode.trim(),
-    };
+    const value = dto.addressModel === GhnAddressModel.LEGACY_3_LEVEL
+      ? this.normalizeLegacyPickup(dto)
+      : await this.normalizePostMergerPickup(dto);
 
     await this.prisma.$executeRaw`
       INSERT INTO app_settings (key, value, updated_at)
@@ -124,6 +127,18 @@ export class AdminSettingsService {
   private parseGhnPickupSettings(value: unknown) {
     if (!value || typeof value !== 'object') return null;
     const record = value as Record<string, unknown>;
+    if (record.addressModel === GhnAddressModel.POST_MERGER_2_LEVEL) {
+      const provinceV3Id = typeof record.provinceV3Id === 'string' ? record.provinceV3Id.trim() : '';
+      const wardV3Id = typeof record.wardV3Id === 'string' ? record.wardV3Id.trim() : '';
+      if (!provinceV3Id || !wardV3Id) return null;
+      return {
+        addressModel: GhnAddressModel.POST_MERGER_2_LEVEL,
+        provinceV3Id,
+        wardV3Id,
+        provinceName: typeof record.provinceName === 'string' ? record.provinceName : undefined,
+        wardName: typeof record.wardName === 'string' ? record.wardName : undefined,
+      };
+    }
     const provinceId = Number(record.provinceId);
     const districtId = Number(record.districtId);
     const wardCode = typeof record.wardCode === 'string' ? record.wardCode.trim() : '';
@@ -131,9 +146,44 @@ export class AdminSettingsService {
     if (!Number.isFinite(districtId) || districtId <= 0 || !wardCode) return null;
 
     return {
+      addressModel: GhnAddressModel.LEGACY_3_LEVEL,
       provinceId: Number.isFinite(provinceId) && provinceId > 0 ? provinceId : undefined,
       districtId,
       wardCode,
+    };
+  }
+
+  private normalizeLegacyPickup(dto: UpdateGhnPickupSettingsDto) {
+    const provinceId = Number(dto.provinceId);
+    const districtId = Number(dto.districtId);
+    const wardCode = dto.wardCode?.trim() ?? '';
+    if (!Number.isFinite(provinceId) || provinceId <= 0 || !Number.isFinite(districtId) || districtId <= 0 || !wardCode) {
+      throw new BadRequestException({ code: 'ADDRESS_INVALID', message: 'Vui lòng chọn đủ địa chỉ GHN legacy.' });
+    }
+    return { addressModel: GhnAddressModel.LEGACY_3_LEVEL, provinceId, districtId, wardCode };
+  }
+
+  private async normalizePostMergerPickup(dto: UpdateGhnPickupSettingsDto) {
+    const provinceV3Id = dto.provinceV3Id?.trim() ?? '';
+    const wardV3Id = dto.wardV3Id?.trim() ?? '';
+    if (!provinceV3Id || !wardV3Id) {
+      throw new BadRequestException({ code: 'ADDRESS_INVALID', message: 'Vui lòng chọn Tỉnh/Thành và Phường/Xã lấy hàng.' });
+    }
+
+    const metadata = await this.prisma.ghnCatalogMetadata.findUnique({ where: { addressModel: GhnAddressModel.POST_MERGER_2_LEVEL } });
+    if (!metadata) throw new BadRequestException({ code: 'CATALOG_REVISION_STALE', message: 'Danh mục địa chỉ mới chưa sẵn sàng.' });
+
+    const [province, ward] = await Promise.all([
+      this.prisma.ghnLocation.findFirst({ where: { addressModel: GhnAddressModel.POST_MERGER_2_LEVEL, catalogGeneration: metadata.publishedGeneration, level: 'PROVINCE', code: provinceV3Id, isActive: true } }),
+      this.prisma.ghnLocation.findFirst({ where: { addressModel: GhnAddressModel.POST_MERGER_2_LEVEL, catalogGeneration: metadata.publishedGeneration, level: 'WARD', code: wardV3Id, parentCode: provinceV3Id, isActive: true } }),
+    ]);
+    if (!province || !ward) throw new BadRequestException({ code: 'ADDRESS_INVALID', message: 'Địa chỉ lấy hàng GHN sau sáp nhập không hợp lệ.' });
+    return {
+      addressModel: GhnAddressModel.POST_MERGER_2_LEVEL,
+      provinceV3Id: province.code,
+      wardV3Id: ward.code,
+      provinceName: province.name,
+      wardName: ward.name,
     };
   }
 

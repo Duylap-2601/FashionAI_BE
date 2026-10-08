@@ -1,5 +1,5 @@
 import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
-import { Prisma, UserAddress } from '@prisma/client';
+import { GhnAddressModel, Prisma, UserAddress } from '@prisma/client';
 import { PrismaService } from '../../database/prisma.service';
 import { ShippingService } from '../shipping/shipping.service';
 import { UpsertUserAddressDto } from './dto/user-address.dto';
@@ -80,23 +80,26 @@ export class UserAddressesService {
   }
 
   toShippingInfo(address: UserAddress, shippingNote?: string) {
-    const fullAddress = `${address.addressLine}, ${address.wardName}, ${address.districtName}, ${address.provinceName}`;
+    const fullAddress = [address.addressLine, address.wardName, address.districtName, address.provinceName].filter(Boolean).join(', ');
     return {
       addressId: address.id,
       addressVersion: address.version,
+      addressModel: address.ghnAddressModel,
       name: address.recipientName,
       phone: address.phone,
       address: fullAddress,
       addressLine: address.addressLine,
-      label: address.label,
+      label: address.label ?? undefined,
       provinceName: address.provinceName,
-      districtName: address.districtName,
+      districtName: address.districtName ?? undefined,
       wardName: address.wardName,
       note: shippingNote ?? '',
       notes: shippingNote ?? '',
-      ghnProvinceId: address.ghnProvinceId,
-      ghnDistrictId: address.ghnDistrictId,
-      ghnWardCode: address.ghnWardCode,
+      ghnProvinceId: address.ghnProvinceId ?? undefined,
+      ghnDistrictId: address.ghnDistrictId ?? undefined,
+      ghnWardCode: address.ghnWardCode ?? undefined,
+      ghnProvinceV3Id: address.ghnProvinceV3Id ?? undefined,
+      ghnWardV3Id: address.ghnWardV3Id ?? undefined,
     };
   }
 
@@ -106,8 +109,14 @@ export class UserAddressesService {
     const addressLine = dto.addressLine.trim();
     const label = dto.label?.trim() || null;
     if (!recipientName || !addressLine) throw new BadRequestException({ code: 'ADDRESS_INVALID', message: 'Vui lòng nhập đầy đủ tên người nhận và địa chỉ.' });
-    const location = await this.shippingService.validateGhnLocation(dto.ghnProvinceId, dto.ghnDistrictId, dto.ghnWardCode);
-    return { recipientName, phone, addressLine, label, ...location };
+    const addressModel = dto.addressModel ?? GhnAddressModel.LEGACY_3_LEVEL;
+    const location = addressModel === GhnAddressModel.POST_MERGER_2_LEVEL
+      ? await this.shippingService.validateGhnPostMergerLocation(dto.ghnProvinceV3Id, dto.ghnWardV3Id)
+      : await this.shippingService.validateGhnLocation(dto.ghnProvinceId, dto.ghnDistrictId, dto.ghnWardCode);
+    const modelFields = addressModel === GhnAddressModel.POST_MERGER_2_LEVEL
+      ? { ghnProvinceId: null, ghnDistrictId: null, ghnWardCode: null, districtName: null }
+      : { ghnProvinceV3Id: null, ghnWardV3Id: null };
+    return { recipientName, phone, addressLine, label, ...location, ...modelFields };
   }
 
   private normalizePhone(value: string) {

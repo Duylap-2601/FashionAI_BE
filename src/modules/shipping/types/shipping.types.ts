@@ -1,10 +1,13 @@
-import { ShipmentStatus } from '@prisma/client';
+import { GhnAddressModel, ShipmentStatus } from '@prisma/client';
 import { ShippingProviderType } from '../constants/shipping-provider.enum';
 
 export interface IShippingAddress {
+  addressModel?: GhnAddressModel;
   name?: string;
   phone?: string;
   address: string;
+  provinceId?: string;
+  wardId?: string;
   provinceName?: string;
   districtName?: string;
   wardName?: string;
@@ -29,6 +32,16 @@ export interface ShippingFee {
   codFee?: number;
   expectedDeliveryTime?: Date;
   raw?: unknown;
+}
+
+export interface PreviewShippingFeeInput {
+  sender: IShippingAddress;
+  receiver: IShippingAddress;
+  weight: number;
+  dimensions?: { length: number; width: number; height: number };
+  insuranceValue?: number;
+  codAmount?: number;
+  content?: string;
 }
 
 export interface CreateShipmentInput {
