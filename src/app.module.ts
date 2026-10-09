@@ -12,6 +12,7 @@ import { StylistModule } from './modules/stylist/stylist.module';
 import { UsersModule } from './modules/users/users.module';
 import { ProductsModule } from './modules/products/products.module';
 import { OrdersModule } from './modules/orders/orders.module';
+import { OrderIssuesModule } from './modules/order-issues/order-issues.module';
 import { PaymentsModule } from './modules/payments/payments.module';
 import { MailModule } from './modules/mail/mail.module';
 import { StorageModule } from './modules/storage/storage.module';
@@ -88,6 +89,7 @@ import { parseRedisUrl } from './common/redis/redis-url.util';
     UsersModule,
     ProductsModule,
     OrdersModule,
+    OrderIssuesModule,
     TryOnModule,
     StylistModule,
     PaymentsModule,

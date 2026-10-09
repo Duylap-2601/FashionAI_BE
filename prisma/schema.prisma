@@ -175,6 +175,26 @@ enum NotificationType {
   PROMOTION
   SYSTEM
   REVIEW
+  ORDER_ISSUE
+}
+
+enum OrderIssueReason {
+  WRONG_SIZE
+  WRONG_COLOR
+  QUALITY_MISMATCH
+  OTHER
+}
+
+enum OrderIssueResolution {
+  REFUND
+  EXCHANGE
+}
+
+enum OrderIssueStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  RESOLVED
 }
 
 enum GhnLocationLevel {
@@ -224,6 +244,8 @@ model User {
   rackItems               RackItem[]
   reviews                 Review[]
   reviewReplies           ReviewReply[]
+  orderIssuesCreated      OrderIssue[]            @relation("OrderIssueCreatedBy")
+  orderIssuesReviewed     OrderIssue[]            @relation("OrderIssueReviewedBy")
   liveTryOnSessions       LiveTryOnSession[]
   liveTryOnBudgets        LiveTryOnBudget[]
   liveTryOnLease          LiveTryOnLease?
@@ -736,6 +758,7 @@ model Order {
   payments         Payment[]
   refunds          Refund[]
   items            OrderItem[]
+  issues           OrderIssue[]
   subscriptions    Subscription[]
   reviews          Review[]
   shipments        Shipment[]
@@ -814,10 +837,39 @@ model OrderItem {
 
   order   Order   @relation(fields: [orderId], references: [id], onDelete: Cascade)
   product Product @relation(fields: [productId], references: [id], onDelete: Restrict)
+  issues  OrderIssue[]
 
   @@index([orderId])
   @@index([productId])
   @@map("order_items")
+}
+
+model OrderIssue {
+  id                 String               @id @default(uuid()) @db.Uuid
+  orderId            String               @map("order_id") @db.Uuid
+  orderItemId        String               @map("order_item_id") @db.Uuid
+  userId             String               @map("user_id") @db.Uuid
+  reason             OrderIssueReason
+  description        String               @db.Text
+  desiredResolution  OrderIssueResolution @map("desired_resolution")
+  approvedResolution OrderIssueResolution? @map("approved_resolution")
+  evidenceImages     Json?                @map("evidence_images")
+  status             OrderIssueStatus     @default(PENDING)
+  adminNote          String?              @map("admin_note") @db.Text
+  adminId            String?              @map("admin_id") @db.Uuid
+  createdAt          DateTime             @default(now()) @map("created_at")
+  updatedAt          DateTime             @updatedAt @map("updated_at")
+
+  order     Order     @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  orderItem OrderItem @relation(fields: [orderItemId], references: [id], onDelete: Cascade)
+  user      User      @relation("OrderIssueCreatedBy", fields: [userId], references: [id], onDelete: Cascade)
+  admin     User?     @relation("OrderIssueReviewedBy", fields: [adminId], references: [id], onDelete: SetNull)
+
+  @@index([orderId])
+  @@index([orderItemId])
+  @@index([userId])
+  @@index([status, createdAt])
+  @@map("order_issues")
 }
 
 model Shipment {
