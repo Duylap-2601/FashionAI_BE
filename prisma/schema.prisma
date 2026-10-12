@@ -75,6 +75,7 @@ enum LiveTryOnSessionStatus {
 }
 
 enum OrderStatus {
+  CREATED
   PENDING_PAYMENT
   PENDING
   PAID
@@ -101,6 +102,7 @@ enum PaymentStatus {
   PENDING
   PAID
   FAILED
+  EXPIRED
   REFUND_REQUIRED
   REFUND_PENDING
   REFUNDED
@@ -120,6 +122,7 @@ enum RefundStatus {
 
 enum ShipmentStatus {
   PENDING
+  UNKNOWN
   READY_TO_PICK
   CREATED
   PICKING
@@ -152,6 +155,14 @@ enum OutboxEventStatus {
   FAILED_DEAD
 }
 
+enum ShipmentCreationState {
+  RESERVED
+  REQUESTING
+  CREATED
+  AMBIGUOUS
+  FAILED
+}
+
 enum AiActionType {
   TRY_ON
   STYLIST
@@ -164,12 +175,44 @@ enum NotificationType {
   PROMOTION
   SYSTEM
   REVIEW
+  ORDER_ISSUE
+}
+
+enum OrderIssueReason {
+  WRONG_SIZE
+  WRONG_COLOR
+  QUALITY_MISMATCH
+  OTHER
+}
+
+enum OrderIssueResolution {
+  REFUND
+  EXCHANGE
+}
+
+enum OrderIssueStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  RESOLVED
 }
 
 enum GhnLocationLevel {
   PROVINCE
   DISTRICT
   WARD
+}
+
+enum GhnAddressModel {
+  LEGACY_3_LEVEL
+  POST_MERGER_2_LEVEL
+}
+
+enum GhnLocationSyncRunStatus {
+  RUNNING
+  SUCCEEDED
+  PARTIAL
+  FAILED
 }
 
 model User {
@@ -201,12 +244,16 @@ model User {
   rackItems               RackItem[]
   reviews                 Review[]
   reviewReplies           ReviewReply[]
+  orderIssuesCreated      OrderIssue[]            @relation("OrderIssueCreatedBy")
+  orderIssuesReviewed     OrderIssue[]            @relation("OrderIssueReviewedBy")
   liveTryOnSessions       LiveTryOnSession[]
   liveTryOnBudgets        LiveTryOnBudget[]
   liveTryOnLease          LiveTryOnLease?
   liveTryOnPolicyAudits   LiveTryOnPolicyAudit[]
   addresses               UserAddress[]
   orderIdempotencyKeys    OrderIdempotencyKey[]
+  orderQuotes             OrderQuote[]
+  couponRedemptions       CouponRedemption[]
 
   @@map("users")
 }
@@ -218,11 +265,10 @@ model UserAddress {
   phone         String
   addressLine   String   @map("address_line")
   label         String?
-  ghnProvinceId Int      @map("ghn_province_id")
-  ghnDistrictId Int      @map("ghn_district_id")
-  ghnWardCode   String   @map("ghn_ward_code")
+  ghnAddressModel GhnAddressModel @default(POST_MERGER_2_LEVEL) @map("ghn_address_model")
+  ghnProvinceV3Id String?         @map("ghn_province_v3_id")
+  ghnWardV3Id     String?         @map("ghn_ward_v3_id")
   provinceName  String   @map("province_name")
-  districtName  String   @map("district_name")
   wardName      String   @map("ward_name")
   isDefault     Boolean  @default(false) @map("is_default")
   version       Int      @default(1)
@@ -241,16 +287,27 @@ model OrderIdempotencyKey {
   userId      String   @map("user_id") @db.Uuid
   key         String
   fingerprint String
+  state       OrderIdempotencyKeyState @default(COMPLETED)
+  requestFingerprint String? @map("request_fingerprint")
+  quoteId     String?  @map("quote_id") @db.Uuid
   orderId     String?  @map("order_id") @db.Uuid
+  expiresAt   DateTime? @map("expires_at")
   createdAt   DateTime @default(now()) @map("created_at")
   updatedAt   DateTime @updatedAt @map("updated_at")
 
   user  User   @relation(fields: [userId], references: [id], onDelete: Cascade)
   order Order? @relation(fields: [orderId], references: [id], onDelete: SetNull)
+  quote OrderQuote? @relation(fields: [quoteId], references: [id], onDelete: SetNull)
 
   @@unique([userId, key])
   @@index([userId, createdAt])
   @@map("order_idempotency_keys")
+}
+
+enum OrderIdempotencyKeyState {
+  PROCESSING
+  COMPLETED
+  FAILED
 }
 
 model AppSetting {
@@ -264,18 +321,96 @@ model AppSetting {
 
 model GhnLocation {
   id         String           @id @default(uuid()) @db.Uuid
+  addressModel GhnAddressModel @default(LEGACY_3_LEVEL) @map("address_model")
+  catalogGeneration BigInt    @default(1) @map("catalog_generation")
   level      GhnLocationLevel
   code       String
   parentCode String?          @map("parent_code")
   name       String
+  aliases    Json?
+  providerStatus Int?         @map("provider_status")
+  lastSeenSyncId String?      @map("last_seen_sync_id") @db.Uuid
   isActive   Boolean          @default(true) @map("is_active")
   createdAt  DateTime         @default(now()) @map("created_at")
   updatedAt  DateTime         @updatedAt @map("updated_at")
 
-  @@unique([level, code])
-  @@index([level, parentCode])
+  @@unique([catalogGeneration, addressModel, level, code])
+  @@index([addressModel, catalogGeneration, level, parentCode, isActive])
   @@index([isActive])
   @@map("ghn_locations")
+}
+
+model GhnCatalogMetadata {
+  addressModel GhnAddressModel @id @map("address_model")
+  publishedGeneration BigInt   @map("published_generation")
+  catalogRevision BigInt       @map("catalog_revision")
+  createdAt DateTime           @default(now()) @map("created_at")
+  updatedAt DateTime           @updatedAt @map("updated_at")
+
+  @@map("ghn_catalog_metadata")
+}
+
+model GhnCatalogPublication {
+  id String @id @default(uuid()) @db.Uuid
+  addressModel GhnAddressModel @map("address_model")
+  catalogRevision BigInt       @map("catalog_revision")
+  catalogGeneration BigInt     @map("catalog_generation")
+  publishedAt DateTime         @default(now()) @map("published_at")
+  retainedUntil DateTime       @map("retained_until")
+
+  @@unique([addressModel, catalogRevision])
+  @@unique([addressModel, catalogGeneration])
+  @@index([retainedUntil])
+  @@map("ghn_catalog_publications")
+}
+
+model GhnLocationSyncRun {
+  id String @id @default(uuid()) @db.Uuid
+  addressModel GhnAddressModel @map("address_model")
+  catalogGeneration BigInt     @map("catalog_generation")
+  fencingToken BigInt?         @map("fencing_token")
+  status GhnLocationSyncRunStatus @default(RUNNING)
+  expectedCounts Json?         @map("expected_counts")
+  fetchedCounts Json?          @map("fetched_counts")
+  errorSummary String?         @map("error_summary") @db.Text
+  startedAt DateTime           @default(now()) @map("started_at")
+  completedAt DateTime?        @map("completed_at")
+
+  @@unique([addressModel, catalogGeneration])
+  @@index([addressModel, status, startedAt])
+  @@map("ghn_location_sync_runs")
+}
+
+model OrderQuote {
+  id String @id @default(uuid()) @db.Uuid
+  tokenHash String @unique @map("token_hash")
+  userId String @map("user_id") @db.Uuid
+  requestFingerprint String @map("request_fingerprint")
+  capabilityVersion String? @map("capability_version")
+  policyVersion String? @map("policy_version")
+  catalogRevision BigInt? @map("catalog_revision")
+  pickupSettingVersionId String? @map("pickup_setting_version_id") @db.Uuid
+  pricing Json
+  providerFacts Json? @map("provider_facts")
+  status OrderQuoteStatus @default(ACTIVE)
+  expiresAt DateTime @map("expires_at")
+  consumedOrderId String? @map("consumed_order_id") @db.Uuid
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  consumedOrder Order? @relation(fields: [consumedOrderId], references: [id], onDelete: SetNull)
+  idempotencyKeys OrderIdempotencyKey[]
+
+  @@index([userId, status, expiresAt])
+  @@index([expiresAt])
+  @@map("order_quotes")
+}
+
+enum OrderQuoteStatus {
+  ACTIVE
+  CONSUMED
+  EXPIRED
 }
 
 model Measurement {
@@ -357,19 +492,19 @@ model Product {
   status        ProductStatus   @default(ACTIVE)
   colors        Json? // [{ name: string, hex: string }]
   material      String?
-  avgRating     Decimal?        @default(0) @db.Decimal(2, 1) @map("avg_rating")
+  avgRating     Decimal?        @default(0) @map("avg_rating") @db.Decimal(2, 1)
   reviewCount   Int             @default(0) @map("review_count")
   createdAt     DateTime        @default(now()) @map("created_at")
   updatedAt     DateTime        @updatedAt @map("updated_at")
 
-  images         ProductImage[]
-  tryOnResults   TryOnResult[]
+  images            ProductImage[]
+  tryOnResults      TryOnResult[]
   liveTryOnSessions LiveTryOnSession[]
-  stylistResults StylistResult[]
-  orderItems     OrderItem[]
-  rackItems      RackItem[]
-  reviews        Review[]
-  collections    ProductCollection[]
+  stylistResults    StylistResult[]
+  orderItems        OrderItem[]
+  rackItems         RackItem[]
+  reviews           Review[]
+  collections       ProductCollection[]
 
   @@map("products")
 }
@@ -381,13 +516,13 @@ model Review {
   orderId   String   @map("order_id") @db.Uuid
   rating    Int
   comment   String?  @db.Text
-  images    Json?    // [{ url: string }]
+  images    Json? // [{ url: string }]
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
 
-  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
-  product Product @relation(fields: [productId], references: [id], onDelete: Cascade)
-  order   Order   @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  user    User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  product Product       @relation(fields: [productId], references: [id], onDelete: Cascade)
+  order   Order         @relation(fields: [orderId], references: [id], onDelete: Cascade)
   replies ReviewReply[]
 
   @@unique([userId, productId, orderId])
@@ -431,6 +566,7 @@ model ProductImage {
   productId String   @map("product_id") @db.Uuid
   imageUrl  String   @map("image_url")
   isMain    Boolean  @default(false) @map("is_main")
+  colorName String?  @map("color_name")
   createdAt DateTime @default(now()) @map("created_at")
 
   product Product @relation(fields: [productId], references: [id], onDelete: Cascade)
@@ -463,37 +599,38 @@ model TryOnResult {
 }
 
 model LiveTryOnSession {
-  id                  String                     @id @default(uuid()) @db.Uuid
-  userId              String                     @map("user_id") @db.Uuid
-  productId           String                     @map("product_id") @db.Uuid
-  model               String
-  transport           String                     @default("direct")
-  status              LiveTryOnSessionStatus     @default(ACTIVE)
-  credentialStatus    LiveTryOnCredentialStatus  @default(ISSUING) @map("credential_status")
-  reservationStatus   LiveTryOnReservationStatus @default(RESERVED) @map("reservation_status")
-  idempotencyKey      String                     @map("idempotency_key")
-  idempotencyBodyHash String                     @map("idempotency_body_hash")
-  quotaDate           String                     @map("quota_date")
-  reservedSeconds     Int                        @map("reserved_seconds")
-  allocatedSeconds    Int                        @default(0) @map("allocated_seconds")
-  usedSeconds         Int                        @default(0) @map("used_seconds")
-  tier                UserTier                   @default(FREE)
-  policyVersion       String                     @map("policy_version")
-  rateCreditsPerSecond Int                       @map("rate_credits_per_second")
-  tokenExpiresAt      DateTime?                  @map("token_expires_at")
-  issuedAt            DateTime?                  @map("issued_at")
-  activeStartedAt     DateTime?                  @map("active_started_at")
-  pausedAt            DateTime?                  @map("paused_at")
-  pauseExpiresAt      DateTime?                  @map("pause_expires_at")
-  blockedUntil        DateTime                   @map("blocked_until")
-  clientEndedAt       DateTime?                  @map("client_ended_at")
-  endedReason         String?                    @map("ended_reason")
-  providerSessionId   String?                    @map("provider_session_id")
-  providerMetadata    Json?                      @map("provider_metadata")
-  revision            Int                        @default(1)
-  createdAt           DateTime                   @default(now()) @map("created_at")
-  updatedAt           DateTime                   @updatedAt @map("updated_at")
-  lease               LiveTryOnLease?
+  id                   String                     @id @default(uuid()) @db.Uuid
+  userId               String                     @map("user_id") @db.Uuid
+  productId            String                     @map("product_id") @db.Uuid
+  model                String
+  transport            String                     @default("direct")
+  status               LiveTryOnSessionStatus     @default(ACTIVE)
+  credentialStatus     LiveTryOnCredentialStatus  @default(ISSUING) @map("credential_status")
+  reservationStatus    LiveTryOnReservationStatus @default(RESERVED) @map("reservation_status")
+  idempotencyKey       String                     @map("idempotency_key")
+  idempotencyBodyHash  String                     @map("idempotency_body_hash")
+  colorName            String?                    @map("color_name")
+  quotaDate            String                     @map("quota_date")
+  reservedSeconds      Int                        @map("reserved_seconds")
+  allocatedSeconds     Int                        @default(0) @map("allocated_seconds")
+  usedSeconds          Int                        @default(0) @map("used_seconds")
+  tier                 UserTier                   @default(FREE)
+  policyVersion        String                     @map("policy_version")
+  rateCreditsPerSecond Int                        @map("rate_credits_per_second")
+  tokenExpiresAt       DateTime?                  @map("token_expires_at")
+  issuedAt             DateTime?                  @map("issued_at")
+  activeStartedAt      DateTime?                  @map("active_started_at")
+  pausedAt             DateTime?                  @map("paused_at")
+  pauseExpiresAt       DateTime?                  @map("pause_expires_at")
+  blockedUntil         DateTime                   @map("blocked_until")
+  clientEndedAt        DateTime?                  @map("client_ended_at")
+  endedReason          String?                    @map("ended_reason")
+  providerSessionId    String?                    @map("provider_session_id")
+  providerMetadata     Json?                      @map("provider_metadata")
+  revision             Int                        @default(1)
+  createdAt            DateTime                   @default(now()) @map("created_at")
+  updatedAt            DateTime                   @updatedAt @map("updated_at")
+  lease                LiveTryOnLease?
 
   user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
   product Product @relation(fields: [productId], references: [id], onDelete: Restrict)
@@ -531,7 +668,7 @@ model LiveTryOnLease {
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
 
-  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user    User             @relation(fields: [userId], references: [id], onDelete: Cascade)
   session LiveTryOnSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
 
   @@index([expiresAt])
@@ -584,47 +721,51 @@ model StylistResult {
 }
 
 model Order {
-  id                String      @id @default(uuid()) @db.Uuid
-  orderCode         Int         @unique @map("order_code")
-  userId            String      @map("user_id") @db.Uuid
-  targetTier        UserTier?   @map("target_tier")
-  amount            Decimal     @db.Decimal(10, 2)
-  itemsSubtotalVnd  BigInt?     @map("items_subtotal_vnd")
-  shippingFeeVnd    BigInt?     @map("shipping_fee_vnd")
-  discountVnd       BigInt?     @map("discount_vnd")
-  taxVnd            BigInt?     @default(0) @map("tax_vnd")
-  totalVnd          BigInt?     @map("total_vnd")
-  amountPaidVnd     BigInt      @default(0) @map("amount_paid_vnd")
-  amountRefundedVnd BigInt      @default(0) @map("amount_refunded_vnd")
-  currency          String      @default("VND")
-  status            OrderStatus @default(PENDING)
-  shippingInfo      Json?       @map("shipping_info")
-  shippingAddressSnapshot Json?  @map("shipping_address_snapshot")
-  shippingQuoteSnapshot   Json?  @map("shipping_quote_snapshot")
-  prorationSnapshot       Json?  @map("proration_snapshot")
-  paymentMethod     String?     @map("payment_method")
-  paymentProvider   String?     @map("payment_provider")
-  checkoutUrl       String?     @map("checkout_url")
-  checkoutExpiresAt DateTime?   @map("checkout_expires_at")
-  shippingFee       Decimal?    @map("shipping_fee") @db.Decimal(10, 2)
-  discountAmount    Decimal?    @map("discount_amount") @db.Decimal(10, 2)
-  couponCode        String?     @map("coupon_code")
-  fulfillmentFlowVersion Int?    @map("fulfillment_flow_version")
-  paymentStatus     PaymentStatus? @map("payment_status")
-  refundStatus      RefundStatus @default(NONE) @map("refund_status")
-  refundEvidence    Json?       @map("refund_evidence")
-  createdAt         DateTime    @default(now()) @map("created_at")
-  updatedAt         DateTime    @updatedAt @map("updated_at")
+  id                      String         @id @default(uuid()) @db.Uuid
+  orderCode               Int            @unique @map("order_code")
+  userId                  String         @map("user_id") @db.Uuid
+  targetTier              UserTier?      @map("target_tier")
+  amount                  Decimal        @db.Decimal(10, 2)
+  itemsSubtotalVnd        BigInt?        @map("items_subtotal_vnd")
+  shippingFeeVnd          BigInt?        @map("shipping_fee_vnd")
+  discountVnd             BigInt?        @map("discount_vnd")
+  taxVnd                  BigInt?        @default(0) @map("tax_vnd")
+  totalVnd                BigInt?        @map("total_vnd")
+  amountPaidVnd           BigInt         @default(0) @map("amount_paid_vnd")
+  amountRefundedVnd       BigInt         @default(0) @map("amount_refunded_vnd")
+  currency                String         @default("VND")
+  status                  OrderStatus    @default(CREATED)
+  shippingInfo            Json?          @map("shipping_info")
+  shippingAddressSnapshot Json?          @map("shipping_address_snapshot")
+  shippingQuoteSnapshot   Json?          @map("shipping_quote_snapshot")
+  pickupSettingVersionId  String?        @map("pickup_setting_version_id") @db.Uuid
+  prorationSnapshot       Json?          @map("proration_snapshot")
+  paymentMethod           String?        @map("payment_method")
+  paymentProvider         String?        @map("payment_provider")
+  checkoutUrl             String?        @map("checkout_url")
+  checkoutExpiresAt       DateTime?      @map("checkout_expires_at")
+  shippingFee             Decimal?       @map("shipping_fee") @db.Decimal(10, 2)
+  discountAmount          Decimal?       @map("discount_amount") @db.Decimal(10, 2)
+  couponCode              String?        @map("coupon_code")
+  fulfillmentFlowVersion  Int?           @map("fulfillment_flow_version")
+  paymentStatus           PaymentStatus? @map("payment_status")
+  refundStatus            RefundStatus   @default(NONE) @map("refund_status")
+  refundEvidence          Json?          @map("refund_evidence")
+  createdAt               DateTime       @default(now()) @map("created_at")
+  updatedAt               DateTime       @updatedAt @map("updated_at")
 
-  user          User           @relation(fields: [userId], references: [id], onDelete: Cascade)
-  payments      Payment[]
-  refunds       Refund[]
-  items         OrderItem[]
-  subscriptions Subscription[]
-  reviews       Review[]
-  shipments     Shipment[]
-  events        OrderEvent[]
-  idempotencyKeys OrderIdempotencyKey[]
+  user             User                  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  payments         Payment[]
+  refunds          Refund[]
+  items            OrderItem[]
+  issues           OrderIssue[]
+  subscriptions    Subscription[]
+  reviews          Review[]
+  shipments        Shipment[]
+  events           OrderEvent[]
+  idempotencyKeys  OrderIdempotencyKey[]
+  quotes           OrderQuote[]
+  couponRedemption CouponRedemption?
 
   @@index([userId])
   @@index([userId, createdAt])
@@ -634,31 +775,101 @@ model Order {
   @@map("orders")
 }
 
+enum CouponDiscountType {
+  PERCENTAGE
+  FIXED_AMOUNT
+}
+
+model Coupon {
+  id                String             @id @default(uuid()) @db.Uuid
+  code              String             @unique
+  discountType      CouponDiscountType @map("discount_type")
+  discountValue     Decimal            @map("discount_value") @db.Decimal(10, 2)
+  maxDiscountVnd    BigInt?            @map("max_discount_vnd")
+  minOrderVnd       BigInt?            @map("min_order_vnd")
+  usageLimit        Int?               @map("usage_limit")
+  usageLimitPerUser Int?               @map("usage_limit_per_user")
+  usedCount         Int                @default(0) @map("used_count")
+  isActive          Boolean            @default(true) @map("is_active")
+  startsAt          DateTime?          @map("starts_at")
+  expiresAt         DateTime?          @map("expires_at")
+  createdAt         DateTime           @default(now()) @map("created_at")
+  updatedAt         DateTime           @updatedAt @map("updated_at")
+
+  redemptions CouponRedemption[]
+
+  @@map("coupons")
+}
+
+model CouponRedemption {
+  id        String   @id @default(uuid()) @db.Uuid
+  couponId  String   @map("coupon_id") @db.Uuid
+  userId    String   @map("user_id") @db.Uuid
+  orderId   String   @unique @map("order_id") @db.Uuid
+  createdAt DateTime @default(now()) @map("created_at")
+
+  coupon Coupon @relation(fields: [couponId], references: [id], onDelete: Restrict)
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  order  Order  @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  @@index([couponId, userId])
+  @@map("coupon_redemptions")
+}
+
 model OrderItem {
-  id                  String   @id @default(uuid()) @db.Uuid
-  orderId             String   @map("order_id") @db.Uuid
-  productId           String   @map("product_id") @db.Uuid
-  quantity            Int      @default(1)
-  color               String?
-  measurementSnapshot Json?    @map("measurement_snapshot")
-  productNameSnapshot String?  @map("product_name_snapshot")
-  productSkuSnapshot  String?  @map("product_sku_snapshot")
-  productImageSnapshot String? @map("product_image_snapshot")
-  productCategorySnapshot String? @map("product_category_snapshot")
-  brandSnapshot       String?  @map("brand_snapshot")
-  fabricSnapshot      String?  @map("fabric_snapshot")
-  measurementReview   Json?    @map("measurement_review")
-  price               Decimal  @db.Decimal(10, 2)
-  unitPriceVnd        BigInt?  @map("unit_price_vnd")
-  lineTotalVnd        BigInt?  @map("line_total_vnd")
-  createdAt           DateTime @default(now()) @map("created_at")
+  id                      String   @id @default(uuid()) @db.Uuid
+  orderId                 String   @map("order_id") @db.Uuid
+  productId               String   @map("product_id") @db.Uuid
+  quantity                Int      @default(1)
+  color                   String?
+  measurementSnapshot     Json?    @map("measurement_snapshot")
+  productNameSnapshot     String?  @map("product_name_snapshot")
+  productSkuSnapshot      String?  @map("product_sku_snapshot")
+  productImageSnapshot    String?  @map("product_image_snapshot")
+  productCategorySnapshot String?  @map("product_category_snapshot")
+  brandSnapshot           String?  @map("brand_snapshot")
+  fabricSnapshot          String?  @map("fabric_snapshot")
+  measurementReview       Json?    @map("measurement_review")
+  price                   Decimal  @db.Decimal(10, 2)
+  unitPriceVnd            BigInt?  @map("unit_price_vnd")
+  lineTotalVnd            BigInt?  @map("line_total_vnd")
+  createdAt               DateTime @default(now()) @map("created_at")
 
   order   Order   @relation(fields: [orderId], references: [id], onDelete: Cascade)
   product Product @relation(fields: [productId], references: [id], onDelete: Restrict)
+  issues  OrderIssue[]
 
   @@index([orderId])
   @@index([productId])
   @@map("order_items")
+}
+
+model OrderIssue {
+  id                 String               @id @default(uuid()) @db.Uuid
+  orderId            String               @map("order_id") @db.Uuid
+  orderItemId        String               @map("order_item_id") @db.Uuid
+  userId             String               @map("user_id") @db.Uuid
+  reason             OrderIssueReason
+  description        String               @db.Text
+  desiredResolution  OrderIssueResolution @map("desired_resolution")
+  approvedResolution OrderIssueResolution? @map("approved_resolution")
+  evidenceImages     Json?                @map("evidence_images")
+  status             OrderIssueStatus     @default(PENDING)
+  adminNote          String?              @map("admin_note") @db.Text
+  adminId            String?              @map("admin_id") @db.Uuid
+  createdAt          DateTime             @default(now()) @map("created_at")
+  updatedAt          DateTime             @updatedAt @map("updated_at")
+
+  order     Order     @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  orderItem OrderItem @relation(fields: [orderItemId], references: [id], onDelete: Cascade)
+  user      User      @relation("OrderIssueCreatedBy", fields: [userId], references: [id], onDelete: Cascade)
+  admin     User?     @relation("OrderIssueReviewedBy", fields: [adminId], references: [id], onDelete: SetNull)
+
+  @@index([orderId])
+  @@index([orderItemId])
+  @@index([userId])
+  @@index([status, createdAt])
+  @@map("order_issues")
 }
 
 model Shipment {
@@ -667,6 +878,16 @@ model Shipment {
   provider             String         @default("GHN")
   providerOrderCode    String?        @map("provider_order_code")
   requestKey           String         @unique @map("request_key")
+  creationState        ShipmentCreationState @default(CREATED) @map("creation_state")
+  attemptNumber        Int            @default(1) @map("attempt_number")
+  clientOrderCode      String?        @map("client_order_code")
+  pickupSettingVersionId String?      @map("pickup_setting_version_id") @db.Uuid
+  reconcileStartedAt   DateTime?      @map("reconcile_started_at")
+  reconciledAt         DateTime?      @map("reconciled_at")
+  reconcileResult      Json?          @map("reconcile_result")
+  blocksReplacement    Boolean        @default(true) @map("blocks_replacement")
+  replacementAuthorizedAt DateTime?   @map("replacement_authorized_at")
+  replacementAuthorizedBy String?     @map("replacement_authorized_by") @db.Uuid
   status               ShipmentStatus @default(PENDING)
   rawStatus            String?        @map("raw_status")
   shippingFee          Decimal?       @map("shipping_fee") @db.Decimal(10, 2)
@@ -685,6 +906,8 @@ model Shipment {
   events OrderEvent[]
 
   @@unique([provider, providerOrderCode])
+  @@unique([orderId, attemptNumber])
+  @@unique([provider, clientOrderCode])
   @@index([orderId])
   @@index([orderId, status])
   @@index([provider, status])
@@ -724,24 +947,24 @@ model WebhookEvent {
 }
 
 model OrderEvent {
-  id               String       @id @default(uuid()) @db.Uuid
-  orderId          String       @map("order_id") @db.Uuid
-  shipmentId       String?      @map("shipment_id") @db.Uuid
-  type             String
-  fromStatus       OrderStatus? @map("from_status")
-  toStatus         OrderStatus? @map("to_status")
-  fromPaymentStatus PaymentStatus? @map("from_payment_status")
-  toPaymentStatus   PaymentStatus? @map("to_payment_status")
+  id                 String          @id @default(uuid()) @db.Uuid
+  orderId            String          @map("order_id") @db.Uuid
+  shipmentId         String?         @map("shipment_id") @db.Uuid
+  type               String
+  fromStatus         OrderStatus?    @map("from_status")
+  toStatus           OrderStatus?    @map("to_status")
+  fromPaymentStatus  PaymentStatus?  @map("from_payment_status")
+  toPaymentStatus    PaymentStatus?  @map("to_payment_status")
   fromShipmentStatus ShipmentStatus? @map("from_shipment_status")
   toShipmentStatus   ShipmentStatus? @map("to_shipment_status")
-  source           String
-  actorId          String?      @map("actor_id") @db.Uuid
-  occurredAt       DateTime     @default(now()) @map("occurred_at")
-  recordedAt       DateTime     @default(now()) @map("recorded_at")
-  deduplicationKey String?      @unique @map("deduplication_key")
-  publicMessage    String?      @map("public_message") @db.Text
-  internalNote     String?      @map("internal_note") @db.Text
-  metadata         Json?
+  source             String
+  actorId            String?         @map("actor_id") @db.Uuid
+  occurredAt         DateTime        @default(now()) @map("occurred_at")
+  recordedAt         DateTime        @default(now()) @map("recorded_at")
+  deduplicationKey   String?         @unique @map("deduplication_key")
+  publicMessage      String?         @map("public_message") @db.Text
+  internalNote       String?         @map("internal_note") @db.Text
+  metadata           Json?
 
   order    Order     @relation(fields: [orderId], references: [id], onDelete: Cascade)
   shipment Shipment? @relation(fields: [shipmentId], references: [id], onDelete: SetNull)
@@ -751,24 +974,24 @@ model OrderEvent {
 }
 
 model Payment {
-  id                 String        @id @default(uuid()) @db.Uuid
-  orderId            String        @map("order_id") @db.Uuid
-  method             String?       @map("method")
-  provider           String        @default("SEPAY")
-  transactionId      String?       @map("transaction_id")
-  providerPaymentId  String?       @map("provider_payment_id")
-  status             PaymentStatus @default(PENDING)
-  amountVnd          BigInt?       @map("amount_vnd")
-  currency           String        @default("VND")
-  paidAt             DateTime?     @map("paid_at")
-  failedAt           DateTime?     @map("failed_at")
-  refundedAt         DateTime?     @map("refunded_at")
-  expiresAt          DateTime?     @map("expires_at")
-  failureReason      String?       @map("failure_reason") @db.Text
-  idempotencyKey     String?       @unique @map("idempotency_key")
-  paymentData        Json?         @map("payment_data")
-  createdAt          DateTime      @default(now()) @map("created_at")
-  updatedAt          DateTime      @updatedAt @map("updated_at")
+  id                String        @id @default(uuid()) @db.Uuid
+  orderId           String        @map("order_id") @db.Uuid
+  method            String?       @map("method")
+  provider          String        @default("SEPAY")
+  transactionId     String?       @map("transaction_id")
+  providerPaymentId String?       @map("provider_payment_id")
+  status            PaymentStatus @default(PENDING)
+  amountVnd         BigInt?       @map("amount_vnd")
+  currency          String        @default("VND")
+  paidAt            DateTime?     @map("paid_at")
+  failedAt          DateTime?     @map("failed_at")
+  refundedAt        DateTime?     @map("refunded_at")
+  expiresAt         DateTime?     @map("expires_at")
+  failureReason     String?       @map("failure_reason") @db.Text
+  idempotencyKey    String?       @unique @map("idempotency_key")
+  paymentData       Json?         @map("payment_data")
+  createdAt         DateTime      @default(now()) @map("created_at")
+  updatedAt         DateTime      @updatedAt @map("updated_at")
 
   order   Order    @relation(fields: [orderId], references: [id], onDelete: Cascade)
   refunds Refund[]
@@ -938,15 +1161,15 @@ model Subscription {
 }
 
 model Collection {
-  id            String   @id @default(uuid()) @db.Uuid
-  name          String   @unique
-  slug          String   @unique
-  description   String?  @db.Text
-  coverImages   String[] // Array of Cloudinary URLs (3 items for hero banner)
-  isPublished   Boolean  @default(false) @map("is_published")
-  displayOrder  Int      @default(0) @map("display_order")
-  createdAt     DateTime @default(now()) @map("created_at")
-  updatedAt     DateTime @updatedAt @map("updated_at")
+  id           String   @id @default(uuid()) @db.Uuid
+  name         String   @unique
+  slug         String   @unique
+  description  String?  @db.Text
+  coverImages  String[] // Array of Cloudinary URLs (3 items for hero banner)
+  isPublished  Boolean  @default(false) @map("is_published")
+  displayOrder Int      @default(0) @map("display_order")
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
 
   products ProductCollection[]
 
@@ -956,8 +1179,8 @@ model Collection {
 }
 
 model ProductCollection {
-  collectionId String @map("collection_id") @db.Uuid
-  productId    String @map("product_id") @db.Uuid
+  collectionId String     @map("collection_id") @db.Uuid
+  productId    String     @map("product_id") @db.Uuid
   collection   Collection @relation(fields: [collectionId], references: [id], onDelete: Cascade)
   product      Product    @relation(fields: [productId], references: [id], onDelete: Cascade)
 

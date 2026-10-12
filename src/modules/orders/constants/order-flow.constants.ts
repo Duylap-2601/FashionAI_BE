@@ -29,8 +29,14 @@ export const UUID_REGEX =
 export const MAX_INT4 = 2_147_483_647;
 
 export const ORDER_STATUS_TRANSITIONS: Record<OrderStatus, OrderStatus[]> = {
+  [OrderStatus.CREATED]: [
+    OrderStatus.MEASUREMENT_REVIEW,
+    OrderStatus.CANCELLED,
+    OrderStatus.EXPIRED,
+    OrderStatus.FAILED,
+  ],
   [OrderStatus.PENDING_PAYMENT]: [
-    OrderStatus.CONFIRMED,
+    OrderStatus.MEASUREMENT_REVIEW,
     OrderStatus.CANCELLED,
     OrderStatus.EXPIRED,
     OrderStatus.FAILED,
@@ -41,7 +47,6 @@ export const ORDER_STATUS_TRANSITIONS: Record<OrderStatus, OrderStatus[]> = {
     OrderStatus.FAILED,
   ],
   [OrderStatus.PAID]: [
-    OrderStatus.CONFIRMED,
     OrderStatus.MEASUREMENT_REVIEW,
     OrderStatus.CANCELLED,
   ],
@@ -53,20 +58,20 @@ export const ORDER_STATUS_TRANSITIONS: Record<OrderStatus, OrderStatus[]> = {
     OrderStatus.TAILORING,
     OrderStatus.CANCELLED,
   ],
-  [OrderStatus.TAILORING]: [OrderStatus.QUALITY_CHECK],
+  [OrderStatus.TAILORING]: [OrderStatus.READY_TO_SHIP],
   [OrderStatus.QUALITY_CHECK]: [
     OrderStatus.READY_TO_SHIP,
     OrderStatus.TAILORING,
   ],
   [OrderStatus.PROCESSING]: [
+    OrderStatus.MEASUREMENT_REVIEW,
     OrderStatus.READY_TO_SHIP,
-    OrderStatus.SHIPPING,
     OrderStatus.CANCELLED,
   ],
-  [OrderStatus.READY_TO_SHIP]: [OrderStatus.SHIPPING, OrderStatus.CANCELLED],
+  [OrderStatus.READY_TO_SHIP]: [OrderStatus.CANCELLED],
   [OrderStatus.CONFIRMED]: [
-    OrderStatus.PROCESSING,
-    OrderStatus.SHIPPING,
+    OrderStatus.MEASUREMENT_REVIEW,
+    OrderStatus.READY_TO_SHIP,
     OrderStatus.CANCELLED,
   ],
   [OrderStatus.SHIPPING]: [
@@ -84,7 +89,6 @@ export const ORDER_STATUS_TRANSITIONS: Record<OrderStatus, OrderStatus[]> = {
   [OrderStatus.COMPLETED]: [OrderStatus.RETURN_REQUESTED],
   [OrderStatus.CANCELLED]: [],
   [OrderStatus.RETURN_REQUESTED]: [
-    OrderStatus.RETURN_APPROVED,
     OrderStatus.RETURNING,
     OrderStatus.RETURNED,
     OrderStatus.CANCELLED,
@@ -97,11 +101,12 @@ export const ORDER_STATUS_TRANSITIONS: Record<OrderStatus, OrderStatus[]> = {
 };
 
 export const STATUS_NOTIFY_EMAIL: OrderStatus[] = [
-  OrderStatus.CONFIRMED,
+  OrderStatus.PROCESSING,
   OrderStatus.CANCELLED,
 ];
 
 export const ORDER_STATUS_MESSAGE: Partial<Record<OrderStatus, string>> = {
+  [OrderStatus.CREATED]: 'Đơn hàng đã được tạo và đang chờ thanh toán.',
   [OrderStatus.PENDING_PAYMENT]: 'Đơn hàng đã được tạo và đang chờ thanh toán.',
   [OrderStatus.PAID]: 'Đơn hàng đã được thanh toán.',
   [OrderStatus.CONFIRMED]: 'Đơn hàng đã được xác nhận và đang chuẩn bị.',
@@ -122,3 +127,21 @@ export const ORDER_STATUS_MESSAGE: Partial<Record<OrderStatus, string>> = {
   [OrderStatus.EXPIRED]: 'Đơn hàng đã hết hạn thanh toán.',
   [OrderStatus.FAILED]: 'Đơn hàng thanh toán thất bại.',
 };
+
+export const CANONICAL_ORDER_STATUSES = [
+  OrderStatus.CREATED,
+  OrderStatus.PENDING,
+  OrderStatus.MEASUREMENT_REVIEW,
+  OrderStatus.MEASUREMENT_CONFIRMED,
+  OrderStatus.TAILORING,
+  OrderStatus.READY_TO_SHIP,
+  OrderStatus.SHIPPING,
+  OrderStatus.DELIVERED,
+  OrderStatus.COMPLETED,
+  OrderStatus.CANCELLED,
+  OrderStatus.RETURN_REQUESTED,
+  OrderStatus.RETURNING,
+  OrderStatus.RETURNED,
+  OrderStatus.EXPIRED,
+  OrderStatus.FAILED,
+] as const;

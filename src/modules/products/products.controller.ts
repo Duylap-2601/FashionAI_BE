@@ -96,6 +96,15 @@ export class ProductsController {
           items: { type: 'string', format: 'binary' },
           description: 'Danh sách ảnh sản phẩm/garment (tối đa 10 ảnh). Ảnh đầu tiên làm ảnh chính.',
         },
+        colors: {
+          type: 'string',
+          description: 'Chuỗi JSON array [{name, hex}] danh sách màu sản phẩm. Ví dụ: [{"name":"Trắng","hex":"#FFFFFF"}]',
+        },
+        imageColors: {
+          type: 'string',
+          description:
+            'Chuỗi JSON array song song với images[]: tên màu (phải khớp colors[].name) cho từng ảnh, hoặc null nếu ảnh chung. Ví dụ: ["Trắng", null]',
+        },
       },
     },
   })
@@ -145,6 +154,11 @@ export class ProductsController {
           default: 0,
           description: 'Chỉ số ảnh trong mảng sẽ làm ảnh chính (0-based index). Chỉ áp dụng nếu mảng có ít nhất 1 ảnh.',
         },
+        imageColors: {
+          type: 'string',
+          description:
+            'Chuỗi JSON array song song với images[]: tên màu (phải khớp colors[].name của sản phẩm) cho từng ảnh, hoặc null nếu ảnh chung. Ví dụ: ["Trắng", null]',
+        },
       },
     },
   })
@@ -154,6 +168,7 @@ export class ProductsController {
     @Param('id') id: string,
     @UploadedFiles() files: Express.Multer.File[],
     @Body('isMainIndex') isMainIndex?: string | number,
+    @Body('imageColors') imageColorsRaw?: string,
   ) {
     const images = (files ?? []).filter(
       (f) => f.fieldname === 'images' || f.fieldname === 'image',
@@ -169,7 +184,17 @@ export class ProductsController {
     }
 
     const mainIndex = typeof isMainIndex === 'string' ? parseInt(isMainIndex, 10) : (isMainIndex ?? 0);
-    const data = await this.productsService.uploadProductImages(id, images, mainIndex);
+
+    let imageColors: Array<string | null> | undefined;
+    if (imageColorsRaw) {
+      try {
+        imageColors = JSON.parse(imageColorsRaw);
+      } catch {
+        throw new BadRequestException('imageColors phải là chuỗi JSON array hợp lệ');
+      }
+    }
+
+    const data = await this.productsService.uploadProductImages(id, images, mainIndex, imageColors);
 
     return buildApiResponse(
       req,

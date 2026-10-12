@@ -1,4 +1,4 @@
-import { BadGatewayException, Injectable, Logger } from '@nestjs/common';
+import { BadGatewayException, Injectable, Logger, UnprocessableEntityException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import axios, { AxiosError } from 'axios';
 import { getGhnConfig } from './ghn.config';
@@ -35,6 +35,7 @@ export class GhnClient {
       const axiosError = error as AxiosError<GhnErrorBody>;
       const safeError = this.toSafeError(axiosError.response?.data);
       this.logger.warn(`provider=GHN operation=get path=${path} statusCode=${axiosError.response?.status ?? 'NETWORK'} duration=${Date.now() - startedAt} result=failed error=${JSON.stringify(safeError)}`);
+      this.throwMappedError(axiosError.response?.status, safeError);
       throw new BadGatewayException(safeError);
     }
   }
@@ -58,6 +59,7 @@ export class GhnClient {
       const axiosError = error as AxiosError<GhnErrorBody>;
       const safeError = this.toSafeError(axiosError.response?.data);
       this.logger.error(`provider=GHN operation=post path=${path} statusCode=${axiosError.response?.status ?? 'NETWORK'} duration=${Date.now() - startedAt} result=failed requestBody=${JSON.stringify(this.redactBody(body))} error=${JSON.stringify(safeError)}`);
+      this.throwMappedError(axiosError.response?.status, safeError);
       throw new BadGatewayException(safeError);
     }
   }
@@ -68,6 +70,20 @@ export class GhnClient {
       codeMessage: body?.code_message,
       codeMessageValue: body?.code_message_value,
     };
+  }
+
+  private throwMappedError(status: number | undefined, safeError: { message: string; codeMessage?: string; codeMessageValue?: string }) {
+    if (status === 400) {
+      const providerCode = safeError.codeMessage;
+      const domainCode = providerCode?.includes('ADDRESS') || providerCode?.includes('WARD')
+        ? 'ADDRESS_RECONFIRM_REQUIRED'
+        : 'SHIPPING_ROUTE_UNAVAILABLE';
+      throw new UnprocessableEntityException({
+        code: domainCode,
+        message: safeError.codeMessageValue || safeError.message || 'GHN không hỗ trợ tuyến giao hàng này.',
+        details: { providerCode },
+      });
+    }
   }
 
   private redactBody(value: unknown): unknown {

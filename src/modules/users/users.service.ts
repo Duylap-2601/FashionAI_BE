@@ -1,7 +1,7 @@
 import { Injectable, NotFoundException, BadRequestException } from '@nestjs/common';
 import { GarmentCategory, UserTier } from '@prisma/client';
 import { PrismaService } from '../../database/prisma.service';
-import { PAID_STATUSES } from '../../common/constants/order.constants';
+import { COLLECTED_PAYMENT_STATUSES } from '../../common/constants/order.constants';
 import { UpdateMeasurementsDto } from './dto/update-measurements.dto';
 import { UpdateProfileDto } from './dto/update-profile.dto';
 import { UpdateUserAdminDto } from './dto/update-user-admin.dto';
@@ -135,15 +135,13 @@ export class UsersService {
       this.prisma.user.count(),
       this.prisma.order.groupBy({
         by: ['userId'],
-        _sum: { amount: true },
-        // Gồm cả trạng thái sau thanh toán, nếu không `spent` sẽ tụt về 0 ngay khi
-        // admin xác nhận/giao đơn.
-        where: { status: { in: PAID_STATUSES } },
+        _sum: { amountPaidVnd: true, amountRefundedVnd: true },
+        where: { paymentStatus: { in: COLLECTED_PAYMENT_STATUSES } },
       }),
     ]);
 
     const spentMap = new Map(
-      spentByUser.map((item) => [item.userId, item._sum.amount]),
+      spentByUser.map((item) => [item.userId, Number(item._sum.amountPaidVnd ?? 0) - Number(item._sum.amountRefundedVnd ?? 0)]),
     );
 
     return {

@@ -36,7 +36,10 @@ export class GlobalExceptionFilter implements ExceptionFilter {
         message = res;
       } else if (typeof res === 'object' && res !== null) {
         message = res.message || exception.message;
-        code = res.error ? res.error.toUpperCase().replace(/\s+/g, '_') : `HTTP_${status}`;
+        code = typeof res.code === 'string' && res.code ? res.code : res.error ? res.error.toUpperCase().replace(/\s+/g, '_') : `HTTP_${status}`;
+        if (res.details && typeof res.details === 'object') {
+          details = res.details;
+        }
         if (Array.isArray(res.message)) {
           details = res.message;
           message = 'Dữ liệu đầu vào không hợp lệ';

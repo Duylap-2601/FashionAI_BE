@@ -1,7 +1,7 @@
 import { INestApplication } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import request from 'supertest';
-import { OrderStatus, UserTier } from '@prisma/client';
+import { OrderStatus, PaymentStatus, UserTier } from '@prisma/client';
 import { PaymentsController } from '../../src/modules/payments/payments.controller';
 import { PaymentsService } from '../../src/modules/payments/payments.service';
 import { SubscriptionService } from '../../src/modules/payments/subscription.service';
@@ -52,7 +52,8 @@ describe('GET /api/payments/admin/unmatched-transactions (e2e)', () => {
     orderCode: 5426868,
     amount: 34000,
     targetTier: UserTier.MEMBER,
-    status: OrderStatus.PENDING,
+    status: OrderStatus.CREATED,
+    paymentStatus: PaymentStatus.PENDING,
     createdAt: new Date(Date.now() - 30 * 60 * 1000),
     user: { email: 'buyer@example.com' },
   };

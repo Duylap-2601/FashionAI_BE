@@ -54,7 +54,7 @@ export class ShippingInfoDto {
   @IsNotEmpty()
   phone!: string;
 
-  @ApiProperty({ example: '123 Nguyen Trai, Quan 1, TP.HCM' })
+  @ApiProperty({ example: '123 Nguyen Trai, Phuong Long Binh, TP.HCM' })
   @IsString()
   @IsNotEmpty()
   address!: string;
@@ -64,12 +64,7 @@ export class ShippingInfoDto {
   @IsOptional()
   provinceName?: string;
 
-  @ApiProperty({ required: false, example: 'Quận 1' })
-  @IsString()
-  @IsOptional()
-  districtName?: string;
-
-  @ApiProperty({ required: false, example: 'Phường Bến Nghé' })
+  @ApiProperty({ required: false, example: 'Phường Long Bình' })
   @IsString()
   @IsOptional()
   wardName?: string;
@@ -84,20 +79,15 @@ export class ShippingInfoDto {
   @IsOptional()
   notes?: string;
 
-  @ApiProperty({ required: false, example: 202 })
-  @IsInt()
-  @IsOptional()
-  ghnProvinceId?: number;
-
-  @ApiProperty({ required: false, example: 1442 })
-  @IsInt()
-  @IsOptional()
-  ghnDistrictId?: number;
-
-  @ApiProperty({ required: false, example: '21211' })
+  @ApiProperty({ required: false, example: '1000001' })
   @IsString()
   @IsOptional()
-  ghnWardCode?: string;
+  ghnProvinceV3Id?: string;
+
+  @ApiProperty({ required: false, example: '1003575' })
+  @IsString()
+  @IsOptional()
+  ghnWardV3Id?: string;
 }
 
 export class CreateOrderDto {

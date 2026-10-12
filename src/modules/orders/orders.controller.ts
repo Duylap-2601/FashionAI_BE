@@ -22,6 +22,7 @@ import { AuthenticatedUser } from '../auth/interfaces/authenticated-user.interfa
 import { buildApiResponse } from '../../common/utils/api-response.util';
 import { CreateOrderDto } from './dto/create-order.dto';
 import { CreateMeasurementReviewDto, UpdateItemMeasurementDto } from './dto/measurement-review.dto';
+import { QueryAdminOrdersDto } from './dto/query-admin-orders.dto';
 import { RefundOrderDto } from './dto/refund-order.dto';
 import { CancelShipmentDto, CreateShipmentDto } from './dto/shipment.dto';
 import { UpdateOrderStatusDto } from './dto/update-order-status.dto';
@@ -82,15 +83,8 @@ export class OrdersController {
   @Roles(Role.ADMIN)
   @ApiBearerAuth('access-token')
   @ApiOperation({ summary: 'Danh sách tất cả đơn hàng (Admin Only)' })
-  async findAllAdmin(
-    @Req() req: Request,
-    @Query('page') page?: string,
-    @Query('limit') limit?: string,
-  ) {
-    const data = await this.ordersService.findAllAdmin(
-      Number(page) || 1,
-      Number(limit) || 20,
-    );
+  async findAllAdmin(@Req() req: Request, @Query() query: QueryAdminOrdersDto) {
+    const data = await this.ordersService.findAllAdmin(query);
     return buildApiResponse(
       req,
       'ADMIN_ORDERS_FETCH_SUCCESS',

@@ -5,20 +5,10 @@ export interface IShippingAddress {
   name?: string;
   phone?: string;
   address: string;
+  provinceId?: string;
+  wardId?: string;
   provinceName?: string;
-  districtName?: string;
   wardName?: string;
-  districtId?: number;
-  wardCode?: string;
-}
-
-export interface CalculateShippingFeeInput {
-  from: IShippingAddress;
-  to: IShippingAddress;
-  weight: number;
-  dimensions?: { length: number; width: number; height: number };
-  insuranceValue?: number;
-  codAmount?: number;
 }
 
 export interface ShippingFee {
@@ -29,6 +19,16 @@ export interface ShippingFee {
   codFee?: number;
   expectedDeliveryTime?: Date;
   raw?: unknown;
+}
+
+export interface PreviewShippingFeeInput {
+  sender: IShippingAddress;
+  receiver: IShippingAddress;
+  weight: number;
+  dimensions?: { length: number; width: number; height: number };
+  insuranceValue?: number;
+  codAmount?: number;
+  content?: string;
 }
 
 export interface CreateShipmentInput {
@@ -54,6 +54,7 @@ export interface CreateShipmentResult {
   provider: ShippingProviderType;
   providerOrderCode: string;
   status: ShipmentStatus;
+  rawStatus?: string;
   shippingFee: number;
   expectedDeliveryTime?: Date;
   raw?: unknown;

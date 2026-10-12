@@ -1,6 +1,6 @@
-import { Injectable } from '@nestjs/common';
+import { BadRequestException, Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { GarmentCategory, UserTier } from '@prisma/client';
+import { GarmentCategory, GhnAddressModel, UserTier } from '@prisma/client';
 import { PrismaService } from '../../database/prisma.service';
 import { UpdateGhnPickupSettingsDto } from './dto/ghn-pickup-settings.dto';
 import { UpdateLiveTryOnSettingsDto } from './dto/live-try-on-settings.dto';
@@ -9,10 +9,12 @@ const GHN_PICKUP_SETTING_KEY = 'shipping.ghn.pickup_address';
 const LIVE_TRY_ON_SETTING_KEY = 'try_on.live.policy';
 
 export interface GhnPickupSettings {
-  provinceId?: number;
-  districtId?: number;
-  wardCode?: string;
-  source: 'database' | 'env' | 'empty';
+  provinceV3Id?: string;
+  wardV3Id?: string;
+  addressLine?: string;
+  provinceName?: string;
+  wardName?: string;
+  source: 'database' | 'empty';
 }
 
 interface SettingRow {
@@ -52,18 +54,11 @@ export class AdminSettingsService {
     const saved = this.parseGhnPickupSettings(rows[0]?.value);
     if (saved) return { ...saved, source: 'database' };
 
-    const env = this.getEnvPickupSettings();
-    if (env) return { ...env, source: 'env' };
-
     return { source: 'empty' };
   }
 
   async updateGhnPickupSettings(dto: UpdateGhnPickupSettingsDto): Promise<GhnPickupSettings> {
-    const value = {
-      provinceId: dto.provinceId,
-      districtId: dto.districtId,
-      wardCode: dto.wardCode.trim(),
-    };
+    const value = await this.normalizePickup(dto);
 
     await this.prisma.$executeRaw`
       INSERT INTO app_settings (key, value, updated_at)
@@ -107,33 +102,44 @@ export class AdminSettingsService {
     return { ...next, source: 'database' };
   }
 
-  private getEnvPickupSettings() {
-    const provinceId = Number(this.configService.get<string>('GHN_FROM_PROVINCE_ID'));
-    const districtId = Number(this.configService.get<string>('GHN_FROM_DISTRICT_ID'));
-    const wardCode = this.configService.get<string>('GHN_FROM_WARD_CODE') ?? this.configService.get<string>('GHN_FROM_WARD_ID');
-
-    if (!Number.isFinite(districtId) || districtId <= 0 || !wardCode?.trim()) return null;
-
-    return {
-      provinceId: Number.isFinite(provinceId) && provinceId > 0 ? provinceId : undefined,
-      districtId,
-      wardCode: wardCode.trim(),
-    };
-  }
-
   private parseGhnPickupSettings(value: unknown) {
     if (!value || typeof value !== 'object') return null;
     const record = value as Record<string, unknown>;
-    const provinceId = Number(record.provinceId);
-    const districtId = Number(record.districtId);
-    const wardCode = typeof record.wardCode === 'string' ? record.wardCode.trim() : '';
-
-    if (!Number.isFinite(districtId) || districtId <= 0 || !wardCode) return null;
-
+    const provinceV3Id = typeof record.provinceV3Id === 'string' ? record.provinceV3Id.trim() : '';
+    const wardV3Id = typeof record.wardV3Id === 'string' ? record.wardV3Id.trim() : '';
+    if (!provinceV3Id || !wardV3Id) return null;
     return {
-      provinceId: Number.isFinite(provinceId) && provinceId > 0 ? provinceId : undefined,
-      districtId,
-      wardCode,
+      addressModel: GhnAddressModel.POST_MERGER_2_LEVEL,
+      provinceV3Id,
+      wardV3Id,
+      addressLine: typeof record.addressLine === 'string' ? record.addressLine : undefined,
+      provinceName: typeof record.provinceName === 'string' ? record.provinceName : undefined,
+      wardName: typeof record.wardName === 'string' ? record.wardName : undefined,
+    };
+  }
+
+  private async normalizePickup(dto: UpdateGhnPickupSettingsDto) {
+    const provinceV3Id = dto.provinceV3Id?.trim() ?? '';
+    const wardV3Id = dto.wardV3Id?.trim() ?? '';
+    if (!provinceV3Id || !wardV3Id) {
+      throw new BadRequestException({ code: 'ADDRESS_INVALID', message: 'Vui lòng chọn Tỉnh/Thành và Phường/Xã lấy hàng.' });
+    }
+
+    const metadata = await this.prisma.ghnCatalogMetadata.findUnique({ where: { addressModel: GhnAddressModel.POST_MERGER_2_LEVEL } });
+    if (!metadata) throw new BadRequestException({ code: 'CATALOG_REVISION_STALE', message: 'Danh mục địa chỉ mới chưa sẵn sàng.' });
+
+    const [province, ward] = await Promise.all([
+      this.prisma.ghnLocation.findFirst({ where: { addressModel: GhnAddressModel.POST_MERGER_2_LEVEL, catalogGeneration: metadata.publishedGeneration, level: 'PROVINCE', code: provinceV3Id, isActive: true } }),
+      this.prisma.ghnLocation.findFirst({ where: { addressModel: GhnAddressModel.POST_MERGER_2_LEVEL, catalogGeneration: metadata.publishedGeneration, level: 'WARD', code: wardV3Id, parentCode: provinceV3Id, isActive: true } }),
+    ]);
+    if (!province || !ward) throw new BadRequestException({ code: 'ADDRESS_INVALID', message: 'Địa chỉ lấy hàng GHN không hợp lệ.' });
+    return {
+      addressModel: GhnAddressModel.POST_MERGER_2_LEVEL,
+      provinceV3Id: province.code,
+      wardV3Id: ward.code,
+      addressLine: dto.addressLine?.trim() || undefined,
+      provinceName: province.name,
+      wardName: ward.name,
     };
   }
 

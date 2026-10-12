@@ -5,7 +5,7 @@ import { PrismaService } from '../../database/prisma.service';
 import { AuthService } from '../auth/auth.service';
 import { SubscriptionService } from '../payments/subscription.service';
 import { PaymentsService } from '../payments/payments.service';
-import { OrderStatus } from '@prisma/client';
+import { OrderStatus, PaymentStatus } from '@prisma/client';
 
 /**
  * Dọn dẹp định kỳ những bảng chỉ phình ra theo thời gian: token đã hết hạn,
@@ -42,16 +42,18 @@ export class MaintenanceService {
 
       const subscriptionResult = await this.subscriptionService.expireSubscriptions();
 
-      // Expire PENDING orders that haven't been paid after 24h. Bao gồm cả
+      // Expire CREATED orders that haven't been paid after 24h. Bao gồm cả
       // đơn subscription/renewal (có targetTier) để không tồn đọng nhiều đơn
       // PENDING khi user bỏ qua email nhắc gia hạn.
       const expiredOrders = await this.prisma.order.updateMany({
         where: {
-          status: OrderStatus.PENDING,
+          status: OrderStatus.CREATED,
+          paymentStatus: PaymentStatus.PENDING,
           createdAt: { lt: new Date(Date.now() - 24 * 60 * 60 * 1000) },
         },
         data: {
-          status: OrderStatus.EXPIRED,
+          status: OrderStatus.CANCELLED,
+          paymentStatus: PaymentStatus.EXPIRED,
           checkoutUrl: null,
           checkoutExpiresAt: null,
         },

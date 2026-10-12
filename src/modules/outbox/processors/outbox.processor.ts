@@ -24,7 +24,7 @@ export class OutboxProcessor extends WorkerHost {
     try {
       switch (type) {
         case OUTBOX_EVENT_TYPE.SHIPMENT_CREATE_REQUESTED:
-          await this.handleShipmentCreate(payload!);
+          await this.handleShipmentCreate(payload!, eventKey);
           break;
         case OUTBOX_EVENT_TYPE.SHIPMENT_CANCEL_REQUESTED:
           await this.handleShipmentCancel(payload!);
@@ -55,25 +55,12 @@ export class OutboxProcessor extends WorkerHost {
     }
   }
 
-  private async handleShipmentCreate(payload: Record<string, unknown>) {
+  private async handleShipmentCreate(payload: Record<string, unknown>, eventKey: string) {
     const orderId = payload.orderId as string;
     const orderCode = payload.orderCode as number | string | undefined;
     if (!orderId) throw new Error('Missing orderId in SHIPMENT_CREATE_REQUESTED');
 
-    this.logger.log(`Shipment create job started | orderId=${orderId} | orderCode=${orderCode ?? 'unknown'}`);
-
-    const order = await this.prisma.order.findUnique({
-      where: { id: orderId },
-      include: { items: true },
-    });
-    if (!order) throw new Error(`Order ${orderId} not found`);
-    if (order.status !== 'CONFIRMED') {
-      this.logger.warn(`Shipment create job skipped | orderId=${orderId} | orderCode=${order.orderCode} | status=${order.status}`);
-      return;
-    }
-
-    const shipment = await this.shipmentService.createShipmentFromOrder(order);
-    this.logger.log(`Shipment create job completed | orderId=${orderId} | orderCode=${order.orderCode} | shipmentId=${shipment.id} | providerOrderCode=${shipment.providerOrderCode ?? 'none'}`);
+    this.logger.warn(`Legacy shipment create job skipped | orderId=${orderId} | orderCode=${orderCode ?? 'unknown'} | eventKey=${eventKey}`);
   }
 
   private async handleShipmentCancel(payload: Record<string, unknown>) {

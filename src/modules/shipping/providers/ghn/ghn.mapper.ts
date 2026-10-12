@@ -1,7 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { ShipmentStatus } from '@prisma/client';
 import { ShippingProviderType } from '../../constants/shipping-provider.enum';
-import { CalculateShippingFeeInput, CreateShipmentInput, CreateShipmentResult, ShipmentTracking, ShippingFee } from '../../types/shipping.types';
+import { CreateShipmentInput, CreateShipmentResult, PreviewShippingFeeInput, ShipmentTracking, ShippingFee } from '../../types/shipping.types';
 
 export interface IGhnEnvelope<T> {
   code?: number;
@@ -11,9 +11,15 @@ export interface IGhnEnvelope<T> {
 
 export interface IGhnFeeData {
   total?: number;
+  total_fee?: number;
   service_fee?: number;
   insurance_fee?: number;
   cod_fee?: number;
+  fee?: {
+    main_service?: number;
+    insurance?: number;
+    cod_fee?: number;
+  };
   expected_delivery_time?: string;
 }
 
@@ -33,10 +39,11 @@ export interface IGhnTrackingData {
 @Injectable()
 export class GhnMapper {
   mapStatus(status?: string | null): ShipmentStatus {
-    switch ((status || '').toLowerCase()) {
+    switch ((status || '').trim().toLowerCase()) {
       case 'ready_to_pick':
         return ShipmentStatus.READY_TO_PICK;
       case 'picking':
+      case 'money_collect_picking':
         return ShipmentStatus.PICKING;
       case 'picked':
         return ShipmentStatus.PICKED;
@@ -45,6 +52,7 @@ export class GhnMapper {
       case 'storing':
         return ShipmentStatus.IN_TRANSIT;
       case 'delivering':
+      case 'money_collect_delivering':
         return ShipmentStatus.DELIVERING;
       case 'delivered':
         return ShipmentStatus.DELIVERED;
@@ -68,45 +76,22 @@ export class GhnMapper {
       case 'cancelled':
         return ShipmentStatus.CANCELLED;
       default:
-        return ShipmentStatus.FAILED;
+        return ShipmentStatus.UNKNOWN;
     }
   }
 
-  toFeeRequest(input: CalculateShippingFeeInput, fromDistrictId?: number, fromWardCode?: string) {
-    const resolvedFromDistrictId = input.from.districtId ?? fromDistrictId;
-    const resolvedFromWardCode = input.from.wardCode ?? fromWardCode;
-    return {
-      ...(resolvedFromDistrictId ? { from_district_id: resolvedFromDistrictId } : {}),
-      ...(resolvedFromWardCode ? { from_ward_code: resolvedFromWardCode } : {}),
-      to_district_id: input.to.districtId,
-      to_ward_code: input.to.wardCode,
-      service_type_id: this.resolveServiceType(input.weight),
-      weight: input.weight,
-      length: input.dimensions?.length ?? 25,
-      width: input.dimensions?.width ?? 20,
-      height: input.dimensions?.height ?? 8,
-      insurance_value: input.insuranceValue ?? 0,
-      cod_value: input.codAmount ?? 0,
-    };
-  }
-
-  toCreateOrderRequest(input: CreateShipmentInput, fromDistrictId?: number, fromWardCode?: string) {
-    const resolvedFromDistrictId = input.sender.districtId ?? fromDistrictId;
-    const resolvedFromWardCode = input.sender.wardCode ?? fromWardCode;
+  toCreateOrderRequest(input: CreateShipmentInput) {
     return {
       payment_type_id: 1,
       required_note: 'KHONGCHOXEMHANG',
       client_order_code: input.clientOrderCode,
-      ...(resolvedFromDistrictId ? { from_district_id: resolvedFromDistrictId } : {}),
-      ...(resolvedFromWardCode ? { from_ward_code: resolvedFromWardCode } : {}),
+      is_new_from_address: true,
+      is_new_to_address: true,
       to_name: input.receiver.name,
       to_phone: input.receiver.phone,
       to_address: input.receiver.address,
       to_ward_name: input.receiver.wardName,
-      to_district_name: input.receiver.districtName,
       to_province_name: input.receiver.provinceName,
-      to_ward_code: input.receiver.wardCode,
-      to_district_id: input.receiver.districtId,
       service_type_id: this.resolveServiceType(input.weight),
       weight: input.weight,
       length: input.dimensions?.length ?? 25,
@@ -125,14 +110,41 @@ export class GhnMapper {
     };
   }
 
-  toShippingFee(response: IGhnEnvelope<IGhnFeeData>): ShippingFee {
+  toPreviewOrderRequest(input: PreviewShippingFeeInput) {
+    return {
+      payment_type_id: 1,
+      required_note: 'KHONGCHOXEMHANG',
+      is_new_from_address: true,
+      is_new_to_address: true,
+      from_name: input.sender.name ?? 'FashionAI workshop',
+      from_phone: input.sender.phone ?? '0900000000',
+      from_address: input.sender.address,
+      from_ward_name: input.sender.wardName,
+      from_province_name: input.sender.provinceName,
+      to_name: input.receiver.name ?? 'FashionAI customer',
+      to_phone: input.receiver.phone ?? '0900000000',
+      to_address: input.receiver.address,
+      to_ward_name: input.receiver.wardName,
+      to_province_name: input.receiver.provinceName,
+      service_type_id: this.resolveServiceType(input.weight),
+      weight: input.weight,
+      length: input.dimensions?.length ?? 25,
+      width: input.dimensions?.width ?? 20,
+      height: input.dimensions?.height ?? 8,
+      insurance_value: input.insuranceValue ?? 0,
+      cod_amount: input.codAmount ?? 0,
+      content: input.content ?? 'FashionAI order',
+    };
+  }
+
+  toPreviewShippingFee(response: IGhnEnvelope<IGhnFeeData>): ShippingFee {
     const data = response.data ?? {};
     return {
       provider: ShippingProviderType.GHN,
-      totalFee: Number(data.total ?? 0),
-      serviceFee: data.service_fee,
-      insuranceFee: data.insurance_fee,
-      codFee: data.cod_fee,
+      totalFee: Number(data.total_fee ?? data.total ?? 0),
+      serviceFee: data.fee?.main_service ?? data.service_fee,
+      insuranceFee: data.fee?.insurance ?? data.insurance_fee,
+      codFee: data.fee?.cod_fee ?? data.cod_fee,
       expectedDeliveryTime: data.expected_delivery_time ? new Date(data.expected_delivery_time) : undefined,
       raw: response,
     };
@@ -143,7 +155,8 @@ export class GhnMapper {
     return {
       provider: ShippingProviderType.GHN,
       providerOrderCode: String(data.order_code ?? ''),
-      status: ShipmentStatus.CREATED,
+      status: this.mapStatus('ready_to_pick'),
+      rawStatus: 'ready_to_pick',
       shippingFee: Number(data.total_fee ?? 0),
       expectedDeliveryTime: data.expected_delivery_time ? new Date(data.expected_delivery_time) : undefined,
       raw: response,

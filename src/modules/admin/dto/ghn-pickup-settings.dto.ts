@@ -1,18 +1,20 @@
 import { ApiProperty } from '@nestjs/swagger';
-import { IsInt, IsString, Min } from 'class-validator';
+import { IsOptional, IsString, MaxLength } from 'class-validator';
 
 export class UpdateGhnPickupSettingsDto {
-  @ApiProperty({ example: 202 })
-  @IsInt()
-  @Min(1)
-  provinceId!: number;
-
-  @ApiProperty({ example: 1685 })
-  @IsInt()
-  @Min(1)
-  districtId!: number;
-
-  @ApiProperty({ example: '90751' })
+  @ApiProperty({ example: '1000001' })
   @IsString()
-  wardCode!: string;
+  @MaxLength(50)
+  provinceV3Id!: string;
+
+  @ApiProperty({ example: '1003575' })
+  @IsString()
+  @MaxLength(50)
+  wardV3Id!: string;
+
+  @ApiProperty({ required: false, example: 'Long Thạnh Mỹ' })
+  @IsString()
+  @MaxLength(255)
+  @IsOptional()
+  addressLine?: string;
 }

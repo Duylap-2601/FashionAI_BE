@@ -16,6 +16,7 @@ import { PrismaService } from '../../database/prisma.service';
 import { StorageService } from '../storage/storage.service';
 import { QuotaService } from '../../common/services/quota.service';
 import { RedisService } from '../../common/services/redis.service';
+import { resolveGarmentUrlForColor } from '../../common/utils/garment-image.util';
 
 type FashnCategory = 'tops' | 'bottoms' | 'one-pieces';
 
@@ -23,6 +24,7 @@ export interface TryOnGarmentInput {
   category?: GarmentCategory;
   productId?: string;
   image?: Express.Multer.File;
+  color?: string;
 }
 
 interface ResolvedGarment {
@@ -32,6 +34,7 @@ interface ResolvedGarment {
   mime: string;
   hash: string;
   product: any | null;
+  color?: string | null;
 }
 
 export interface TryOnQuotaContext {
@@ -43,7 +46,7 @@ export interface TryOnResultResponse {
   id: string;
   resultUrl: string;
   category: GarmentCategory;
-  garments?: Array<{ category: GarmentCategory; productId: string | null }>;
+  garments?: Array<{ category: GarmentCategory; productId: string | null; color?: string | null }>;
   isCached: boolean;
   cacheKey: string;
   expiresAt: Date | null;
@@ -192,10 +195,12 @@ export class TryOnService {
           );
         }
 
+        const garmentUrl = resolveGarmentUrlForColor(product.images, product.garmentUrl, g.color);
+
         if (this.provider === 'mock') {
-          buffer = Buffer.from(product.garmentUrl);
+          buffer = Buffer.from(garmentUrl);
         } else {
-          const imgRes = await axios.get<ArrayBuffer>(product.garmentUrl, {
+          const imgRes = await axios.get<ArrayBuffer>(garmentUrl, {
             responseType: 'arraybuffer',
             timeout: 15000,
           });
@@ -218,6 +223,7 @@ export class TryOnService {
         mime,
         hash,
         product,
+        color: g.color ?? null,
       });
     }
 
@@ -454,6 +460,7 @@ export class TryOnService {
     const garmentsMeta = resolved.map((g) => ({
       category: g.category,
       productId: g.productId,
+      color: g.color ?? null,
     }));
 
     try {
@@ -645,7 +652,7 @@ export class TryOnService {
     humanHash: string,
     garments: ResolvedGarment[],
     cacheKey: string,
-    garmentsMeta: Array<{ category: GarmentCategory; productId: string | null }>,
+    garmentsMeta: Array<{ category: GarmentCategory; productId: string | null; color?: string | null }>,
   ): Promise<TryOnResultResponse> {
     const configuredUrl = this.config.get<string>('MOCK_TRYON_RESULT_URL');
     const resultUrl =

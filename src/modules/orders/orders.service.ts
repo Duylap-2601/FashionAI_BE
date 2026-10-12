@@ -4,12 +4,13 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-import { GarmentType, NotificationType, OrderStatus, PaymentStatus, Prisma, Product, RefundStatus, Role, ShipmentStatus } from '@prisma/client';
+import { CouponDiscountType, GarmentType, NotificationType, OrderStatus, PaymentStatus, Prisma, Product, RefundStatus, Role, ShipmentStatus } from '@prisma/client';
 import { createHash, createHmac, timingSafeEqual } from 'crypto';
 import { PrismaService } from '../../database/prisma.service';
 import { MailQueueService } from '../mail/mail-queue.service';
 import { NotificationService } from '../notification/notification.service';
 import { createWithUniqueOrderCode } from '../../common/utils/order-code.util';
+import { resolveGarmentUrlForColor } from '../../common/utils/garment-image.util';
 import { CreateOrderDto } from './dto/create-order.dto';
 import {
   MAX_INT4,
@@ -21,6 +22,7 @@ import {
   UUID_REGEX,
 } from './constants/order-flow.constants';
 import { CreateMeasurementReviewDto, UpdateItemMeasurementDto } from './dto/measurement-review.dto';
+import { QueryAdminOrdersDto } from './dto/query-admin-orders.dto';
 import { RefundOrderDto } from './dto/refund-order.dto';
 import { CancelShipmentDto, CreateShipmentDto } from './dto/shipment.dto';
 import { ShippingProviderType } from '../shipping/constants/shipping-provider.enum';
@@ -38,6 +40,7 @@ import { ONLINE_REFUND_PROVIDERS } from '../../common/constants/payment.constant
 type IOrderWithRelations = Prisma.OrderGetPayload<{
   include: ReturnType<OrdersService['orderInclude']>;
 }> & { user?: unknown };
+type IShipmentWithOrder = IOrderWithRelations['shipments'][number];
 
 type IOrderProduct = Product;
 type ResolvedCreateOrderDto = CreateOrderDto & { shippingInfo: NonNullable<CreateOrderDto['shippingInfo']> };
@@ -75,7 +78,7 @@ export class OrdersService {
   async quote(userId: string, dto: CreateOrderDto) {
     const resolvedDto = await this.resolveOrderAddress(userId, dto);
     const products = await this.getActiveOrderProducts(dto);
-    const pricing = await this.buildOrderPricing(resolvedDto, products);
+    const pricing = await this.buildOrderPricing(resolvedDto, products, userId);
     const fingerprint = this.buildOrderFingerprint(userId, resolvedDto);
     const quoteToken = this.signQuote({
       userId,
@@ -133,6 +136,24 @@ export class OrdersService {
       );
     }
 
+    // Nếu sản phẩm có khai báo danh sách màu (colors), màu khách chọn phải khớp
+    // 1 trong số đó (case-insensitive) — tránh lưu màu rác không map được ảnh.
+    // Sản phẩm chưa khai báo colors thì giữ hành vi cũ (chấp nhận mọi string).
+    for (const item of resolvedDto.items) {
+      if (!item.color) continue;
+      const product = productMap.get(item.productId)!;
+      const colors = (product.colors as Array<{ name: string }> | null) ?? [];
+      if (colors.length === 0) continue;
+      const matched = colors.some(
+        (c) => c.name.trim().toLowerCase() === item.color!.trim().toLowerCase(),
+      );
+      if (!matched) {
+        throw new BadRequestException(
+          `Màu "${item.color}" không hợp lệ cho sản phẩm "${product.name}"`,
+        );
+      }
+    }
+
     // Đặt may theo số đo: user phải điền đủ số đo cơ thể bắt buộc dựa trên loại
     // trang phục cụ thể (garmentType) trong đơn. Chụp lại (snapshot) số đo lên
     // từng OrderItem để đóng băng tại thời điểm đặt.
@@ -160,8 +181,8 @@ export class OrdersService {
 
     // Luôn dùng giá trong DB, KHÔNG tin item.price do client gửi lên, tránh gian
     // lận giá (client không thể tự đặt giá sản phẩm).
-    const { itemsTotal, shippingFee, discountAmount, total, couponCode, shippingQuote } =
-      await this.buildOrderPricing(resolvedDto, products);
+    const { itemsTotal, shippingFee, discountAmount, total, couponCode, couponId, shippingQuote } =
+      await this.buildOrderPricing(resolvedDto, products, userId);
 
     if (dto.quoteToken) {
       this.assertQuoteToken(dto.quoteToken, userId, requestFingerprint, total);
@@ -209,7 +230,7 @@ export class OrdersService {
             taxVnd: 0,
             totalVnd: this.toVnd(total),
             currency: 'VND',
-            status: OrderStatus.PENDING,
+            status: OrderStatus.CREATED,
             paymentStatus: PaymentStatus.PENDING,
             refundStatus: RefundStatus.NONE,
             fulfillmentFlowVersion: 1,
@@ -230,6 +251,11 @@ export class OrdersService {
                   measurementSnapshot:
                     measurementSnapshot as Prisma.InputJsonValue,
                   productNameSnapshot: product.name,
+                  productImageSnapshot: resolveGarmentUrlForColor(
+                    (product as Product & { images?: { imageUrl: string; isMain: boolean; colorName: string | null }[] }).images ?? [],
+                    product.garmentUrl,
+                    item.color,
+                  ),
                   productCategorySnapshot: product.category,
                   brandSnapshot: product.brand,
                   fabricSnapshot: product.material,
@@ -260,7 +286,7 @@ export class OrdersService {
           type: 'ORDER_CREATED',
           source: 'USER',
           actorId: userId,
-          toStatus: OrderStatus.PENDING,
+          toStatus: OrderStatus.CREATED,
           publicMessage: 'Đơn hàng đã được tạo và đang chờ thanh toán.',
           deduplicationKey: `order:${created.id}:created`,
         });
@@ -270,6 +296,16 @@ export class OrdersService {
             where: { userId_key: { userId, key: dto.idempotencyKey } },
             create: { userId, key: dto.idempotencyKey, fingerprint: requestFingerprint, orderId: created.id },
             update: { orderId: created.id },
+          });
+        }
+
+        if (couponId) {
+          await tx.couponRedemption.create({
+            data: { couponId, userId, orderId: created.id },
+          });
+          await tx.coupon.update({
+            where: { id: couponId },
+            data: { usedCount: { increment: 1 } },
           });
         }
 
@@ -363,7 +399,7 @@ export class OrdersService {
 
   async cancel(userId: string, id: string) {
     const order = await this.findOrderForOwner(userId, id);
-    if (order.status !== OrderStatus.PENDING) {
+    if (order.status !== OrderStatus.CREATED) {
       throw new BadRequestException('Chỉ có thể hủy đơn hàng đang chờ xử lý');
     }
 
@@ -372,7 +408,7 @@ export class OrdersService {
     // thay vì param thô để tránh lỗi cast khi client gửi orderCode.
     const { count } = await this.prisma.$transaction(async (tx) => {
       const result = await tx.order.updateMany({
-        where: { id: order.id, userId, status: OrderStatus.PENDING, OR: [{ paymentStatus: PaymentStatus.PENDING }, { paymentStatus: null }] },
+        where: { id: order.id, userId, status: OrderStatus.CREATED, OR: [{ paymentStatus: PaymentStatus.PENDING }, { paymentStatus: null }] },
         data: {
           status: OrderStatus.CANCELLED,
           checkoutUrl: null,
@@ -385,7 +421,7 @@ export class OrdersService {
           type: 'ORDER_CANCELLED',
           source: 'USER',
           actorId: userId,
-          fromStatus: OrderStatus.PENDING,
+          fromStatus: OrderStatus.CREATED,
           toStatus: OrderStatus.CANCELLED,
           publicMessage: 'Khách hàng đã hủy đơn trước khi thanh toán.',
           deduplicationKey: `order:${order.id}:cancel:user`,
@@ -411,11 +447,44 @@ export class OrdersService {
     return this.findOne(userId, order.id);
   }
 
-  async findAllAdmin(page = 1, limit = 20) {
+  async findAllAdmin(query: QueryAdminOrdersDto) {
+    const page = query.page ?? 1;
+    const limit = query.limit ?? 20;
     const skip = (page - 1) * limit;
+
+    const andFilters: Prisma.OrderWhereInput[] = [];
+
+    if (query.status) {
+      andFilters.push({ status: query.status });
+    }
+    if (query.paymentStatus) {
+      andFilters.push({ paymentStatus: query.paymentStatus });
+    }
+    if (query.fromDate || query.toDate) {
+      andFilters.push({
+        createdAt: {
+          ...(query.fromDate ? { gte: new Date(query.fromDate) } : {}),
+          ...(query.toDate ? { lte: new Date(query.toDate) } : {}),
+        },
+      });
+    }
+    if (query.search?.trim()) {
+      const search = query.search.trim();
+      const orderCode = Number(search.replace(/^ORD-/i, ''));
+      andFilters.push({
+        OR: [
+          ...(Number.isInteger(orderCode) && orderCode > 0 && orderCode <= MAX_INT4 ? [{ orderCode }] : []),
+          { user: { name: { contains: search, mode: Prisma.QueryMode.insensitive } } },
+          { user: { email: { contains: search, mode: Prisma.QueryMode.insensitive } } },
+        ],
+      });
+    }
+
+    const where: Prisma.OrderWhereInput = andFilters.length > 0 ? { AND: andFilters } : {};
 
     const [items, total] = await Promise.all([
       this.prisma.order.findMany({
+        where,
         skip,
         take: limit,
         orderBy: { createdAt: 'desc' },
@@ -426,7 +495,7 @@ export class OrdersService {
           },
         },
       }),
-      this.prisma.order.count(),
+      this.prisma.order.count({ where }),
     ]);
 
     return {
@@ -479,16 +548,19 @@ export class OrdersService {
       );
     }
 
-    const verifiedOnlyStatuses: OrderStatus[] = [OrderStatus.SHIPPING, OrderStatus.DELIVERED, OrderStatus.PAID];
+    const verifiedOnlyStatuses: OrderStatus[] = [OrderStatus.SHIPPING, OrderStatus.DELIVERED, OrderStatus.PAID, OrderStatus.CREATED];
     if (isNewFlow && verifiedOnlyStatuses.includes(status)) {
       throw new BadRequestException('Trạng thái này phải do thanh toán hoặc vận chuyển đã xác minh cập nhật.');
     }
 
-    if (isNewFlow && status === OrderStatus.MEASUREMENT_CONFIRMED) {
+    if (isNewFlow && status === OrderStatus.MEASUREMENT_CONFIRMED && order.status === OrderStatus.MEASUREMENT_REVIEW) {
       await this.assertNoOpenMeasurementReviews(order.id);
     }
 
     await this.prisma.$transaction(async (tx) => {
+      if (isNewFlow && status === OrderStatus.MEASUREMENT_CONFIRMED && order.status === OrderStatus.MEASUREMENT_REVIEW) {
+        await this.resolveSubmittedMeasurementReviews(tx, order.id);
+      }
       await tx.order.update({
         where: { id: order.id },
         data: { status, ...(status === OrderStatus.CANCELLED && order.paymentStatus === PaymentStatus.PAID ? { refundStatus: RefundStatus.REQUIRED } : {}) },
@@ -536,14 +608,15 @@ export class OrdersService {
       ? await this.prisma.orderItem.findFirst({ where: { id: itemId, orderId: order.id } })
       : null;
     if (!order || !item) throw new NotFoundException('Không tìm thấy item thuộc đơn hàng');
-    if (order.fulfillmentFlowVersion !== 1 || order.status !== OrderStatus.MEASUREMENT_REVIEW) {
+    if (order.fulfillmentFlowVersion !== 1 || order.status !== OrderStatus.PROCESSING) {
       throw new BadRequestException('Chỉ mở yêu cầu số đo khi đơn đang ở bước kiểm tra số đo.');
     }
 
     const review = { status: 'OPEN', message: dto.message, openedAt: new Date().toISOString() };
     await this.prisma.$transaction(async (tx) => {
+      await tx.order.update({ where: { id: order.id }, data: { status: OrderStatus.MEASUREMENT_REVIEW } });
       await tx.orderItem.update({ where: { id: item.id }, data: { measurementReview: review as Prisma.InputJsonValue } });
-      await this.createOrderEvent(tx, { orderId: order.id, type: 'MEASUREMENT_REVIEW_OPENED', source: 'ADMIN', actorId, publicMessage: dto.message, internalNote: dto.internalNote });
+      await this.createOrderEvent(tx, { orderId: order.id, type: 'MEASUREMENT_REVIEW_OPENED', source: 'ADMIN', actorId, fromStatus: OrderStatus.PROCESSING, toStatus: OrderStatus.MEASUREMENT_REVIEW, publicMessage: dto.message, internalNote: dto.internalNote });
     });
 
     return this.findOne(order.userId, order.id);
@@ -651,7 +724,7 @@ export class OrdersService {
       where: { orderId: order.id, status: { notIn: [ShipmentStatus.DELIVERED, ShipmentStatus.RETURNED, ShipmentStatus.CANCELLED] } },
     });
     if (existingShipment?.providerOrderCode) {
-      return { shipment: existingShipment, order: await this.findOne(order.userId, order.id) };
+      return { shipment: this.toPublicShipment(existingShipment), order: await this.findOne(order.userId, order.id) };
     }
 
     const pendingShipment = existingShipment ?? await this.prisma.shipment.create({
@@ -673,6 +746,7 @@ export class OrdersService {
         where: { id: pendingShipment.id },
         data: {
           status: result.status,
+          rawStatus: result.rawStatus ?? 'ready_to_pick',
           providerOrderCode: result.providerOrderCode,
           shippingFee: new Prisma.Decimal(result.shippingFee),
           shippingFeeVnd: BigInt(Math.round(result.shippingFee)),
@@ -682,12 +756,11 @@ export class OrdersService {
           lastSyncedAt: new Date(),
         },
       });
-      await tx.order.update({ where: { id: order.id }, data: { status: OrderStatus.SHIPPING } });
-      await this.createOrderEvent(tx, { orderId: order.id, shipmentId: created.id, type: 'SHIPMENT_CREATED', source: 'ADMIN', actorId, fromStatus: OrderStatus.READY_TO_SHIP, toStatus: OrderStatus.SHIPPING, fromShipmentStatus: pendingShipment.status, toShipmentStatus: result.status, publicMessage: 'Vận đơn đã được tạo và đang chờ đơn vị vận chuyển xử lý.', deduplicationKey: `shipment:${requestKey}:created` });
+      await this.createOrderEvent(tx, { orderId: order.id, shipmentId: created.id, type: 'SHIPMENT_CREATED', source: 'ADMIN', actorId, fromStatus: order.status, toStatus: OrderStatus.READY_TO_SHIP, fromShipmentStatus: pendingShipment.status, toShipmentStatus: result.status, publicMessage: 'Vận đơn đã được tạo và đang chờ đơn vị vận chuyển xử lý.', deduplicationKey: `shipment:${requestKey}:created`, metadata: { rawStatus: result.rawStatus ?? 'ready_to_pick' } as Prisma.InputJsonValue });
       return created;
     });
 
-    return { shipment, order: await this.findOne(order.userId, order.id) };
+    return { shipment: this.toPublicShipment(shipment), order: await this.findOne(order.userId, order.id) };
   }
 
   async cancelShipment(id: string, dto: CancelShipmentDto, actorId: string) {
@@ -713,8 +786,15 @@ export class OrdersService {
 
   async confirmDelivery(userId: string, id: string, note?: string) {
     const order = await this.findOrderForOwner(userId, id);
-    if (order.status !== OrderStatus.SHIPPING && order.status !== OrderStatus.DELIVERED) {
-      throw new BadRequestException('Chỉ có thể xác nhận khi đơn hàng đang giao hoặc đã được giao (status = SHIPPING hoặc DELIVERED).');
+    if (order.status === OrderStatus.COMPLETED) {
+      return this.toPublicOrder(order);
+    }
+    if (order.status !== OrderStatus.READY_TO_SHIP) {
+      throw new BadRequestException('Chỉ có thể xác nhận khi đơn hàng đã sẵn sàng giao và vận đơn đã giao thành công.');
+    }
+    const currentShipment = this.getCurrentShipment(order);
+    if (!currentShipment || this.normalizeRawStatus(currentShipment.rawStatus) !== 'delivered') {
+      throw new BadRequestException('Chỉ có thể xác nhận sau khi đơn vị vận chuyển báo đã giao hàng.');
     }
 
     const fromStatus = order.status;
@@ -797,11 +877,7 @@ export class OrdersService {
       throw new BadRequestException({ code: 'ADDRESS_REQUIRED', message: 'Vui lòng chọn địa chỉ giao hàng.' });
     }
 
-    const normalizedLocation = await this.shippingService.validateGhnLocation(
-      dto.shippingInfo.ghnProvinceId ?? 0,
-      dto.shippingInfo.ghnDistrictId ?? 0,
-      dto.shippingInfo.ghnWardCode ?? '',
-    );
+    const normalizedLocation = await this.shippingService.validateGhnLocation(dto.shippingInfo.ghnProvinceV3Id, dto.shippingInfo.ghnWardV3Id);
     return {
       ...dto,
       shippingInfo: {
@@ -821,9 +897,8 @@ export class OrdersService {
       shippingAddressId: dto.shippingAddressId ?? null,
       addressVersion: dto.addressVersion ?? null,
       shippingInfo: dto.shippingAddressId ? null : {
-        ghnProvinceId: dto.shippingInfo.ghnProvinceId,
-        ghnDistrictId: dto.shippingInfo.ghnDistrictId,
-        ghnWardCode: dto.shippingInfo.ghnWardCode,
+        ghnProvinceV3Id: dto.shippingInfo.ghnProvinceV3Id,
+        ghnWardV3Id: dto.shippingInfo.ghnWardV3Id,
         address: dto.shippingInfo.address,
         phone: dto.shippingInfo.phone,
       },
@@ -872,6 +947,7 @@ export class OrdersService {
         id: { in: productIds },
         status: 'ACTIVE',
       },
+      include: { images: true },
     });
 
     const productMap = new Map(products.map((product) => [product.id, product]));
@@ -885,7 +961,7 @@ export class OrdersService {
     return products;
   }
 
-  private async buildOrderPricing(dto: ResolvedCreateOrderDto, products: IOrderProduct[]) {
+  private async buildOrderPricing(dto: ResolvedCreateOrderDto, products: IOrderProduct[], userId: string) {
     const productMap = new Map(products.map((product) => [product.id, product]));
     const itemsTotal = dto.items.reduce((sum, item) => {
       const product = productMap.get(item.productId)!;
@@ -893,7 +969,7 @@ export class OrdersService {
     }, 0);
     const shippingQuote = await this.calculateOrderShippingFee(dto, itemsTotal);
     const shippingFee = shippingQuote.totalFee;
-    const discountAmount = this.resolveDiscountAmount(dto.couponCode, itemsTotal);
+    const { discountAmount, couponId, couponCode } = await this.resolveDiscountAmount(dto.couponCode, itemsTotal, userId);
 
     if (discountAmount > itemsTotal + shippingFee) {
       throw new BadRequestException('Discount amount exceeds order amount');
@@ -908,7 +984,8 @@ export class OrdersService {
       itemsTotal,
       shippingFee,
       discountAmount,
-      couponCode: discountAmount > 0 ? dto.couponCode?.trim().toUpperCase() : undefined,
+      couponId,
+      couponCode: discountAmount > 0 ? couponCode : undefined,
       total,
       shippingQuote: {
         provider: shippingQuote.provider,
@@ -922,42 +999,81 @@ export class OrdersService {
   }
 
   private calculateOrderShippingFee(dto: ResolvedCreateOrderDto, itemsTotal: number) {
-    const { ghnDistrictId, ghnWardCode } = dto.shippingInfo;
-    if (!ghnDistrictId || !ghnWardCode) {
-      throw new BadRequestException('GHN district and ward are required to calculate shipping fee');
-    }
-
     const weight = Math.max(
       500,
       dto.items.reduce((sum, item) => sum + item.quantity * 500, 0),
     );
 
+    if (!dto.shippingInfo.ghnProvinceV3Id || !dto.shippingInfo.ghnWardV3Id || !dto.shippingInfo.provinceName || !dto.shippingInfo.wardName) {
+      throw new BadRequestException({ code: 'ADDRESS_INVALID', message: 'Địa chỉ giao hàng không đầy đủ.' });
+    }
     return this.shippingService.calculateFee({
-      toDistrictId: ghnDistrictId,
-      toWardCode: ghnWardCode,
+      receiver: {
+        name: dto.shippingInfo.name,
+        phone: dto.shippingInfo.phone,
+        address: dto.shippingInfo.address,
+        provinceId: dto.shippingInfo.ghnProvinceV3Id,
+        provinceName: dto.shippingInfo.provinceName,
+        wardId: dto.shippingInfo.ghnWardV3Id,
+        wardName: dto.shippingInfo.wardName,
+      },
       weight,
-      length: 25,
-      width: 20,
-      height: 8,
+      dimensions: { length: 25, width: 20, height: 8 },
       insuranceValue: itemsTotal,
       codAmount: 0,
+      content: `FashionAI order - ${dto.items.reduce((sum, item) => sum + item.quantity, 0)} items`,
     });
   }
 
-  private resolveDiscountAmount(couponCode: string | undefined, itemsTotal: number) {
+  private async resolveDiscountAmount(
+    couponCode: string | undefined,
+    itemsTotal: number,
+    userId: string,
+  ): Promise<{ discountAmount: number; couponId: string | null; couponCode?: string }> {
     const code = couponCode?.trim().toUpperCase();
-    if (!code) return 0;
+    if (!code) return { discountAmount: 0, couponId: null };
 
-    switch (code) {
-      case 'WELCOME':
-        return Math.min(100000, itemsTotal);
-      case 'STALE10':
-        return Math.round(itemsTotal * 0.1);
-      case 'FASHIONAI':
-        return Math.min(150000, itemsTotal);
-      default:
-        throw new BadRequestException('Coupon code is invalid or expired');
+    const coupon = await this.prisma.coupon.findUnique({ where: { code } });
+    if (!coupon) {
+      throw new BadRequestException('Mã giảm giá không tồn tại');
     }
+    if (!coupon.isActive) {
+      throw new BadRequestException('Mã giảm giá đã bị tắt');
+    }
+
+    const now = new Date();
+    if (coupon.startsAt && coupon.startsAt > now) {
+      throw new BadRequestException('Mã giảm giá chưa đến thời gian áp dụng');
+    }
+    if (coupon.expiresAt && coupon.expiresAt < now) {
+      throw new BadRequestException('Mã giảm giá đã hết hạn');
+    }
+    if (coupon.minOrderVnd !== null && itemsTotal < Number(coupon.minOrderVnd)) {
+      throw new BadRequestException('Đơn hàng chưa đạt giá trị tối thiểu để áp mã này');
+    }
+    if (coupon.usageLimit !== null && coupon.usedCount >= coupon.usageLimit) {
+      throw new BadRequestException('Mã giảm giá đã hết lượt sử dụng');
+    }
+    if (coupon.usageLimitPerUser !== null) {
+      const usedByUser = await this.prisma.couponRedemption.count({
+        where: { couponId: coupon.id, userId },
+      });
+      if (usedByUser >= coupon.usageLimitPerUser) {
+        throw new BadRequestException('Bạn đã sử dụng hết số lượt cho phép của mã giảm giá này');
+      }
+    }
+
+    let discountAmount: number;
+    if (coupon.discountType === CouponDiscountType.PERCENTAGE) {
+      discountAmount = Math.round((itemsTotal * Number(coupon.discountValue)) / 100);
+      if (coupon.maxDiscountVnd !== null) {
+        discountAmount = Math.min(discountAmount, Number(coupon.maxDiscountVnd));
+      }
+    } else {
+      discountAmount = Math.min(Number(coupon.discountValue), itemsTotal);
+    }
+
+    return { discountAmount, couponId: coupon.id, couponCode: coupon.code };
   }
 
   private toVnd(amount: number) {
@@ -1020,6 +1136,7 @@ export class OrdersService {
         },
       },
       payments: true,
+      refunds: true,
       shipments: { orderBy: { createdAt: 'desc' } },
       events: { orderBy: { occurredAt: 'asc' } },
     } satisfies Prisma.OrderInclude;
@@ -1045,7 +1162,22 @@ export class OrdersService {
       return review?.status === 'OPEN';
     });
     if (hasOpen) {
-      throw new BadRequestException('Còn yêu cầu bổ sung số đo chưa được khách gửi lại.');
+      throw new BadRequestException('Còn yêu cầu bổ sung số đo chưa được xử lý xong.');
+    }
+  }
+
+  private async resolveSubmittedMeasurementReviews(tx: Prisma.TransactionClient, orderId: string) {
+    const items = await tx.orderItem.findMany({ where: { orderId }, select: { id: true, measurementReview: true } });
+    for (const item of items) {
+      const review = item.measurementReview as { status?: string; [key: string]: unknown } | null;
+      if (review?.status === 'SUBMITTED') {
+        await tx.orderItem.update({
+          where: { id: item.id },
+          data: {
+            measurementReview: { ...review, status: 'RESOLVED', resolvedAt: new Date().toISOString() } as Prisma.InputJsonValue,
+          },
+        });
+      }
     }
   }
 
@@ -1127,6 +1259,9 @@ export class OrdersService {
       (sum, item) => sum + Number(item.price) * item.quantity,
       0,
     );
+    const currentShipment = this.getCurrentShipment(order);
+    const activeShipment = this.getActiveShipment(order);
+    const displayStatus = this.resolveDisplayStatus(order, currentShipment);
     return {
       id: order.id,
       orderCode: order.orderCode,
@@ -1135,6 +1270,7 @@ export class OrdersService {
       amount: Number(order.amount),
       itemsTotal,
       status: order.status,
+      displayStatus,
       paymentStatus: order.paymentStatus,
       refundStatus: order.refundStatus,
       fulfillmentFlowVersion: order.fulfillmentFlowVersion,
@@ -1144,6 +1280,17 @@ export class OrdersService {
       shippingFee: order.shippingFee === null || order.shippingFee === undefined ? null : Number(order.shippingFee),
       discountAmount: order.discountAmount === null || order.discountAmount === undefined ? null : Number(order.discountAmount),
       couponCode: order.couponCode,
+      currency: order.currency,
+      itemsSubtotalVnd: order.itemsSubtotalVnd === null || order.itemsSubtotalVnd === undefined ? null : Number(order.itemsSubtotalVnd),
+      shippingFeeVnd: order.shippingFeeVnd === null || order.shippingFeeVnd === undefined ? null : Number(order.shippingFeeVnd),
+      discountVnd: order.discountVnd === null || order.discountVnd === undefined ? null : Number(order.discountVnd),
+      taxVnd: order.taxVnd === null || order.taxVnd === undefined ? null : Number(order.taxVnd),
+      totalVnd: order.totalVnd === null || order.totalVnd === undefined ? null : Number(order.totalVnd),
+      amountPaidVnd: Number(order.amountPaidVnd),
+      amountRefundedVnd: Number(order.amountRefundedVnd),
+      shippingAddressSnapshot: order.shippingAddressSnapshot,
+      shippingQuoteSnapshot: order.shippingQuoteSnapshot,
+      refundEvidence: order.refundEvidence,
       checkoutUrl: order.checkoutUrl,
       checkoutExpiresAt: order.checkoutExpiresAt,
       createdAt: order.createdAt,
@@ -1157,31 +1304,39 @@ export class OrdersService {
         measurementDisplay: this.buildMeasurementDisplay(item),
         measurementReview: item.measurementReview,
         productNameSnapshot: item.productNameSnapshot,
+        productSkuSnapshot: item.productSkuSnapshot,
+        productImageSnapshot: item.productImageSnapshot,
+        productCategorySnapshot: item.productCategorySnapshot,
+        brandSnapshot: item.brandSnapshot,
         fabricSnapshot: item.fabricSnapshot,
         price: Number(item.price),
+        unitPriceVnd: item.unitPriceVnd === null || item.unitPriceVnd === undefined ? null : Number(item.unitPriceVnd),
+        lineTotalVnd: item.lineTotalVnd === null || item.lineTotalVnd === undefined ? null : Number(item.lineTotalVnd),
         product: item.product,
       })),
       payments: (order.payments ?? []).map((payment) => ({
         id: payment.id,
         provider: payment.provider,
         transactionId: payment.transactionId,
+        status: payment.status,
+        amountVnd: payment.amountVnd === null || payment.amountVnd === undefined ? null : Number(payment.amountVnd),
         createdAt: payment.createdAt,
       })),
-      shipment: (order.shipments ?? [])[0]
-        ? {
-            id: order.shipments[0].id,
-            provider: order.shipments[0].provider,
-            providerOrderCode: order.shipments[0].providerOrderCode,
-            status: order.shipments[0].status,
-            rawStatus: order.shipments[0].rawStatus,
-            shippingFeeVnd: order.shipments[0].shippingFeeVnd === null || order.shipments[0].shippingFeeVnd === undefined ? null : Number(order.shipments[0].shippingFeeVnd),
-            shippingFee: order.shipments[0].shippingFee === null || order.shipments[0].shippingFee === undefined ? null : Number(order.shipments[0].shippingFee),
-            quotedShippingFee: order.shipments[0].quotedShippingFee === null || order.shipments[0].quotedShippingFee === undefined ? null : Number(order.shipments[0].quotedShippingFee),
-            actualShippingFee: order.shipments[0].actualShippingFee === null || order.shipments[0].actualShippingFee === undefined ? null : Number(order.shipments[0].actualShippingFee),
-            expectedDeliveryTime: order.shipments[0].expectedDeliveryTime,
-            lastSyncedAt: order.shipments[0].lastSyncedAt,
-          }
-        : null,
+      refunds: (order.refunds ?? []).map((refund) => ({
+        id: refund.id,
+        paymentId: refund.paymentId,
+        provider: refund.provider,
+        amountVnd: Number(refund.amountVnd),
+        reason: refund.reason,
+        status: refund.status,
+        requestedAt: refund.requestedAt,
+        processedAt: refund.processedAt,
+        failedReason: refund.failedReason,
+      })),
+      activeShipment: activeShipment ? this.toPublicShipment(activeShipment) : null,
+      currentShipment: currentShipment ? this.toPublicShipment(currentShipment) : null,
+      shipmentHistory: (order.shipments ?? []).map((shipment) => this.toPublicShipment(shipment)),
+      shipment: currentShipment ? this.toPublicShipment(currentShipment) : null,
       history: (order.events ?? []).map((event) => ({
         id: event.id,
         type: event.type,
@@ -1191,13 +1346,127 @@ export class OrdersService {
         occurredAt: event.occurredAt,
         publicMessage: event.publicMessage,
         shipmentId: event.shipmentId,
+        fromShipmentStatus: event.fromShipmentStatus,
+        toShipmentStatus: event.toShipmentStatus,
+        metadata: event.metadata,
       })),
       allowedActions: {
-        cancel: order.status === OrderStatus.PENDING && (!order.paymentStatus || order.paymentStatus === PaymentStatus.PENDING),
+        cancel: order.status === OrderStatus.CREATED && (!order.paymentStatus || order.paymentStatus === PaymentStatus.PENDING),
+        confirmDelivery: order.status === OrderStatus.READY_TO_SHIP && this.normalizeRawStatus(this.getCurrentShipment(order)?.rawStatus) === 'delivered',
+        startShipmentCreation: order.status === OrderStatus.READY_TO_SHIP && order.paymentStatus === PaymentStatus.PAID,
+        createReplacementShipment: order.status === OrderStatus.READY_TO_SHIP && !this.getActiveShipment(order),
         updateMeasurement: order.status === OrderStatus.MEASUREMENT_REVIEW,
       },
       user: order.user,
     };
+  }
+
+  private getCurrentShipment(order: IOrderWithRelations) {
+    return (order.shipments ?? [])[0] ?? null;
+  }
+
+  private getActiveShipment(order: IOrderWithRelations) {
+    return (order.shipments ?? []).find((shipment) => {
+      const rawStatus = this.normalizeRawStatus(shipment.rawStatus);
+      const terminalStatuses: ShipmentStatus[] = [
+        ShipmentStatus.DELIVERED,
+        ShipmentStatus.RETURNED,
+        ShipmentStatus.CANCELLED,
+        ShipmentStatus.FAILED,
+      ];
+      return !terminalStatuses.includes(shipment.status) && !['delivered', 'returned', 'cancel'].includes(rawStatus);
+    }) ?? null;
+  }
+
+  private toPublicShipment(shipment: IShipmentWithOrder) {
+    return {
+      id: shipment.id,
+      provider: shipment.provider,
+      providerOrderCode: shipment.providerOrderCode,
+      status: shipment.status,
+      rawStatus: shipment.rawStatus,
+      shippingFeeVnd: shipment.shippingFeeVnd === null || shipment.shippingFeeVnd === undefined ? null : Number(shipment.shippingFeeVnd),
+      shippingFee: shipment.shippingFee === null || shipment.shippingFee === undefined ? null : Number(shipment.shippingFee),
+      quotedShippingFee: shipment.quotedShippingFee === null || shipment.quotedShippingFee === undefined ? null : Number(shipment.quotedShippingFee),
+      actualShippingFee: shipment.actualShippingFee === null || shipment.actualShippingFee === undefined ? null : Number(shipment.actualShippingFee),
+      expectedDeliveryTime: shipment.expectedDeliveryTime,
+      providerEventAt: shipment.providerEventAt,
+      lastSyncedAt: shipment.lastSyncedAt,
+      createdAt: shipment.createdAt,
+      updatedAt: shipment.updatedAt,
+    };
+  }
+
+  private resolveDisplayStatus(order: IOrderWithRelations, currentShipment: IShipmentWithOrder | null) {
+    if (order.status === OrderStatus.CANCELLED || order.status === OrderStatus.COMPLETED) {
+      return {
+        source: 'ORDER',
+        code: order.status,
+        label: this.labelOrderStatus(order.status),
+        providerTerminal: false,
+        orderFinal: true,
+        issue: false,
+      };
+    }
+
+    if (currentShipment?.providerOrderCode) {
+      const rawCode = this.normalizeRawStatus(currentShipment.rawStatus) || String(currentShipment.status).toLowerCase();
+      const catalog = this.ghnStatusCatalog(rawCode);
+      return {
+        source: currentShipment.provider || 'GHN',
+        code: currentShipment.rawStatus ?? rawCode,
+        label: catalog.label,
+        providerTerminal: catalog.providerTerminal,
+        orderFinal: false,
+        issue: catalog.issue,
+      };
+    }
+
+    return {
+      source: 'ORDER',
+      code: order.status,
+      label: this.labelOrderStatus(order.status),
+      providerTerminal: false,
+      orderFinal: false,
+      issue: false,
+    };
+  }
+
+  private normalizeRawStatus(status?: string | null) {
+    return (status ?? '').trim().toLowerCase();
+  }
+
+  private labelOrderStatus(status: OrderStatus) {
+    return ORDER_STATUS_MESSAGE[status] ?? status;
+  }
+
+  private ghnStatusCatalog(status: string) {
+    const labels: Record<string, { label: string; providerTerminal: boolean; issue: boolean }> = {
+      ready_to_pick: { label: 'Chờ lấy hàng', providerTerminal: false, issue: false },
+      picking: { label: 'Đang lấy hàng', providerTerminal: false, issue: false },
+      money_collect_picking: { label: 'Đang thu tiền khi lấy hàng', providerTerminal: false, issue: false },
+      picked: { label: 'Đã lấy hàng', providerTerminal: false, issue: false },
+      storing: { label: 'Đang lưu kho', providerTerminal: false, issue: false },
+      sorting: { label: 'Đang phân loại', providerTerminal: false, issue: false },
+      transporting: { label: 'Đang trung chuyển', providerTerminal: false, issue: false },
+      delivering: { label: 'Đang giao hàng', providerTerminal: false, issue: false },
+      money_collect_delivering: { label: 'Đang thu tiền khi giao hàng', providerTerminal: false, issue: false },
+      delivered: { label: 'Đã giao hàng', providerTerminal: true, issue: false },
+      delivery_fail: { label: 'Giao hàng không thành công', providerTerminal: false, issue: true },
+      waiting_to_return: { label: 'Chờ hoàn hàng', providerTerminal: false, issue: false },
+      return: { label: 'Đang hoàn hàng', providerTerminal: false, issue: false },
+      return_transporting: { label: 'Đang trung chuyển hoàn hàng', providerTerminal: false, issue: false },
+      return_sorting: { label: 'Đang phân loại hoàn hàng', providerTerminal: false, issue: false },
+      returning: { label: 'Đang trả hàng', providerTerminal: false, issue: false },
+      return_fail: { label: 'Hoàn hàng không thành công', providerTerminal: false, issue: true },
+      returned: { label: 'Đã hoàn hàng', providerTerminal: true, issue: false },
+      cancel: { label: 'Vận đơn đã hủy', providerTerminal: true, issue: false },
+      exception: { label: 'Vận đơn gặp sự cố', providerTerminal: false, issue: true },
+      lost: { label: 'Thất lạc hàng', providerTerminal: true, issue: true },
+      damage: { label: 'Hàng bị hư hỏng', providerTerminal: true, issue: true },
+      scrap: { label: 'Hàng bị hủy', providerTerminal: true, issue: true },
+    };
+    return labels[status] ?? { label: status || 'Trạng thái vận chuyển chưa xác định', providerTerminal: false, issue: false };
   }
 
   private buildShipmentInput(order: IOrderWithRelations) {
@@ -1208,12 +1477,9 @@ export class OrdersService {
       note?: string;
       notes?: string;
       provinceName?: string;
-      districtName?: string;
       wardName?: string;
-      ghnDistrictId?: number;
-      ghnWardCode?: string;
-      districtId?: number;
-      wardCode?: string;
+      ghnProvinceV3Id?: string;
+      ghnWardV3Id?: string;
     };
     const items = order.items ?? [];
     const weight = Math.max(500, items.reduce((sum, item) => sum + item.quantity * 500, 0));
@@ -1225,11 +1491,10 @@ export class OrdersService {
         name: shippingInfo.name,
         phone: shippingInfo.phone,
         address: shippingInfo.address || '',
+        provinceId: shippingInfo.ghnProvinceV3Id,
+        wardId: shippingInfo.ghnWardV3Id,
         provinceName: shippingInfo.provinceName,
-        districtName: shippingInfo.districtName,
         wardName: shippingInfo.wardName,
-        districtId: shippingInfo.ghnDistrictId ?? shippingInfo.districtId,
-        wardCode: shippingInfo.ghnWardCode ?? shippingInfo.wardCode,
       },
       items: items.map((item) => ({
         name: item.productNameSnapshot || item.product?.name || 'FashionAI item',

@@ -1,7 +1,7 @@
 import { INestApplication } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 import request from 'supertest';
-import { OrderStatus, UserTier } from '@prisma/client';
+import { OrderStatus, PaymentStatus, UserTier } from '@prisma/client';
 import { PaymentsController } from '../../src/modules/payments/payments.controller';
 import { PaymentsService } from '../../src/modules/payments/payments.service';
 import { SubscriptionService } from '../../src/modules/payments/subscription.service';
@@ -18,10 +18,10 @@ import {
 
 const AUTH_USER = { id: 'user-1', email: 'a@b.com', tier: UserTier.FREE };
 const VALID_SHIPPING_SNAPSHOT = {
-  address: '123 Nguyen Trai, Phuong 1, Quan 1, TP Ho Chi Minh',
+  address: '35, đường số 27, Phường Long Bình, Hồ Chí Minh',
   phone: '0900000000',
-  ghnDistrictId: 1442,
-  ghnWardCode: '21211',
+  ghnProvinceV3Id: '1000001',
+  ghnWardV3Id: '1003575',
 };
 
 /** Guard cho phép mọi request và gắn user cố định, để test tập trung vào logic checkout. */
@@ -79,14 +79,15 @@ describe('POST /api/payments/checkout (e2e)', () => {
   });
 
   describe('đơn hàng sản phẩm', () => {
-    it('tạo được liên kết thanh toán cho đơn PENDING của chính user', async () => {
+    it('tạo được liên kết thanh toán cho đơn CREATED của chính user', async () => {
       const order = {
         id: 'order-1',
         orderCode: 12345678,
         userId: AUTH_USER.id,
         targetTier: null,
         amount: 350000,
-        status: OrderStatus.PENDING,
+        status: OrderStatus.CREATED,
+        paymentStatus: PaymentStatus.PENDING,
         shippingAddressSnapshot: VALID_SHIPPING_SNAPSHOT,
         shippingInfo: null,
         items: [{ id: 'item-1', productId: 'p1', quantity: 1 }],
@@ -124,7 +125,8 @@ describe('POST /api/payments/checkout (e2e)', () => {
         orderCode: 1,
         userId: AUTH_USER.id,
         amount: 350000,
-        status: OrderStatus.PAID,
+        status: OrderStatus.PROCESSING,
+        paymentStatus: PaymentStatus.PAID,
         items: [{ id: 'item-1' }],
       });
 
@@ -153,6 +155,7 @@ describe('POST /api/payments/checkout (e2e)', () => {
         userId: AUTH_USER.id,
         amount: 350000,
         status: OrderStatus.CANCELLED,
+        paymentStatus: PaymentStatus.PENDING,
         items: [{ id: 'item-1' }],
       });
 
@@ -175,7 +178,8 @@ describe('POST /api/payments/checkout (e2e)', () => {
         userId: AUTH_USER.id,
         targetTier: UserTier.MEMBER,
         amount: 49000,
-        status: OrderStatus.PENDING,
+        status: OrderStatus.CREATED,
+        paymentStatus: PaymentStatus.PENDING,
       };
       prisma.order.create.mockResolvedValue(created);
       prisma.order.update.mockResolvedValue(created);
@@ -204,7 +208,8 @@ describe('POST /api/payments/checkout (e2e)', () => {
         userId: AUTH_USER.id,
         targetTier: UserTier.VIP,
         amount: 99000,
-        status: OrderStatus.PENDING,
+        status: OrderStatus.CREATED,
+        paymentStatus: PaymentStatus.PENDING,
       };
       prisma.order.create.mockResolvedValue(created);
       prisma.order.update.mockResolvedValue(created);
@@ -253,7 +258,8 @@ describe('POST /api/payments/checkout (e2e)', () => {
       prisma.order.create.mockImplementation(async ({ data }: any) => ({
         id: 'order-upgrade',
         userId: AUTH_USER.id,
-        status: OrderStatus.PENDING,
+        status: OrderStatus.CREATED,
+        paymentStatus: PaymentStatus.PENDING,
         ...data,
       }));
       prisma.order.update.mockImplementation(async ({ data }: any) => ({
@@ -305,7 +311,8 @@ describe('POST /api/payments/checkout (e2e)', () => {
       prisma.order.create.mockImplementation(async ({ data }: any) => ({
         id: 'order-upgrade-full',
         userId: AUTH_USER.id,
-        status: OrderStatus.PENDING,
+        status: OrderStatus.CREATED,
+        paymentStatus: PaymentStatus.PENDING,
         ...data,
       }));
       prisma.order.update.mockImplementation(async ({ data }: any) => ({

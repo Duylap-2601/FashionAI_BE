@@ -1,7 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { AiActionType, ProductStatus, RefundStatus } from '@prisma/client';
 import { PrismaService } from '../../database/prisma.service';
-import { PAID_STATUSES } from '../../common/constants/order.constants';
+import { COLLECTED_PAYMENT_STATUSES } from '../../common/constants/order.constants';
 
 @Injectable()
 export class AdminStatsService {
@@ -33,9 +33,9 @@ export class AdminStatsService {
       // targetTier còn đơn bán hàng thì không.
       this.prisma.order.groupBy({
         by: ['targetTier'],
-        _sum: { amount: true },
+        _sum: { amountPaidVnd: true, amountRefundedVnd: true },
         _count: { _all: true },
-        where: { status: { in: PAID_STATUSES } },
+        where: { paymentStatus: { in: COLLECTED_PAYMENT_STATUSES } },
       }),
       // Hoàn tiền đã xử lý xong để tính doanh thu net; giữ gross nguyên cho FE cũ.
       this.prisma.refund.findMany({
@@ -53,7 +53,7 @@ export class AdminStatsService {
     let productOrders = 0;
 
     for (const row of revenueAgg) {
-      const amount = Number(row._sum.amount ?? 0);
+      const amount = Number(row._sum.amountPaidVnd ?? 0) - Number(row._sum.amountRefundedVnd ?? 0);
       const count = row._count._all;
       if (row.targetTier) {
         subscriptionRevenue += amount;
