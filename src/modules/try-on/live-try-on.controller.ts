@@ -84,7 +84,9 @@ export class LiveTryOnController {
     @Body() dto: ResumeLiveSessionDto,
     @Headers('origin') origin?: string,
   ) {
-    const data = await this.liveTryOnService.resumeSession(user, id, origin, dto.productId);
+    const data = dto.color === undefined
+      ? await this.liveTryOnService.resumeSession(user, id, origin, dto.productId)
+      : await this.liveTryOnService.resumeSession(user, id, origin, dto.productId, dto.color);
     return buildApiResponse(req, 'LIVE_TRYON_SESSION_RESUMED', 'Tiếp tục phiên Live Try-On thành công', data);
   }
 

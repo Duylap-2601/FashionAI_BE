@@ -1,4 +1,4 @@
-import { ForbiddenException } from '@nestjs/common';
+import { BadRequestException, ForbiddenException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import {
   GarmentCategory,
@@ -227,6 +227,34 @@ describe('LiveTryOnService', () => {
     expect(tx.liveTryOnBudget.update).toHaveBeenCalledTimes(2);
     expect(tx.liveTryOnLease.upsert).toHaveBeenCalledWith(expect.objectContaining({ where: { userId: user.id } }));
     expect(decart.createClientToken).toHaveBeenCalledWith({ origin: 'http://localhost:3000', maxDurationSeconds: 60 });
+  });
+
+  it('resolves the live garment image from the selected color image', async () => {
+    prisma.product.findUnique.mockResolvedValueOnce({
+      ...product,
+      colors: [{ name: 'Cream', hex: '#f5ead5' }, { name: 'Black', hex: '#000000' }],
+      images: [
+        { imageUrl: 'https://cdn.example.com/cream.png', colorName: 'Cream', isMain: true },
+        { imageUrl: 'https://cdn.example.com/black.png', colorName: ' black ', isMain: false },
+      ],
+    });
+
+    const garment = await service.getGarment(user, product.id, 'BLACK');
+
+    expect(garment.imageUrl).toBe('https://cdn.example.com/black.png');
+    expect(garment.color).toBe('Black');
+    expect(axios.get).toHaveBeenCalledWith('https://cdn.example.com/black.png', expect.any(Object));
+  });
+
+  it('rejects selected colors that do not belong to the product', async () => {
+    prisma.product.findUnique.mockResolvedValueOnce({
+      ...product,
+      colors: [{ name: 'Cream', hex: '#f5ead5' }],
+      images: [{ imageUrl: 'https://cdn.example.com/cream.png', colorName: 'Cream', isMain: true }],
+    });
+
+    await expect(service.getGarment(user, product.id, 'Black')).rejects.toBeInstanceOf(BadRequestException);
+    expect(axios.get).not.toHaveBeenCalledWith('https://cdn.example.com/cream.png', expect.any(Object));
   });
 
   it('rejects reused idempotency keys without minting a second credential', async () => {
