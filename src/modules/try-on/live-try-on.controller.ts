@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Headers, HttpCode, HttpStatus, Param, Post, Req, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Headers, HttpCode, HttpStatus, Param, Post, Query, Req, UseGuards } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { Request } from 'express';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
@@ -30,8 +30,9 @@ export class LiveTryOnController {
     @Req() req: Request,
     @CurrentUser() user: AuthenticatedUser,
     @Param('productId') productId: string,
+    @Query('color') color?: string,
   ) {
-    const data = await this.liveTryOnService.getGarment(user, productId);
+    const data = await this.liveTryOnService.getGarment(user, productId, color);
     return buildApiResponse(req, 'LIVE_TRYON_GARMENT_SUCCESS', 'Lấy garment Live Try-On thành công', data);
   }
 
@@ -83,7 +84,7 @@ export class LiveTryOnController {
     @Body() dto: ResumeLiveSessionDto,
     @Headers('origin') origin?: string,
   ) {
-    const data = await this.liveTryOnService.resumeSession(user, id, origin, dto.productId);
+    const data = await this.liveTryOnService.resumeSession(user, id, origin, dto.productId, dto.color);
     return buildApiResponse(req, 'LIVE_TRYON_SESSION_RESUMED', 'Tiếp tục phiên Live Try-On thành công', data);
   }
 

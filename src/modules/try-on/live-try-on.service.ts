@@ -16,6 +16,7 @@ import {
   LiveTryOnSessionStatus,
   Prisma,
   Product,
+  ProductImage,
   ProductStatus,
   UserTier,
 } from '@prisma/client';
@@ -43,6 +44,14 @@ interface LiveTryOnPolicy {
   allowedCategories: Set<GarmentCategory>;
   pauseTimeoutSeconds: number;
   tier: UserTier;
+}
+
+type LiveProduct = Product & { images?: ProductImage[] };
+
+interface LiveGarmentReference {
+  product: LiveProduct;
+  imageUrl: string;
+  color: string | null;
 }
 
 @Injectable()
@@ -96,15 +105,16 @@ export class LiveTryOnService {
     };
   }
 
-  async getGarment(user: AuthenticatedUser, productId: string) {
+  async getGarment(user: AuthenticatedUser, productId: string, color?: string) {
     const policy = await this.getPolicy(user.tier);
     this.assertEnabledAndEligible(user, policy);
     if (!isUuid(productId)) {
       throw new BadRequestException({ code: 'INVALID_PRODUCT_ID', message: 'productId must be a UUID' });
     }
     const product = await this.resolveLiveProduct(productId, policy);
-    await this.assertGarmentUrlReadable(product.garmentUrl);
-    return this.mapGarment(product);
+    const garment = this.resolveLiveGarment(product, color);
+    await this.assertGarmentUrlReadable(garment.imageUrl);
+    return this.mapGarment(garment);
   }
 
   async createSession(user: AuthenticatedUser, dto: CreateLiveSessionDto, idempotencyKey: string, origin?: string) {
@@ -117,7 +127,8 @@ export class LiveTryOnService {
       throw new BadRequestException({ code: 'INVALID_PRODUCT_ID', message: 'productId must be a UUID' });
     }
 
-    const bodyHash = hashJson({ productId: dto.productId });
+    const requestedColor = normalizeColorName(dto.color);
+    const bodyHash = hashJson({ productId: dto.productId, color: requestedColor || null });
     const existing = await this.prisma.liveTryOnSession.findUnique({
       where: { userId_idempotencyKey: { userId: user.id, idempotencyKey } },
     });
@@ -139,7 +150,8 @@ export class LiveTryOnService {
     }
 
     const product = await this.resolveLiveProduct(dto.productId, policy);
-    await this.assertGarmentUrlReadable(product.garmentUrl);
+    const garment = this.resolveLiveGarment(product, dto.color);
+    await this.assertGarmentUrlReadable(garment.imageUrl);
     const now = new Date();
     const quotaDate = utcDateKey(now);
     const blockedUntil = new Date(now.getTime() + (policy.tokenTtlSeconds + policy.maxDurationSeconds + policy.graceSeconds + policy.pauseTimeoutSeconds) * 1000);
@@ -155,7 +167,7 @@ export class LiveTryOnService {
           issuedAt: now,
           tokenExpiresAt: token.tokenExpiresAt,
           activeStartedAt: now,
-          providerMetadata: token.raw ? (token.raw as Prisma.InputJsonValue) : Prisma.JsonNull,
+          providerMetadata: this.buildProviderMetadata(token.raw, garment),
         },
       });
 
@@ -173,7 +185,7 @@ export class LiveTryOnService {
         remainingSeconds: session.reservedSeconds,
         status: LiveTryOnSessionStatus.ACTIVE,
         revision: session.revision,
-        garment: this.mapGarment(product),
+        garment: this.mapGarment(garment),
       };
     } catch (error) {
       await this.releaseFailedReservation(session.id, user.id, quotaDate, session.reservedSeconds);
@@ -215,7 +227,7 @@ export class LiveTryOnService {
     return this.mapSessionStatus(updated);
   }
 
-  async resumeSession(user: AuthenticatedUser, sessionId: string, origin?: string, productId?: string) {
+  async resumeSession(user: AuthenticatedUser, sessionId: string, origin?: string, productId?: string, color?: string) {
     const session = await this.prisma.liveTryOnSession.findUnique({ where: { id: sessionId }, include: { product: true } });
     if (!session || session.userId !== user.id) {
       throw new NotFoundException({ code: 'LIVE_SESSION_NOT_FOUND', message: 'Live Try-On session not found' });
@@ -235,7 +247,8 @@ export class LiveTryOnService {
     }
 
     const product = await this.resolveLiveProduct(productId ?? session.productId, policy);
-    await this.assertGarmentUrlReadable(product.garmentUrl);
+    const garment = this.resolveLiveGarment(product, color);
+    await this.assertGarmentUrlReadable(garment.imageUrl);
     const token = await this.decart.createClientToken({ origin, maxDurationSeconds: remainingSeconds });
     const now = new Date();
     const updated = await this.prisma.liveTryOnSession.update({
@@ -249,7 +262,7 @@ export class LiveTryOnService {
         pausedAt: null,
         productId: product.id,
         revision: { increment: 1 },
-        providerMetadata: token.raw ? (token.raw as Prisma.InputJsonValue) : Prisma.JsonNull,
+        providerMetadata: this.buildProviderMetadata(token.raw, garment),
       },
       include: { product: true },
     });
@@ -263,7 +276,7 @@ export class LiveTryOnService {
       },
       model: updated.model,
       maxDurationSeconds: remainingSeconds,
-      garment: this.mapGarment(updated.product),
+      garment: this.mapGarment(garment),
     };
   }
 
@@ -321,7 +334,7 @@ export class LiveTryOnService {
     };
   }
 
-  private mapSessionStatus(session: { id: string; status: LiveTryOnSessionStatus; reservedSeconds: number; usedSeconds: number; activeStartedAt: Date | null; blockedUntil: Date; pauseExpiresAt: Date | null; revision: number; product: Product }) {
+  private mapSessionStatus(session: { id: string; status: LiveTryOnSessionStatus; reservedSeconds: number; usedSeconds: number; activeStartedAt: Date | null; blockedUntil: Date; pauseExpiresAt: Date | null; revision: number; product: Product; providerMetadata?: Prisma.JsonValue | null }) {
     const now = new Date();
     return {
       sessionId: session.id,
@@ -332,7 +345,7 @@ export class LiveTryOnService {
       blockedUntil: session.blockedUntil.toISOString(),
       pauseExpiresAt: session.pauseExpiresAt?.toISOString() ?? null,
       revision: session.revision,
-      garment: this.mapGarment(session.product),
+      garment: this.mapGarment(this.garmentFromSession(session.product, session.providerMetadata)),
     };
   }
 
@@ -559,8 +572,8 @@ export class LiveTryOnService {
     throw lastError;
   }
 
-  private async resolveLiveProduct(productId: string, policy: LiveTryOnPolicy) {
-    const product = await this.prisma.product.findUnique({ where: { id: productId } });
+  private async resolveLiveProduct(productId: string, policy: LiveTryOnPolicy): Promise<LiveProduct> {
+    const product = await this.prisma.product.findUnique({ where: { id: productId }, include: { images: true } });
     if (!product) {
       throw new NotFoundException({ code: 'LIVE_GARMENT_NOT_FOUND', message: 'Product not found' });
     }
@@ -576,13 +589,58 @@ export class LiveTryOnService {
     return product;
   }
 
-  private mapGarment(product: Product) {
+  private resolveLiveGarment(product: LiveProduct, requestedColor?: string | null): LiveGarmentReference {
+    const colors = parseProductColors(product.colors);
+    const normalizedRequestedColor = normalizeColorName(requestedColor);
+    if (normalizedRequestedColor && colors.length > 0 && !colors.some(color => normalizeColorName(color) === normalizedRequestedColor)) {
+      throw new BadRequestException({ code: 'LIVE_GARMENT_COLOR_INVALID', message: 'Selected color is not available for this product' });
+    }
+    if (normalizedRequestedColor && colors.length === 0) {
+      throw new BadRequestException({ code: 'LIVE_GARMENT_COLOR_INVALID', message: 'Product has no valid colors for the selected color' });
+    }
+
+    const color = normalizedRequestedColor
+      ? colors.find(item => normalizeColorName(item) === normalizedRequestedColor) ?? null
+      : colors[0] ?? product.color ?? null;
+    const normalizedColor = normalizeColorName(color);
+    const colorImage = normalizedColor
+      ? product.images?.find(image => normalizeColorName(image.colorName) === normalizedColor)
+      : undefined;
+    const genericImage = product.images?.find(image => image.colorName == null);
     return {
-      productId: product.id,
-      imageUrl: product.garmentUrl,
-      prompt: buildPrompt(product),
-      category: product.category,
+      product,
+      imageUrl: colorImage?.imageUrl || genericImage?.imageUrl || product.garmentUrl,
+      color,
     };
+  }
+
+  private garmentFromSession(product: Product, providerMetadata?: Prisma.JsonValue | null): LiveGarmentReference {
+    const garment = readGarmentMetadata(providerMetadata);
+    return {
+      product,
+      imageUrl: garment?.imageUrl || product.garmentUrl,
+      color: garment?.color ?? product.color ?? null,
+    };
+  }
+
+  private mapGarment(reference: LiveGarmentReference) {
+    return {
+      productId: reference.product.id,
+      imageUrl: reference.imageUrl,
+      prompt: buildPrompt(reference.product, reference.color),
+      category: reference.product.category,
+      color: reference.color,
+    };
+  }
+
+  private buildProviderMetadata(raw: unknown, garment: LiveGarmentReference): Prisma.InputJsonValue {
+    return {
+      decart: raw ?? null,
+      garment: {
+        imageUrl: garment.imageUrl,
+        color: garment.color,
+      },
+    } as Prisma.InputJsonValue;
   }
 
   private async assertGarmentUrlReadable(url: string) {
@@ -642,11 +700,11 @@ export class LiveTryOnService {
   }
 }
 
-function buildPrompt(product: Product) {
+function buildPrompt(product: Product, selectedColor?: string | null) {
   // Leave room below the provider's reported prompt limit.
   const maxPromptLength = 700;
   const instruction = 'Try on the reference garment. Match its color, pattern, fabric and fit.';
-  const details = [product.color, product.material, product.name, product.description]
+  const details = [selectedColor ?? product.color, product.material, product.name, product.description]
     .filter(Boolean)
     .join(' ')
     .replace(/\s+/g, ' ')
@@ -656,6 +714,35 @@ function buildPrompt(product: Product) {
     ? `${details.slice(0, availableLength - 3).trimEnd()}...`
     : details;
   return [instruction, shortenedDetails].filter(Boolean).join(' ');
+}
+
+function normalizeColorName(color?: string | null) {
+  return color?.trim().toLowerCase() || '';
+}
+
+function parseProductColors(value: Prisma.JsonValue | null): string[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((item) => {
+      if (typeof item === 'string') return item.trim();
+      if (item && typeof item === 'object' && 'name' in item) {
+        const name = (item as { name?: unknown }).name;
+        return typeof name === 'string' ? name.trim() : '';
+      }
+      return '';
+    })
+    .filter((item): item is string => Boolean(item));
+}
+
+function readGarmentMetadata(value: Prisma.JsonValue | null | undefined): { imageUrl?: string; color?: string | null } | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const garment = (value as { garment?: unknown }).garment;
+  if (!garment || typeof garment !== 'object' || Array.isArray(garment)) return null;
+  const record = garment as { imageUrl?: unknown; color?: unknown };
+  return {
+    imageUrl: typeof record.imageUrl === 'string' ? record.imageUrl : undefined,
+    color: typeof record.color === 'string' ? record.color : null,
+  };
 }
 
 function hashJson(value: unknown) {
