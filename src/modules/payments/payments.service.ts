@@ -20,6 +20,7 @@ import { PaymentGatewayRegistry } from './gateways/payment-gateway.registry';
 import { RedisService } from '../../common/services/redis.service';
 import { MailQueueService } from '../mail/mail-queue.service';
 import { NotificationService } from '../notification/notification.service';
+import { CartService } from '../cart/cart.service';
 import { SubscriptionService } from './subscription.service';
 import {
   TIER_PRICES,
@@ -51,6 +52,7 @@ export class PaymentsService {
     private readonly subscriptionService: SubscriptionService,
     private readonly gatewayRegistry: PaymentGatewayRegistry,
     private readonly redisService: RedisService,
+    private readonly cartService: CartService,
   ) {}
 
   /**
@@ -1462,6 +1464,19 @@ export class PaymentsService {
         return { message: 'Payment already processed' };
       }
       throw err;
+    }
+
+    // Bỏ món đã mua khỏi giỏ hàng trên mọi thiết bị. Chỉ request vừa claim PAID mới
+    // tới được đây nên webhook trùng không trừ giỏ hai lần. Chạy sau commit và nuốt
+    // lỗi: giỏ hàng không được làm fail webhook khi tiền đã vào.
+    if (!isSubscription) {
+      await this.cartService
+        .removePurchasedItems(order.userId, order.items ?? [])
+        .catch((err) =>
+          this.logger.warn(
+            `Không dọn được giỏ hàng sau thanh toán đơn #${orderCode}: ${err?.message}`,
+          ),
+        );
     }
 
     // Notification realtime cho cả đơn nâng cấp gói lẫn đơn sản phẩm. Đặt SAU khi

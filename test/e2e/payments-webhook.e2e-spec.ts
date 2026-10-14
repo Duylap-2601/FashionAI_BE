@@ -9,6 +9,8 @@ import { SubscriptionService } from '../../src/modules/payments/subscription.ser
 import { MailQueueService } from '../../src/modules/mail/mail-queue.service';
 import { NotificationService } from '../../src/modules/notification/notification.service';
 import { OutboxService } from '../../src/modules/outbox/services/outbox.service';
+import { CartService } from '../../src/modules/cart/cart.service';
+import { RealtimeEmitter } from '../../src/modules/realtime/realtime.emitter';
 import { JwtAuthGuard } from '../../src/modules/auth/guards/jwt-auth.guard';
 import { RateLimitGuard } from '../../src/common/guards/rate-limit.guard';
 import {
@@ -31,9 +33,11 @@ const TEST_CONFIG: Record<string, string> = {
 describe('SePay IPN (e2e)', () => {
   let app: INestApplication;
   let prisma: PrismaMock;
+  let realtimeEmitter: { toUser: jest.Mock };
 
   beforeEach(async () => {
     prisma = createPrismaMock();
+    realtimeEmitter = { toUser: jest.fn() };
     // processOrderSuccess chốt trạng thái bằng updateMany({..., status: CREATED, paymentStatus: PENDING}),
     // nên mock phải báo đúng 1 row được claim mới đi tiếp vào các bước ghi.
     prisma.order.updateMany.mockResolvedValue({ count: 1 });
@@ -56,6 +60,8 @@ describe('SePay IPN (e2e)', () => {
           },
           { provide: NotificationService, useValue: { create: jest.fn().mockResolvedValue({}) } },
           { provide: OutboxService, useValue: { enqueueEvent: jest.fn().mockResolvedValue({}) } },
+          CartService,
+          { provide: RealtimeEmitter, useValue: realtimeEmitter },
         ],
       },
       configure: (builder) =>
@@ -176,6 +182,85 @@ describe('SePay IPN (e2e)', () => {
 
     expect(prisma.product.update).not.toHaveBeenCalled();
     expect(prisma.payment.create).not.toHaveBeenCalled();
+  });
+
+  describe('dọn giỏ hàng sau khi thanh toán', () => {
+    const paidItems = [
+      { productId: 'product-1', quantity: 2, color: 'Black', comboType: 'blazer' },
+      { productId: 'product-2', quantity: 1, color: null, comboType: null },
+    ];
+
+    it('trừ đúng dòng giỏ đã mua, xoá dòng về 0 và báo các thiết bị khác', async () => {
+      prisma.order.findUnique.mockResolvedValue({ ...pendingProductOrder, items: paidItems });
+      prisma.cartItem.updateMany.mockResolvedValue({ count: 1 });
+
+      await post(orderPaidPayload()).expect(200);
+
+      expect(prisma.cartItem.updateMany).toHaveBeenCalledWith({
+        where: {
+          userId: 'user-1',
+          productId: 'product-1',
+          color: { equals: 'Black', mode: 'insensitive' },
+          comboType: 'blazer',
+        },
+        data: { quantity: { decrement: 2 } },
+      });
+      expect(prisma.cartItem.updateMany).toHaveBeenCalledWith({
+        where: {
+          userId: 'user-1',
+          productId: 'product-2',
+          color: { equals: '', mode: 'insensitive' },
+          comboType: '',
+        },
+        data: { quantity: { decrement: 1 } },
+      });
+      expect(prisma.cartItem.deleteMany).toHaveBeenCalledWith({
+        where: { userId: 'user-1', quantity: { lte: 0 } },
+      });
+      expect(realtimeEmitter.toUser).toHaveBeenCalledWith('user-1', 'cart:updated', expect.any(Object));
+    });
+
+    it('không báo realtime khi giỏ không có món nào khớp', async () => {
+      prisma.order.findUnique.mockResolvedValue({ ...pendingProductOrder, items: paidItems });
+
+      await post(orderPaidPayload()).expect(200);
+
+      expect(prisma.cartItem.updateMany).toHaveBeenCalledTimes(2);
+      expect(prisma.cartItem.deleteMany).not.toHaveBeenCalled();
+      expect(realtimeEmitter.toUser).not.toHaveBeenCalled();
+    });
+
+    it('không đụng giỏ hàng với đơn nâng cấp gói', async () => {
+      prisma.order.findUnique.mockResolvedValue({
+        ...pendingProductOrder,
+        targetTier: UserTier.MEMBER,
+        amount: 49000,
+        items: paidItems,
+      });
+
+      await post(orderPaidPayload(49000)).expect(200);
+
+      expect(prisma.cartItem.updateMany).not.toHaveBeenCalled();
+    });
+
+    it('không trừ giỏ lần hai khi webhook khác đã chốt đơn', async () => {
+      prisma.order.findUnique.mockResolvedValue({ ...pendingProductOrder, items: paidItems });
+      prisma.order.updateMany.mockResolvedValue({ count: 0 });
+
+      await post(orderPaidPayload()).expect(200);
+
+      expect(prisma.cartItem.updateMany).not.toHaveBeenCalled();
+    });
+
+    it('lỗi khi dọn giỏ không làm fail webhook', async () => {
+      prisma.order.findUnique.mockResolvedValue({ ...pendingProductOrder, items: paidItems });
+      prisma.cartItem.updateMany.mockRejectedValue(new Error('db down'));
+
+      const res = await post(orderPaidPayload()).expect(200);
+
+      expect(res.body.success).toBe(true);
+      expect(prisma.payment.create).toHaveBeenCalled();
+    });
   });
 
   it('từ chối khi số tiền không khớp đơn hàng', async () => {    prisma.order.findUnique.mockResolvedValue(pendingProductOrder);
