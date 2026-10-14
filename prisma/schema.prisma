@@ -242,6 +242,7 @@ model User {
   notifications           Notification[]
   subscriptions           Subscription[]
   rackItems               RackItem[]
+  cartItems               CartItem[]
   reviews                 Review[]
   reviewReplies           ReviewReply[]
   orderIssuesCreated      OrderIssue[]            @relation("OrderIssueCreatedBy")
@@ -503,6 +504,7 @@ model Product {
   stylistResults    StylistResult[]
   orderItems        OrderItem[]
   rackItems         RackItem[]
+  cartItems         CartItem[]
   reviews           Review[]
   collections       ProductCollection[]
 
@@ -559,6 +561,27 @@ model RackItem {
   @@unique([userId, productId])
   @@index([userId])
   @@map("rack_items")
+}
+
+// Giỏ hàng của user đã đăng nhập, đồng bộ giữa các thiết bị. Không lưu giá:
+// giá luôn đọc từ Product, order/quote vẫn tự tính lại.
+// color/comboType dùng "" thay vì NULL vì Postgres coi các NULL là khác nhau,
+// unique bên dưới sẽ không chặn được dòng trùng.
+model CartItem {
+  id        String   @id @default(uuid()) @db.Uuid
+  userId    String   @map("user_id") @db.Uuid
+  productId String   @map("product_id") @db.Uuid
+  color     String   @default("")
+  comboType String   @default("") @map("combo_type")
+  quantity  Int
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  product Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, productId, color, comboType])
+  @@map("cart_items")
 }
 
 model ProductImage {
@@ -822,6 +845,7 @@ model OrderItem {
   productId               String   @map("product_id") @db.Uuid
   quantity                Int      @default(1)
   color                   String?
+  comboType               String?  @map("combo_type")
   measurementSnapshot     Json?    @map("measurement_snapshot")
   productNameSnapshot     String?  @map("product_name_snapshot")
   productSkuSnapshot      String?  @map("product_sku_snapshot")

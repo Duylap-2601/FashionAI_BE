@@ -7,6 +7,7 @@ import { PaymentsService } from '../../src/modules/payments/payments.service';
 import { SubscriptionService } from '../../src/modules/payments/subscription.service';
 import { MailQueueService } from '../../src/modules/mail/mail-queue.service';
 import { NotificationService } from '../../src/modules/notification/notification.service';
+import { CartService } from '../../src/modules/cart/cart.service';
 import { OutboxService } from '../../src/modules/outbox/services/outbox.service';
 import { JwtAuthGuard } from '../../src/modules/auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../../src/common/guards/roles.guard';
@@ -100,6 +101,7 @@ describe('GET /api/payments/admin/unmatched-transactions (e2e)', () => {
           { provide: ConfigService, useValue: { get: (key: string, fallback?: string) => fallback } },
           { provide: MailQueueService, useValue: { sendOrderConfirmationEmail: jest.fn(), sendRenewalReminderEmail: jest.fn() } },
           { provide: NotificationService, useValue: { create: jest.fn().mockResolvedValue({}) } },
+          { provide: CartService, useValue: { removePurchasedItems: jest.fn().mockResolvedValue(false) } },
           { provide: OutboxService, useValue: { enqueueEvent: jest.fn().mockResolvedValue({}) } },
         ],
       },

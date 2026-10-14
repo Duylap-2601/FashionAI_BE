@@ -9,10 +9,11 @@ import { ZaloPayGateway } from './zalopay/zalopay.gateway';
 import { PAYMENT_GATEWAYS, PaymentGatewayRegistry } from './gateways/payment-gateway.registry';
 import { NotificationModule } from '../notification/notification.module';
 import { OutboxModule } from '../outbox/outbox.module';
+import { CartModule } from '../cart/cart.module';
 import { RedisModule } from '../../common/redis/redis.module';
 
 @Module({
-  imports: [NotificationModule, OutboxModule, RedisModule],
+  imports: [NotificationModule, OutboxModule, CartModule, RedisModule],
   controllers: [PaymentsController],
   providers: [
     PaymentsService,

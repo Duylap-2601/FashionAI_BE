@@ -4,6 +4,7 @@ import {
   ArrayMaxSize,
   ArrayMinSize,
   IsArray,
+  IsIn,
   IsInt,
   IsNotEmpty,
   IsOptional,
@@ -13,6 +14,7 @@ import {
   Min,
   ValidateNested,
 } from 'class-validator';
+import { COMBO_TYPES, ComboType } from '../../../common/constants/order.constants';
 import { ONLINE_PAYMENT_METHODS } from '../constants/order-flow.constants';
 
 export class CreateOrderItemDto {
@@ -30,6 +32,16 @@ export class CreateOrderItemDto {
   @IsString()
   @IsOptional()
   color?: string;
+
+  @ApiProperty({
+    description: 'Phần combo suit khách chọn (chỉ áp dụng cho sản phẩm combo)',
+    required: false,
+    enum: COMBO_TYPES,
+    example: 'combo',
+  })
+  @IsIn(COMBO_TYPES, { message: `comboType phải là một trong: ${COMBO_TYPES.join(', ')}` })
+  @IsOptional()
+  comboType?: ComboType;
 
   @ApiProperty({
     description:

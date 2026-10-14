@@ -11,6 +11,7 @@ import { MailQueueService } from '../mail/mail-queue.service';
 import { NotificationService } from '../notification/notification.service';
 import { createWithUniqueOrderCode } from '../../common/utils/order-code.util';
 import { resolveGarmentUrlForColor } from '../../common/utils/garment-image.util';
+import { isAllowedProductColor } from '../../common/utils/product-color.util';
 import { CreateOrderDto } from './dto/create-order.dto';
 import {
   MAX_INT4,
@@ -136,18 +137,10 @@ export class OrdersService {
       );
     }
 
-    // Nếu sản phẩm có khai báo danh sách màu (colors), màu khách chọn phải khớp
-    // 1 trong số đó (case-insensitive) — tránh lưu màu rác không map được ảnh.
-    // Sản phẩm chưa khai báo colors thì giữ hành vi cũ (chấp nhận mọi string).
     for (const item of resolvedDto.items) {
       if (!item.color) continue;
       const product = productMap.get(item.productId)!;
-      const colors = (product.colors as Array<{ name: string }> | null) ?? [];
-      if (colors.length === 0) continue;
-      const matched = colors.some(
-        (c) => c.name.trim().toLowerCase() === item.color!.trim().toLowerCase(),
-      );
-      if (!matched) {
+      if (!isAllowedProductColor(product.colors, item.color)) {
         throw new BadRequestException(
           `Màu "${item.color}" không hợp lệ cho sản phẩm "${product.name}"`,
         );
@@ -248,6 +241,7 @@ export class OrdersService {
                   productId: item.productId,
                   quantity: item.quantity,
                   color: item.color,
+                  comboType: item.comboType,
                   measurementSnapshot:
                     measurementSnapshot as Prisma.InputJsonValue,
                   productNameSnapshot: product.name,
@@ -892,7 +886,20 @@ export class OrdersService {
   private buildOrderFingerprint(userId: string, dto: ResolvedCreateOrderDto) {
     const payload = {
       userId,
-      items: dto.items.map((item) => ({ productId: item.productId, quantity: item.quantity, color: item.color ?? null })).sort((a, b) => `${a.productId}:${a.color ?? ''}`.localeCompare(`${b.productId}:${b.color ?? ''}`)),
+      // comboType chỉ đưa vào khi có, để payload cũ (không có comboType) giữ nguyên
+      // fingerprint — quote token / idempotency key đang dùng không bị lệch.
+      items: dto.items
+        .map((item) => ({
+          productId: item.productId,
+          quantity: item.quantity,
+          color: item.color ?? null,
+          ...(item.comboType ? { comboType: item.comboType } : {}),
+        }))
+        .sort(
+          (a, b) =>
+            `${a.productId}:${a.color ?? ''}`.localeCompare(`${b.productId}:${b.color ?? ''}`) ||
+            (a.comboType ?? '').localeCompare(b.comboType ?? ''),
+        ),
       couponCode: dto.couponCode?.trim().toUpperCase() ?? null,
       shippingAddressId: dto.shippingAddressId ?? null,
       addressVersion: dto.addressVersion ?? null,
@@ -1300,6 +1307,7 @@ export class OrdersService {
         productId: item.productId,
         quantity: item.quantity,
         color: item.color,
+        comboType: item.comboType,
         measurementSnapshot: item.measurementSnapshot,
         measurementDisplay: this.buildMeasurementDisplay(item),
         measurementReview: item.measurementReview,

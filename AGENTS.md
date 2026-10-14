@@ -73,6 +73,19 @@ Existing ownership boundaries:
 - `users`: profile and body measurements. User measurement input belongs here;
   order measurement snapshots belong to `orders`.
 - `products`: product catalog, product images, reviews, and review replies.
+- `cart`: the logged-in user's cart, synced across devices (`CartItem`, one line
+  per product/color/comboType). Guest carts stay on the client and are merged
+  through `POST /cart/merge` (duplicate lines keep the larger quantity, so a
+  retried merge does not double). Cart prices are display-only; orders still
+  price on the backend. `payments` calls `CartService.removePurchasedItems`
+  after an order is claimed `PAID`, outside the payment transaction, so cart
+  errors never fail a webhook. Cart changes emit `cart:updated` to the user room.
+  Cart lines store the product's canonical color name (`resolveProductColor`).
+- `OrderItem.comboType` (`combo` / `blazer` / `retail`) records which part of a
+  combo suit the customer chose. It is informational only for now: order pricing
+  still uses `Product.price` and measurement checks ignore it, while the frontend
+  displays its own per-combo prices. Moving combo pricing to the backend is an
+  open task; do not treat `comboType` as priced until that lands.
 - `orders`: product order lifecycle, order status transitions, measurement
   review for made-to-measure orders, order history, shipment linkage, refunds,
   stock changes, backend-authoritative order pricing, and customer-visible
@@ -168,6 +181,7 @@ domain:
   `PasswordResetToken`, `EmailVerificationToken`.
 - Products and merchandising: `Product`, `ProductImage`, `Collection`,
   `ProductCollection`, `RackItem`, `Review`, `ReviewReply`.
+- Cart: `CartItem`.
 - Subscription and AI usage: `Subscription`, `DailyUsage`, `TryOnResult`,
   `StylistResult`, `ChatSession`, `ChatMessage`.
 - Live try-on: `LiveTryOnSession`, `LiveTryOnBudget`, `LiveTryOnLease`,
