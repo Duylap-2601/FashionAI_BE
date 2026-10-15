@@ -32,6 +32,7 @@
   },
   "dependencies": {
     "@getbrevo/brevo": "^6.0.3",
+    "@google-analytics/data": "^7.2.1",
     "@google/genai": "^2.6.0",
     "@nestjs/bullmq": "^10.2.3",
     "@nestjs/common": "^10.2.10",

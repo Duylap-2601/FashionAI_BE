@@ -5,6 +5,7 @@ import { PrismaService } from '../../../database/prisma.service';
 import { OUTBOX_QUEUE, OUTBOX_EVENT_TYPE } from '../constants/outbox.constants';
 import { OutboxJobData } from '../types/outbox.types';
 import { ShipmentService } from '../../shipping/shipment.service';
+import { AnalyticsTrackingService } from '../../analytics/analytics-tracking.service';
 
 @Processor(OUTBOX_QUEUE)
 export class OutboxProcessor extends WorkerHost {
@@ -13,6 +14,7 @@ export class OutboxProcessor extends WorkerHost {
   constructor(
     private readonly prisma: PrismaService,
     private readonly shipmentService: ShipmentService,
+    private readonly analyticsTrackingService: AnalyticsTrackingService,
   ) {
     super();
   }
@@ -72,6 +74,8 @@ export class OutboxProcessor extends WorkerHost {
 
   private async handlePaymentPostSuccess(payload: Record<string, unknown>) {
     const orderId = payload.orderId as string;
-    this.logger.log(`Payment post-success for order ${orderId} (no-op for now)`);
+    if (!orderId) throw new Error('Missing orderId in PAYMENT_POST_SUCCESS');
+
+    await this.analyticsTrackingService.trackPurchase(orderId, payload.provider as string | undefined);
   }
 }

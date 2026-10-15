@@ -5,11 +5,13 @@ import { OutboxProcessor } from './processors/outbox.processor';
 import { OutboxService } from './services/outbox.service';
 import { PrismaModule } from '../../database/prisma.module';
 import { ShippingModule } from '../shipping/shipping.module';
+import { AnalyticsModule } from '../analytics/analytics.module';
 
 @Module({
   imports: [
     PrismaModule,
     ShippingModule,
+    AnalyticsModule,
     BullModule.registerQueue({
       name: OUTBOX_QUEUE,
       defaultJobOptions: {

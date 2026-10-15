@@ -29,4 +29,5 @@ export interface PaymentPostSuccessPayload {
   orderId: string;
   orderCode: number;
   userId: string;
+  provider: string;
 }

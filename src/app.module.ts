@@ -28,6 +28,7 @@ import { CollectionsModule } from './modules/collections/collections.module';
 import { CouponsModule } from './modules/coupons/coupons.module';
 import { ShippingModule } from './modules/shipping/shipping.module';
 import { OutboxModule } from './modules/outbox/outbox.module';
+import { AnalyticsModule } from './modules/analytics/analytics.module';
 import { RequestIdMiddleware } from './common/middleware/request-id.middleware';
 import { RateLimitGuard } from './common/guards/rate-limit.guard';
 import { RedisModule } from './common/redis/redis.module';
@@ -105,6 +106,7 @@ import { parseRedisUrl } from './common/redis/redis-url.util';
     CouponsModule,
     ShippingModule,
     OutboxModule,
+    AnalyticsModule,
   ],
   controllers: [AppController],
   providers: [
