@@ -21,6 +21,9 @@ import { RedisService } from '../../common/services/redis.service';
 import { MailQueueService } from '../mail/mail-queue.service';
 import { NotificationService } from '../notification/notification.service';
 import { CartService } from '../cart/cart.service';
+import { OutboxService } from '../outbox/services/outbox.service';
+import { OUTBOX_EVENT_TYPE } from '../outbox/constants/outbox.constants';
+import { PaymentPostSuccessPayload } from '../outbox/types/outbox.types';
 import { SubscriptionService } from './subscription.service';
 import {
   TIER_PRICES,
@@ -53,6 +56,7 @@ export class PaymentsService {
     private readonly gatewayRegistry: PaymentGatewayRegistry,
     private readonly redisService: RedisService,
     private readonly cartService: CartService,
+    private readonly outboxService: OutboxService,
   ) {}
 
   /**
@@ -66,6 +70,15 @@ export class PaymentsService {
       : await this.createSubscriptionOrder(userId, dto.targetTier!);
 
     const provider = dto.provider ?? this.gatewayRegistry.getDefaultCode();
+
+    // Lưu định danh GA4 của trình duyệt để event purchase gửi từ server được gắn vào
+    // đúng phiên truy cập. Checkout gọi lại thì ghi đè bằng phiên mới nhất.
+    if (dto.gaClientId) {
+      await this.prisma.order.update({
+        where: { id: order.id },
+        data: { gaClientId: dto.gaClientId, gaSessionId: dto.gaSessionId ?? null },
+      });
+    }
 
     if (provider === 'SEPAY') {
       const { checkoutUrl, extra } = await this.createSePayCheckoutLink(order);
@@ -1478,6 +1491,28 @@ export class PaymentsService {
           ),
         );
     }
+
+    // Side effect hậu thanh toán (gửi purchase lên GA4) chạy qua outbox để có retry.
+    // Chỉ request vừa claim PAID tới được đây nên mỗi đơn enqueue đúng một lần; không
+    // await và nuốt lỗi để Redis/queue chậm không làm fail webhook khi tiền đã vào.
+    const postSuccessPayload: PaymentPostSuccessPayload = {
+      orderId: order.id,
+      orderCode: order.orderCode,
+      userId: order.userId,
+      provider,
+    };
+    this.outboxService
+      .enqueueEvent({
+        type: OUTBOX_EVENT_TYPE.PAYMENT_POST_SUCCESS,
+        aggregateType: 'Order',
+        aggregateId: order.id,
+        payload: { ...postSuccessPayload },
+      })
+      .catch((err) =>
+        this.logger.warn(
+          `Không enqueue được PAYMENT_POST_SUCCESS cho đơn #${orderCode}: ${err?.message}`,
+        ),
+      );
 
     // Notification realtime cho cả đơn nâng cấp gói lẫn đơn sản phẩm. Đặt SAU khi
     // đã claim PAID thành công (không rơi vào nhánh already-processed), và tách

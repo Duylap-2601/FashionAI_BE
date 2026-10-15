@@ -34,10 +34,12 @@ describe('SePay IPN (e2e)', () => {
   let app: INestApplication;
   let prisma: PrismaMock;
   let realtimeEmitter: { toUser: jest.Mock };
+  let outboxService: { enqueueEvent: jest.Mock };
 
   beforeEach(async () => {
     prisma = createPrismaMock();
     realtimeEmitter = { toUser: jest.fn() };
+    outboxService = { enqueueEvent: jest.fn().mockResolvedValue({}) };
     // processOrderSuccess chốt trạng thái bằng updateMany({..., status: CREATED, paymentStatus: PENDING}),
     // nên mock phải báo đúng 1 row được claim mới đi tiếp vào các bước ghi.
     prisma.order.updateMany.mockResolvedValue({ count: 1 });
@@ -59,7 +61,7 @@ describe('SePay IPN (e2e)', () => {
             },
           },
           { provide: NotificationService, useValue: { create: jest.fn().mockResolvedValue({}) } },
-          { provide: OutboxService, useValue: { enqueueEvent: jest.fn().mockResolvedValue({}) } },
+          { provide: OutboxService, useValue: outboxService },
           CartService,
           { provide: RealtimeEmitter, useValue: realtimeEmitter },
         ],
@@ -255,6 +257,61 @@ describe('SePay IPN (e2e)', () => {
     it('lỗi khi dọn giỏ không làm fail webhook', async () => {
       prisma.order.findUnique.mockResolvedValue({ ...pendingProductOrder, items: paidItems });
       prisma.cartItem.updateMany.mockRejectedValue(new Error('db down'));
+
+      const res = await post(orderPaidPayload()).expect(200);
+
+      expect(res.body.success).toBe(true);
+      expect(prisma.payment.create).toHaveBeenCalled();
+    });
+  });
+
+  describe('enqueue PAYMENT_POST_SUCCESS (GA4 purchase)', () => {
+    it('enqueue đúng một event cho đơn vừa được claim PAID', async () => {
+      prisma.order.findUnique.mockResolvedValue(pendingProductOrder);
+
+      await post(orderPaidPayload()).expect(200);
+
+      expect(outboxService.enqueueEvent).toHaveBeenCalledTimes(1);
+      expect(outboxService.enqueueEvent).toHaveBeenCalledWith({
+        type: 'PAYMENT_POST_SUCCESS',
+        aggregateType: 'Order',
+        aggregateId: 'order-1',
+        payload: { orderId: 'order-1', orderCode: 12345678, userId: 'user-1', provider: 'SEPAY' },
+      });
+    });
+
+    it('không enqueue khi webhook khác đã chốt đơn', async () => {
+      prisma.order.findUnique.mockResolvedValue(pendingProductOrder);
+      prisma.order.updateMany.mockResolvedValue({ count: 0 });
+
+      await post(orderPaidPayload()).expect(200);
+
+      expect(outboxService.enqueueEvent).not.toHaveBeenCalled();
+    });
+
+    it('không enqueue lại khi đơn đã thanh toán', async () => {
+      prisma.order.findUnique.mockResolvedValue({
+        ...pendingProductOrder,
+        status: OrderStatus.PROCESSING,
+        paymentStatus: PaymentStatus.PAID,
+      });
+
+      await post(orderPaidPayload()).expect(200);
+
+      expect(outboxService.enqueueEvent).not.toHaveBeenCalled();
+    });
+
+    it('không enqueue khi số tiền không khớp', async () => {
+      prisma.order.findUnique.mockResolvedValue(pendingProductOrder);
+
+      await post(orderPaidPayload(1000)).expect(400);
+
+      expect(outboxService.enqueueEvent).not.toHaveBeenCalled();
+    });
+
+    it('lỗi enqueue không làm fail webhook', async () => {
+      prisma.order.findUnique.mockResolvedValue(pendingProductOrder);
+      outboxService.enqueueEvent.mockRejectedValue(new Error('redis down'));
 
       const res = await post(orderPaidPayload()).expect(200);
 

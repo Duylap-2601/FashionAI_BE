@@ -168,6 +168,64 @@ describe('POST /api/payments/checkout (e2e)', () => {
     });
   });
 
+  describe('định danh GA4', () => {
+    const order = {
+      id: 'order-1',
+      orderCode: 12345678,
+      userId: AUTH_USER.id,
+      targetTier: null,
+      amount: 350000,
+      status: OrderStatus.CREATED,
+      paymentStatus: PaymentStatus.PENDING,
+      shippingAddressSnapshot: VALID_SHIPPING_SNAPSHOT,
+      shippingInfo: null,
+      items: [{ id: 'item-1', productId: 'p1', quantity: 1 }],
+    };
+
+    it('lưu gaClientId và gaSessionId vào đơn để gửi purchase từ server', async () => {
+      prisma.order.findFirst.mockResolvedValue(order);
+      prisma.order.update.mockResolvedValue(order);
+
+      await request(app.getHttpServer())
+        .post('/api/payments/checkout')
+        .send({
+          orderId: '3f0e5a54-1f6f-4c0e-9a52-2a1f8f2c9b11',
+          gaClientId: '1234567890.1700000000',
+          gaSessionId: '1700000000',
+        })
+        .expect(200);
+
+      expect(prisma.order.update).toHaveBeenCalledWith({
+        where: { id: 'order-1' },
+        data: { gaClientId: '1234567890.1700000000', gaSessionId: '1700000000' },
+      });
+    });
+
+    it('không ghi định danh GA4 khi client không gửi', async () => {
+      prisma.order.findFirst.mockResolvedValue(order);
+      prisma.order.update.mockResolvedValue(order);
+
+      await request(app.getHttpServer())
+        .post('/api/payments/checkout')
+        .send({ orderId: '3f0e5a54-1f6f-4c0e-9a52-2a1f8f2c9b11' })
+        .expect(200);
+
+      expect(prisma.order.update).not.toHaveBeenCalledWith(
+        expect.objectContaining({ data: expect.objectContaining({ gaClientId: expect.anything() }) }),
+      );
+    });
+
+    it('từ chối gaClientId sai định dạng', async () => {
+      const res = await request(app.getHttpServer())
+        .post('/api/payments/checkout')
+        .send({ orderId: '3f0e5a54-1f6f-4c0e-9a52-2a1f8f2c9b11', gaClientId: 'not-a-client-id' })
+        .expect(400);
+
+      expect(res.body.code).toBe('VALIDATION_ERROR');
+      expect(prisma.order.findFirst).not.toHaveBeenCalled();
+    });
+  });
+
   describe('nâng cấp gói', () => {
     it('tạo Order mới với targetTier', async () => {
       prisma.user.findUnique.mockResolvedValue({

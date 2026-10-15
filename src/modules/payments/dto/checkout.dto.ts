@@ -6,6 +6,7 @@ import {
   IsOptional,
   IsString,
   IsUUID,
+  Matches,
   ValidateIf,
 } from 'class-validator';
 
@@ -43,4 +44,23 @@ export class CheckoutDto {
   @IsIn(['MOMO', 'ZALOPAY', 'SEPAY'])
   @IsOptional()
   provider?: PaymentProvider;
+
+  @ApiProperty({
+    description:
+      'GA4 client_id của trình duyệt (gtag get client_id). Dùng để gắn event purchase gửi từ server vào đúng phiên.',
+    example: '1234567890.1700000000',
+    required: false,
+  })
+  @Matches(/^\d{1,20}\.\d{1,20}$/)
+  @IsOptional()
+  gaClientId?: string;
+
+  @ApiProperty({
+    description: 'GA4 session_id của trình duyệt (gtag get session_id). Chỉ dùng kèm gaClientId.',
+    example: '1700000000',
+    required: false,
+  })
+  @Matches(/^\d{1,20}$/)
+  @IsOptional()
+  gaSessionId?: string;
 }

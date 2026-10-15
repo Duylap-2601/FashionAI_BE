@@ -774,6 +774,8 @@ model Order {
   paymentStatus           PaymentStatus? @map("payment_status")
   refundStatus            RefundStatus   @default(NONE) @map("refund_status")
   refundEvidence          Json?          @map("refund_evidence")
+  gaClientId              String?        @map("ga_client_id")
+  gaSessionId             String?        @map("ga_session_id")
   createdAt               DateTime       @default(now()) @map("created_at")
   updatedAt               DateTime       @updatedAt @map("updated_at")
 
