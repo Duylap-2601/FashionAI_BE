@@ -7,29 +7,32 @@ import { Ga4DataClient } from './types/admin-analytics.types';
 const logger = new Logger('Ga4DataClient');
 
 /**
- * Tạo client GA4 Data API từ key service account (JSON gốc hoặc base64 của JSON).
- * Thiếu hoặc sai key thì trả về null để tab Phân tích báo "chưa cấu hình" thay vì
- * làm app không khởi động được.
+ * Tạo client GA4 Data API từ email + private key của service account. Thiếu một
+ * trong hai thì trả về null để tab Phân tích báo "chưa cấu hình" thay vì làm app
+ * không khởi động được.
  */
-export function createGa4DataClient(rawKey?: string): Ga4DataClient | null {
-  const value = rawKey?.trim();
-  if (!value) return null;
+export function createGa4DataClient(clientEmail?: string, privateKey?: string): Ga4DataClient | null {
+  const email = clientEmail?.trim();
+  // Biến môi trường trên Render/Docker thường giữ nguyên chuỗi "\n" thay vì xuống
+  // dòng thật; key PEM phải có xuống dòng thật mới ký được JWT.
+  const key = privateKey?.replace(/\\n/g, '\n').trim();
+  if (!email || !key) return null;
 
-  try {
-    const json = value.startsWith('{') ? value : Buffer.from(value, 'base64').toString('utf8');
-    const { client_email, private_key } = JSON.parse(json) as { client_email?: string; private_key?: string };
-    if (!client_email || !private_key) throw new Error('missing client_email or private_key');
-    return new BetaAnalyticsDataClient({ credentials: { client_email, private_key } });
-  } catch {
-    // Không log err.message: lỗi JSON.parse trích một đoạn nội dung key.
-    logger.warn('GA4_SERVICE_ACCOUNT_JSON_BASE64 không hợp lệ, tắt báo cáo GA4.');
+  if (!key.includes('BEGIN PRIVATE KEY')) {
+    // Không log giá trị key, chỉ báo sai định dạng.
+    logger.warn('GA_PRIVATE_KEY không đúng định dạng PEM, tắt báo cáo GA4.');
     return null;
   }
+
+  return new BetaAnalyticsDataClient({ credentials: { client_email: email, private_key: key } });
 }
 
 export const ga4DataClientProvider: FactoryProvider<Ga4DataClient | null> = {
   provide: GA4_DATA_CLIENT,
   inject: [ConfigService],
   useFactory: (configService: ConfigService) =>
-    createGa4DataClient(configService.get<string>('GA4_SERVICE_ACCOUNT_JSON_BASE64')),
+    createGa4DataClient(
+      configService.get<string>('GA_SERVICE_ACCOUNT_EMAIL'),
+      configService.get<string>('GA_PRIVATE_KEY'),
+    ),
 };
