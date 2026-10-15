@@ -115,4 +115,20 @@ describe('AdminAnalyticsService', () => {
     expect(client.batchRunReports).toHaveBeenCalledTimes(2);
     expect(redis.set).toHaveBeenCalledWith('ga4:report:properties/42:28d', expect.any(String), 900);
   });
+
+  it('chỉ cache ngắn báo cáo chưa có lượt truy cập để số liệu mới hiện ngay khi GA4 xử lý xong', async () => {
+    const client = createClient();
+    client.batchRunReports.mockReset();
+    client.batchRunReports
+      .mockResolvedValueOnce([{ reports: [report([]), report([]), report([]), report([]), report([])] }])
+      .mockResolvedValueOnce([{ reports: [report([]), report([]), report([]), report([])] }]);
+    const { service, redis } = createService(client);
+
+    const result = await service.getReport('7d');
+    if (!result.configured) throw new Error('expected configured report');
+
+    expect(result.kpis.current.activeUsers).toBe(0);
+    expect(result.trend.every((point) => point.activeUsers === 0 && point.sessions === 0)).toBe(true);
+    expect(redis.set).toHaveBeenCalledWith('ga4:report:properties/42:7d', expect.any(String), 60);
+  });
 });
