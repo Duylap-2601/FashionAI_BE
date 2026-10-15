@@ -5,6 +5,7 @@ import {
   ANALYTICS_RANGE_DAYS,
   ANALYTICS_TIMEZONE,
   AnalyticsRange,
+  EMPTY_REPORT_CACHE_TTL_SECONDS,
   FEATURE_EVENTS,
   FUNNEL_EVENTS,
   GA4_DATA_CLIENT,
@@ -71,6 +72,11 @@ function lastDays(days: number, now = new Date()): string[] {
   return Array.from({ length: days }, (_, i) => format.format(new Date(now.getTime() - (days - 1 - i) * DAY_MS)));
 }
 
+function hasActivity(report: AnalyticsReport): boolean {
+  const { activeUsers, sessions, screenPageViews } = report.kpis.current;
+  return activeUsers > 0 || sessions > 0 || screenPageViews > 0;
+}
+
 /** GA4 trả dimension `date` dạng YYYYMMDD. */
 function toIsoDate(gaDate: string): string {
   return `${gaDate.slice(0, 4)}-${gaDate.slice(4, 6)}-${gaDate.slice(6, 8)}`;
@@ -95,8 +101,10 @@ export class AdminAnalyticsService {
     const { client, property } = this;
     if (!client || !property) return { configured: false };
 
-    return this.cached(`ga4:report:${property}:${range}`, REPORT_CACHE_TTL_SECONDS, () =>
-      this.fetchReport(client, property, range),
+    return this.cached(
+      `ga4:report:${property}:${range}`,
+      (report) => (hasActivity(report) ? REPORT_CACHE_TTL_SECONDS : EMPTY_REPORT_CACHE_TTL_SECONDS),
+      () => this.fetchReport(client, property, range),
     );
   }
 
@@ -243,7 +251,11 @@ export class AdminAnalyticsService {
     };
   }
 
-  private async cached<T>(key: string, ttlSeconds: number, load: () => Promise<T>): Promise<T> {
+  private async cached<T>(
+    key: string,
+    ttlSeconds: number | ((value: T) => number),
+    load: () => Promise<T>,
+  ): Promise<T> {
     const hit = await this.redisService.get(key);
     if (hit) return JSON.parse(hit) as T;
 
@@ -253,7 +265,8 @@ export class AdminAnalyticsService {
 
     const request = load()
       .then(async (value) => {
-        await this.redisService.set(key, JSON.stringify(value), ttlSeconds);
+        const ttl = typeof ttlSeconds === 'function' ? ttlSeconds(value) : ttlSeconds;
+        await this.redisService.set(key, JSON.stringify(value), ttl);
         return value;
       })
       .finally(() => this.inFlight.delete(key));

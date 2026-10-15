@@ -12,6 +12,9 @@ export const ANALYTICS_RANGE_DAYS: Record<AnalyticsRange, number> = {
 // Báo cáo GA4 tự có độ trễ xử lý vài giờ nên cache 15 phút không làm số liệu cũ đi
 // đáng kể, nhưng giữ quota Data API của property ở mức thấp.
 export const REPORT_CACHE_TTL_SECONDS = 15 * 60;
+// Báo cáo chưa có lượt truy cập nào (GA4 chưa xử lý xong số liệu mới) chỉ cache ngắn, để số
+// liệu vừa có không bị giữ lại sau một bản rỗng suốt 15 phút.
+export const EMPTY_REPORT_CACHE_TTL_SECONDS = 60;
 export const REALTIME_CACHE_TTL_SECONDS = 60;
 
 /**
