@@ -716,7 +716,7 @@ model StylistResult {
   id                  String    @id @default(uuid()) @db.Uuid
   userId              String    @map("user_id") @db.Uuid
   productId           String?   @map("product_id") @db.Uuid
-  humanImageUrl       String    @map("human_image_url")
+  humanImageUrl       String?   @map("human_image_url")
   humanImageHash      String?   @map("human_image_hash")
   garmentDescription  String?   @map("garment_description")
   occasion            String?
@@ -1124,14 +1124,16 @@ model ChatSession {
 }
 
 model ChatMessage {
-  id        String   @id @default(uuid()) @db.Uuid
-  sessionId String   @map("session_id") @db.Uuid
-  role      String // "user" | "assistant" | "system"
-  content   String   @db.Text
-  tokensIn  Int?     @map("tokens_in")
-  tokensOut Int?     @map("tokens_out")
-  model     String?
-  createdAt DateTime @default(now()) @map("created_at")
+  id          String   @id @default(uuid()) @db.Uuid
+  sessionId   String   @map("session_id") @db.Uuid
+  role        String // "user" | "assistant" | "system"
+  content     String   @db.Text
+  tokensIn    Int?     @map("tokens_in")
+  tokensOut   Int?     @map("tokens_out")
+  model       String?
+  // Gợi ý outfit/sản phẩm từ catalog, chỉ lưu productId: { outfits, productIds }
+  suggestions Json?
+  createdAt   DateTime @default(now()) @map("created_at")
 
   session ChatSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
 

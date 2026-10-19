@@ -8,7 +8,6 @@ import {
   UseInterceptors,
   UploadedFile,
   Body,
-  BadRequestException,
   UseGuards,
   Req,
   Param,
@@ -39,16 +38,18 @@ export class StylistController {
   @UseGuards(QuotaGuard)
   @AiAction('STYLIST')
   @ApiOperation({
-    summary: 'Phân tích Personal Color & Tư vấn trang phục (Có Auth & Quota)',
-    description: 'Upload ảnh người dùng, Gemini Vision sẽ phân tích dáng người, màu da và đề xuất phong cách phù hợp.',
+    summary: 'Tư vấn phong cách & gợi ý outfit từ catalog (Có Auth & Quota)',
+    description:
+      'Gemini gợi ý các bộ phối chỉ gồm sản phẩm đang bán, theo dịp mặc/phong cách/ngân sách/số đo. ' +
+      'Ảnh người dùng là tùy chọn (cần imageConsent=true), chỉ dùng để phân tích dáng/màu da và không được lưu.',
   })
   @ApiConsumes('multipart/form-data')
   @ApiBody({
     schema: {
       type: 'object',
-      required: ['humanImage'],
       properties: {
-        humanImage: { type: 'string', format: 'binary', description: 'Ảnh người dùng (rõ mặt, đủ ánh sáng)' },
+        humanImage: { type: 'string', format: 'binary', description: 'Ảnh người dùng (tùy chọn, rõ mặt, đủ ánh sáng). Không được lưu.' },
+        imageConsent: { type: 'boolean', description: 'Bắt buộc true khi gửi humanImage' },
         productId: { type: 'string', description: 'ID sản phẩm từ catalog. Nếu truyền, AI sẽ tư vấn dựa trên sản phẩm thật.' },
         garmentDescription: { type: 'string', description: 'Mô tả trang phục (tên, màu, chất liệu). Không bắt buộc nếu có productId.' },
         occasion: { type: 'string', example: 'Họp quan trọng tại văn phòng' },
@@ -63,15 +64,13 @@ export class StylistController {
   async analyze(
     @Req() req: Request,
     @CurrentUser() user: AuthenticatedUser,
-    @UploadedFile() humanImage: Express.Multer.File,
+    @UploadedFile() humanImage: Express.Multer.File | undefined,
     @Body() dto: StylistRequestDto,
   ) {
-    if (!humanImage) {
-      throw new BadRequestException('Vui lòng upload ảnh người dùng (humanImage)');
+    if (humanImage) {
+      const filePipe = new FileValidationPipe({ maxSize: 10 * 1024 * 1024 });
+      filePipe.transform(humanImage);
     }
-
-    const filePipe = new FileValidationPipe({ maxSize: 10 * 1024 * 1024 });
-    filePipe.transform(humanImage);
 
     const result = await this.stylistService.analyzeAndAdvise(user.id, humanImage, dto);
 

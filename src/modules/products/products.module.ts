@@ -3,13 +3,14 @@ import { StorageModule } from '../storage/storage.module';
 import { NotificationModule } from '../notification/notification.module';
 import { ProductsController } from './products.controller';
 import { ProductsService } from './products.service';
+import { ProductSuggestionService } from './product-suggestion.service';
 import { ReviewsController } from './reviews.controller';
 import { ReviewsService } from './reviews.service';
 
 @Module({
   imports: [StorageModule, NotificationModule],
   controllers: [ProductsController, ReviewsController],
-  providers: [ProductsService, ReviewsService],
-  exports: [ProductsService, ReviewsService],
+  providers: [ProductsService, ReviewsService, ProductSuggestionService],
+  exports: [ProductsService, ReviewsService, ProductSuggestionService],
 })
 export class ProductsModule {}

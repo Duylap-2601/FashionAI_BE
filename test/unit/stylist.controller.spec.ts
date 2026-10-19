@@ -25,13 +25,15 @@ describe('StylistController', () => {
     expect(controller).toBeDefined();
   });
 
-  it('should reject analyze when humanImage is missing', async () => {
+  it('should allow analyze without humanImage (photo is optional)', async () => {
     const dto = new StylistRequestDto();
-    dto.garmentDescription = 'Vest navy';
+    dto.occasion = 'Công sở';
+    service.analyzeAndAdvise.mockResolvedValue({ id: 'r1', outfits: [] });
 
-    await expect(
-      controller.analyze(buildRequest(), user, undefined as any, dto),
-    ).rejects.toThrow(BadRequestException);
+    const res = await controller.analyze(buildRequest(), user, undefined, dto);
+
+    expect(service.analyzeAndAdvise).toHaveBeenCalledWith(user.id, undefined, dto);
+    expect(res.data).toEqual({ id: 'r1', outfits: [] });
   });
 
   it('should reject analyze when the uploaded file is not an image', async () => {

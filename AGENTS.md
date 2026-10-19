@@ -102,6 +102,12 @@ Existing ownership boundaries:
 - `realtime`: Socket.IO gateway/auth/emitter plumbing. Business modules should
   emit through exported services instead of depending directly on gateways.
 - `try-on`, `stylist`, `chat`: AI workflows and prompt/provider orchestration.
+  Outfit/product suggestions in `stylist` and `chat` come only from the catalog
+  via `products/ProductSuggestionService` (short codes P1..Pn in the prompt,
+  hallucinated codes dropped, only product ids stored, hydrated on read). The
+  stylist user photo is optional, needs `imageConsent`, and is never stored
+  (only its hash, for cache lookup). `Product` has no gender field, so
+  `AI_CATALOG_AUDIENCE_NOTE` tells the AI who the catalog is for.
 - `outbox`: transactional outbox pattern (`OutboxEvent` + BullMQ). Business
   modules write an outbox event inside the same DB transaction as their state
   change via `OutboxService.createEvent`, or enqueue post-commit via
