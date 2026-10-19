@@ -22,7 +22,7 @@ import { StylistRequestDto } from './dto/stylist-request.dto';
 import * as crypto from 'crypto';
 
 // Tăng khi đổi prompt/cấu trúc kết quả để cache cũ (khác cấu trúc) không bị trả lại.
-const STYLIST_PROMPT_VERSION = 'v2-catalog-outfits';
+const STYLIST_PROMPT_VERSION = 'v3-concise-cards';
 
 interface ProductContext {
   id: string;
@@ -422,6 +422,7 @@ export class StylistService {
       '',
       'YÊU CẦU:',
       '- Trả lời hoàn toàn bằng tiếng Việt tự nhiên, dễ hiểu.',
+      '- VIẾT NGẮN GỌN: kết quả hiển thị dạng thẻ trên điện thoại, mỗi field chỉ vài từ hoặc 1–2 câu như mô tả bên dưới, không viết đoạn văn dài.',
       '- Giọng văn lịch sự, thực tế, không phán xét ngoại hình.',
       '- Không dùng markdown, không thêm giải thích ngoài JSON.',
       '- Nếu "Dịp mặc" và "Sở thích phong cách" có vẻ mâu thuẫn với nhau (ví dụ dịp mặc trang trọng nhưng phong cách lại năng động/thể thao, hoặc ngược lại), hãy tự chọn ưu tiên hợp lý hơn (thường ưu tiên dịp mặc vì tính chất bắt buộc của hoàn cảnh) và GIẢI THÍCH NGẮN trong "warnings". Nếu dịp mặc đang dùng giá trị mặc định (xem chú thích ở trên), cũng cần nêu trong "warnings" để người dùng biết nên tự nhập dịp mặc cụ thể hơn.',
@@ -430,28 +431,28 @@ export class StylistService {
       '- Chỉ trả về JSON hợp lệ đúng cấu trúc sau:',
       '{',
       hasImage
-        ? '  "bodyType": "Nhận xét dáng người bằng tiếng Việt",'
-        : `  "bodyType": ${measurements ? '"Nhận xét dáng người dựa trên số đo"' : 'null'},`,
-      hasImage ? '  "skinTone": "Nhận xét sắc độ da bằng tiếng Việt",' : '  "skinTone": null,',
-      hasImage ? '  "personalColor": "Nhóm màu cá nhân phù hợp bằng tiếng Việt",' : '  "personalColor": null,',
-      '  "fitRecommendation": "Gợi ý phom dáng/cách ôm sát bằng tiếng Việt"',
-      product ? '  ,"fitAdvice": "Gợi ý phom/độ ôm khi đặt may theo số đo (VD: nên may ôm nhẹ ở eo, chừa rộng vai) hoặc null nếu không đủ dữ liệu. TUYỆT ĐỐI KHÔNG dùng size chữ như S/M/L/XL vì sản phẩm may theo số đo."' : null,
+        ? '  "bodyType": "Dáng người, tối đa 8 từ (VD: Dáng chữ A, eo thon)",'
+        : `  "bodyType": ${measurements ? '"Dáng người theo số đo, tối đa 8 từ"' : 'null'},`,
+      hasImage ? '  "skinTone": "Sắc độ da, tối đa 8 từ (VD: Da sáng, tông ấm)",' : '  "skinTone": null,',
+      hasImage ? '  "personalColor": "Tên nhóm màu cá nhân, tối đa 5 từ (VD: Mùa Thu ấm)",' : '  "personalColor": null,',
+      '  "fitRecommendation": "Phom dáng nên chọn, 1 câu ngắn"',
+      product ? '  ,"fitAdvice": "Phom/độ ôm khi đặt may sản phẩm này, 1 câu (VD: may ôm nhẹ ở eo, chừa rộng vai) hoặc null nếu không đủ dữ liệu. TUYỆT ĐỐI KHÔNG dùng size chữ như S/M/L/XL vì sản phẩm may theo số đo."' : null,
       product
         ? '  ,"productCompatibilityScore": 85'
         : '  ,"productCompatibilityScore": null',
-      '  ,"colorSuggestions": ["Màu gợi ý 1", "Màu gợi ý 2", "Màu gợi ý 3"],',
+      '  ,"colorSuggestions": ["3–5 tên màu ngắn, VD: Be", "Navy", "Trắng kem"],',
       '  "outfits": [',
       '    {',
-      '      "name": "Tên ngắn của bộ phối",',
-      '      "reason": "Vì sao bộ này hợp với dịp mặc/phong cách/ngân sách/vóc dáng/màu của người dùng (1-2 câu)",',
-      '      "items": [{ "code": "P1", "note": "Cách mặc món này trong bộ" }, { "code": "P2", "note": "..." }],',
+      '      "name": "Tên bộ phối, 2–4 từ",',
+      '      "reason": "Vì sao hợp với người dùng, 1 câu tối đa 20 từ",',
+      '      "items": [{ "code": "P1", "note": "Cách mặc, tối đa 8 từ" }, { "code": "P2", "note": "..." }],',
       '      "extras": ["Giày cao gót màu nude"]',
       '    }',
       '  ],',
-      '  "stylingTips": "Mẹo phối đồ cụ thể bằng tiếng Việt",',
+      '  "stylingTips": "Tối đa 3 mẹo phối đồ ngắn, mỗi mẹo một dòng bắt đầu bằng \\"- \\"",',
       product
-        ? '  "verdict": "Kết luận sản phẩm có phù hợp không và lý do bằng tiếng Việt",'
-        : '  "verdict": "Tổng kết lời khuyên ngắn gọn bằng tiếng Việt",',
+        ? '  "verdict": "Sản phẩm có hợp không và vì sao, tối đa 2 câu ngắn",'
+        : '  "verdict": "Tổng kết lời khuyên, tối đa 2 câu ngắn",',
       '  "warnings": ["Câu cảnh báo nếu dịp mặc và phong cách mâu thuẫn, dùng giá trị mặc định, vượt ngân sách hoặc không có món phù hợp"]',
       '}',
     );
