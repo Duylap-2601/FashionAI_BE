@@ -1,5 +1,6 @@
 import { ApiProperty } from '@nestjs/swagger';
-import { IsString, IsOptional, IsUUID } from 'class-validator';
+import { Transform } from 'class-transformer';
+import { IsBoolean, IsString, IsOptional, IsUUID } from 'class-validator';
 
 export class StylistRequestDto {
   @ApiProperty({
@@ -56,4 +57,16 @@ export class StylistRequestDto {
   @IsOptional()
   @IsString()
   genderPreference?: string;
+
+  @ApiProperty({
+    description:
+      'Bắt buộc "true" khi gửi humanImage: người dùng xác nhận đây là ảnh của chính họ (hoặc có quyền dùng) và đồng ý cho xử lý để tư vấn. Ảnh không được lưu.',
+    example: true,
+    required: false,
+  })
+  @IsOptional()
+  // Đọc giá trị gốc: enableImplicitConversion đã biến chuỗi 'false' thành true trước bước này.
+  @Transform(({ obj, key }) => obj[key] === true || obj[key] === 'true')
+  @IsBoolean()
+  imageConsent?: boolean;
 }
