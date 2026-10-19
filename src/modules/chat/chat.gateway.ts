@@ -124,6 +124,10 @@ export class ChatGateway implements OnGatewayInit, OnGatewayConnection {
       for await (const event of this.chatService.streamChat(user.id, dto)) {
         if (event.type === 'token') {
           socket.emit('chat:token', { data: event.data });
+        } else if (event.type === 'suggestions_pending') {
+          socket.emit('chat:suggestions-pending', {});
+        } else if (event.type === 'suggestions') {
+          socket.emit('chat:suggestions', event.data);
         } else if (event.type === 'done') {
           socket.emit('chat:done', event.data);
         } else {

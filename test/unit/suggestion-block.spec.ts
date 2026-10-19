@@ -37,6 +37,16 @@ describe('SuggestionBlockSplitter', () => {
   });
 });
 
+describe('SuggestionBlockSplitter — mã sản phẩm lọt vào phần chữ', () => {
+  it('bỏ " (P14)" khỏi chữ kể cả khi bị cắt giữa hai chunk, và giữ lại mã', () => {
+    const splitter = new SuggestionBlockSplitter();
+    const streamed = ['Áo sơ mi trắng (P1', '4) vừa vai. Quần tây [P1] và (Phong cách) gọn.'].map((c) => splitter.push(c)).join('');
+    const text = streamed + splitter.finish().text;
+    expect(text).toBe('Áo sơ mi trắng vừa vai. Quần tây và (Phong cách) gọn.');
+    expect(splitter.mentionedCodes).toEqual(['P14', 'P1']);
+  });
+});
+
 describe('parseSuggestionBlock', () => {
   it('parse JSON kể cả khi bị bọc markdown', () => {
     expect(parseSuggestionBlock('```json\n{"products":["P2"]}\n```')).toEqual({ products: ['P2'] });

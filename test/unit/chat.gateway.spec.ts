@@ -49,6 +49,27 @@ describe('ChatGateway.handleSend', () => {
     expect(mockRedis.releaseLock).toHaveBeenCalledWith('ws:chat:lock:u1');
   });
 
+  it('chuyển event gợi ý sản phẩm thành chat:suggestions-pending / chat:suggestions, không coi là lỗi', async () => {
+    mockQuota.assertQuota.mockResolvedValue(undefined);
+    mockRedis.acquireLock.mockResolvedValue(true);
+    const suggestions = { outfits: [], products: [{ id: 'p1' }] };
+    mockChat.streamChat.mockReturnValue(
+      streamOf([
+        { type: 'token', data: 'Bạn thử nhé' },
+        { type: 'suggestions_pending' },
+        { type: 'suggestions', data: suggestions },
+        { type: 'done', data: { sessionId: 'sess-1', messageId: 'm1', suggestions } },
+      ]),
+    );
+
+    const socket = socketWithUser({ id: 'u1', tier: 'FREE', exp: futureExp });
+    await gateway.handleSend(socket, { message: 'hi' } as any);
+
+    const events = socket.emit.mock.calls.map(([name]: [string]) => name);
+    expect(events).toEqual(['chat:token', 'chat:suggestions-pending', 'chat:suggestions', 'chat:done']);
+    expect(socket.emit).toHaveBeenCalledWith('chat:suggestions', suggestions);
+  });
+
   it('chặn và emit lỗi khi hết hạn mức, không stream', async () => {
     mockQuota.assertQuota.mockRejectedValue(
       new HttpException(

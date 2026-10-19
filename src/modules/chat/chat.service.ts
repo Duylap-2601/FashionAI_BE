@@ -7,6 +7,7 @@ import {
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import OpenAI from 'openai';
+import type { ReasoningEffort } from 'openai/resources/shared';
 import { ChatMessage, Prisma } from '@prisma/client';
 import { PrismaService } from '../../database/prisma.service';
 import { QuotaService } from '../../common/services/quota.service';
@@ -41,6 +42,10 @@ interface StoredChatSuggestions {
  */
 export type ChatStreamEvent =
   | { type: 'token'; data: string }
+  // Phần chữ đã xong, model đang viết block gợi ý: client hiện khung chờ thẻ sản phẩm.
+  | { type: 'suggestions_pending' }
+  // Thẻ sản phẩm sẵn sàng, gửi ngay trước khi lưu DB để không phải chờ tới `done`.
+  | { type: 'suggestions'; data: ChatSuggestions }
   | { type: 'done'; data: { sessionId: string; messageId: string; suggestions: ChatSuggestions | null } }
   | { type: 'error'; data: string };
 
@@ -51,6 +56,7 @@ export class ChatService {
   private readonly model: string;
   private readonly temperature: number;
   private readonly maxTokens: number;
+  private readonly reasoningEffort: ReasoningEffort | undefined;
 
   constructor(
     private readonly config: ConfigService,
@@ -71,6 +77,10 @@ export class ChatService {
     this.model = this.config.get<string>('GROQ_MODEL') ?? 'openai/gpt-oss-120b';
     this.temperature = parseFloat(this.config.get<string>('GROQ_TEMPERATURE') ?? '0.7');
     this.maxTokens = parseInt(this.config.get<string>('GROQ_MAX_TOKENS') ?? '2048', 10);
+    // gpt-oss suy luận trước khi trả lời và token suy luận tính chung vào max_tokens: để mặc định
+    // thì câu trả lời dài có thể bị cắt trước khi kịp viết block gợi ý sản phẩm.
+    const effort = this.config.get<string>('GROQ_REASONING_EFFORT')?.trim();
+    this.reasoningEffort = (effort || (this.model.includes('gpt-oss') ? 'low' : undefined)) as ReasoningEffort | undefined;
 
     this.logger.log(`Groq chat client initialized | model=${this.model}`);
   }
@@ -127,6 +137,7 @@ export class ChatService {
     // Stream from Groq. Block gợi ý ở cuối câu trả lời bị tách ra, không stream cho client.
     const splitter = new SuggestionBlockSplitter();
     let suggestionBlock: string | null = null;
+    let pendingAnnounced = false;
     let fullResponse = '';
     let tokensIn = 0;
     let tokensOut = 0;
@@ -137,6 +148,7 @@ export class ChatService {
         messages,
         temperature: this.temperature,
         max_tokens: this.maxTokens,
+        ...(this.reasoningEffort ? { reasoning_effort: this.reasoningEffort } : {}),
         stream: true,
       });
 
@@ -148,7 +160,14 @@ export class ChatService {
           fullResponse += text;
           yield { type: 'token', data: text };
         }
+        if (splitter.inBlock && !pendingAnnounced) {
+          pendingAnnounced = true;
+          yield { type: 'suggestions_pending' };
+        }
         if (choice?.finish_reason) {
+          if (choice.finish_reason === 'length') {
+            this.logger.warn(`Groq dừng vì hết max_tokens=${this.maxTokens} | session=${session.id}`);
+          }
           if (chunk.usage) {
             tokensIn = chunk.usage.prompt_tokens;
             tokensOut = chunk.usage.completion_tokens;
@@ -169,9 +188,27 @@ export class ChatService {
       return; // Kết thúc generator, không throw (SSE header có thể đã gửi)
     }
 
-    const storedSuggestions = this.resolveSuggestions(parseSuggestionBlock(suggestionBlock), catalog);
+    // Block gợi ý hỏng hoặc bị cắt (hết token) mà model đã nhắc mã sản phẩm trong chữ: vẫn hiện
+    // các sản phẩm đó dạng món lẻ thay vì không có thẻ nào.
+    const storedSuggestions =
+      this.resolveSuggestions(parseSuggestionBlock(suggestionBlock), catalog) ??
+      this.resolveSuggestions(splitter.mentionedCodes.length ? { products: splitter.mentionedCodes } : null, catalog);
     if (suggestionBlock !== null && !storedSuggestions) {
       this.logger.warn(`Groq trả block gợi ý không dùng được | session=${session.id}`);
+    }
+
+    // Gợi ý chỉ là phần thêm: lỗi khi ghép sản phẩm không được làm hỏng câu trả lời. Ghép xong là
+    // gửi ngay cho client, các bước lưu DB bên dưới không bắt người dùng chờ thêm.
+    let suggestions: ChatSuggestions | null = null;
+    if (storedSuggestions) {
+      try {
+        suggestions = await this.hydrateSuggestions([storedSuggestions]).then((list) => list[0]);
+      } catch (error: unknown) {
+        this.logger.warn(`Không ghép được sản phẩm gợi ý: ${error instanceof Error ? error.message : error}`);
+      }
+    }
+    if (suggestions) {
+      yield { type: 'suggestions', data: suggestions };
     }
 
     // Save assistant message
@@ -199,16 +236,6 @@ export class ChatService {
 
     // Consume quota
     await this.quotaService.consumeQuota(userId, 'CHATBOT');
-
-    // Gợi ý chỉ là phần thêm: lỗi khi ghép sản phẩm không được làm hỏng câu trả lời đã lưu.
-    let suggestions: ChatSuggestions | null = null;
-    if (storedSuggestions) {
-      try {
-        suggestions = await this.hydrateSuggestions([storedSuggestions]).then((list) => list[0]);
-      } catch (error: unknown) {
-        this.logger.warn(`Không ghép được sản phẩm gợi ý: ${error instanceof Error ? error.message : error}`);
-      }
-    }
 
     // Send done event
     yield {

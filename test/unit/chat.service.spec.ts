@@ -84,6 +84,13 @@ describe('ChatService', () => {
       productIds: ['dress-1'],
     });
 
+    // Khung chờ ngay khi chữ xong, thẻ sản phẩm tới trước `done` (trước khi lưu DB).
+    expect(events.map((e) => e.type).filter((t) => t !== 'token')).toEqual(['suggestions_pending', 'suggestions', 'done']);
+    const early = events.find((e) => e.type === 'suggestions');
+    expect(early.data.outfits[0].items).toHaveLength(2);
+    const pendingIndex = events.findIndex((e) => e.type === 'suggestions_pending');
+    expect(events.slice(pendingIndex).some((e) => e.type === 'token')).toBe(false);
+
     const done = events.at(-1);
     expect(done.type).toBe('done');
     expect(done.data.sessionId).toBe('sess-1');
@@ -114,6 +121,24 @@ describe('ChatService', () => {
 
     expect(prisma.chatMessage.create.mock.calls[1][0].data.suggestions).toBeUndefined();
     expect(events.at(-1).data.suggestions).toBeNull();
+  });
+
+  it('block bị cắt vì hết token: vẫn tạo thẻ từ mã sản phẩm model nhắc trong chữ, chữ không còn mã', async () => {
+    async function* truncated() {
+      for (const content of ['Bạn thử áo sơ mi trắng (P1) với chân váy be (P2).\n', '<suggestions>{"outfits":[{"name":"Bộ']) {
+        yield { choices: [{ delta: { content } }] };
+      }
+      yield { choices: [{ delta: {}, finish_reason: 'length' }] };
+    }
+    createCompletion.mockResolvedValue(truncated());
+
+    const events = await collect(service.streamChat('user-1', { message: 'Đi làm mặc gì?' } as any));
+
+    expect(events.filter((e) => e.type === 'token').map((e) => e.data).join('')).toBe('Bạn thử áo sơ mi trắng với chân váy be.\n');
+    expect(prisma.chatMessage.create.mock.calls[1][0].data.suggestions).toEqual({ outfits: [], productIds: ['shirt-1', 'skirt-1'] });
+    expect(events.at(-1).data.suggestions.products.map((p: any) => p.id)).toEqual(['shirt-1', 'skirt-1']);
+    // gpt-oss: giảm suy luận để token dành cho câu trả lời.
+    expect(createCompletion.mock.calls[0][0].reasoning_effort).toBe('low');
   });
 
   it('getSession ghép sản phẩm cho gợi ý của từng tin nhắn', async () => {
