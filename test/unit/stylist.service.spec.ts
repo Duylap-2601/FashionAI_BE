@@ -370,9 +370,29 @@ describe('StylistService', () => {
     };
     const result = service.validateResult(raw);
     expect(result.productCompatibilityScore).toBe(100);
-    expect(result.colorSuggestions).toEqual(['Navy', 'Trắng']);
+    expect(result.colorSuggestions).toEqual([
+      { name: 'Navy', hex: null },
+      { name: 'Trắng', hex: null },
+    ]);
     expect(result.outfitCombinations[0]).toContain('Sơ mi trắng');
     expect(result.bodyType).toBe('Dáng chữ V');
+  });
+
+  it('validateResult should keep valid color hex codes and drop malformed ones', () => {
+    const result = service.validateResult({
+      bodyType: 'Dáng chữ A',
+      skinTone: 'Sáng',
+      personalColor: 'Mùa Thu',
+      fitRecommendation: 'Ôm nhẹ',
+      colorSuggestions: [{ name: 'Be', hex: '#e8dcc8' }, { name: 'Đỏ', hex: 'red' }, { hex: '#000000' }, 'Navy'],
+      stylingTips: '- Mẹo',
+      verdict: 'Hợp',
+    });
+    expect(result.colorSuggestions).toEqual([
+      { name: 'Be', hex: '#E8DCC8' },
+      { name: 'Đỏ', hex: null },
+      { name: 'Navy', hex: null },
+    ]);
   });
 
   it('should map Gemini quota/429 errors to 429 HttpException', async () => {

@@ -22,7 +22,7 @@ import { StylistRequestDto } from './dto/stylist-request.dto';
 import * as crypto from 'crypto';
 
 // Tăng khi đổi prompt/cấu trúc kết quả để cache cũ (khác cấu trúc) không bị trả lại.
-const STYLIST_PROMPT_VERSION = 'v3-concise-cards';
+const STYLIST_PROMPT_VERSION = 'v4-color-hex';
 
 interface ProductContext {
   id: string;
@@ -56,6 +56,12 @@ export interface StylistValidationContext {
   anchorProductId?: string | null;
 }
 
+/** Màu gợi ý kèm mã hex để client hiện ô màu; hex null khi AI không trả mã hợp lệ. */
+export interface ColorSuggestion {
+  name: string;
+  hex: string | null;
+}
+
 export interface ParsedStylistResult {
   bodyType: string | null;
   skinTone: string | null;
@@ -63,7 +69,7 @@ export interface ParsedStylistResult {
   fitRecommendation: string;
   fitAdvice?: string | null;
   productCompatibilityScore?: number | null;
-  colorSuggestions: string[];
+  colorSuggestions: ColorSuggestion[];
   /** Bộ phối từ catalog (chỉ lưu productId); response trả bản đã ghép sản phẩm ở `outfits`. */
   outfits: StoredOutfit[];
   /** Mô tả chữ của outfits, giữ cho client/lịch sử cũ. */
@@ -440,7 +446,7 @@ export class StylistService {
       product
         ? '  ,"productCompatibilityScore": 85'
         : '  ,"productCompatibilityScore": null',
-      '  ,"colorSuggestions": ["3–5 tên màu ngắn, VD: Be", "Navy", "Trắng kem"],',
+      '  ,"colorSuggestions": [{ "name": "Tên màu ngắn, VD: Be", "hex": "#E8DCC8" }, { "name": "Navy", "hex": "#1F2A44" }],',
       '  "outfits": [',
       '    {',
       '      "name": "Tên bộ phối, 2–4 từ",',
@@ -528,7 +534,7 @@ export class StylistService {
       '- CHỈ trả về một object JSON hợp lệ, không kèm markdown, không kèm giải thích.',
       '- Ký tự đầu tiên phải là "{" và ký tự cuối phải là "}".',
       '- Đầy đủ tất cả field bắt buộc với đúng kiểu dữ liệu như đã mô tả ở trên.',
-      '- colorSuggestions là mảng các chuỗi; outfits là mảng object, mỗi item tham chiếu đúng mã sản phẩm trong danh mục.',
+      '- colorSuggestions là mảng object { name, hex } (hex dạng #RRGGBB); outfits là mảng object, mỗi item tham chiếu đúng mã sản phẩm trong danh mục.',
     ].join('\n');
   }
 
@@ -681,7 +687,7 @@ export class StylistService {
       fitRecommendation: requireString('fitRecommendation'),
       fitAdvice,
       productCompatibilityScore: score,
-      colorSuggestions: toArray('colorSuggestions'),
+      colorSuggestions: this.toColorSuggestions(raw.colorSuggestions),
       outfits,
       outfitCombinations:
         catalog && outfits.length
@@ -693,6 +699,25 @@ export class StylistService {
       verdict: requireString('verdict'),
       warnings,
     };
+  }
+
+  /** 3–5 màu nên mặc; chấp nhận cả chuỗi (kết quả kiểu cũ) và bỏ mã hex sai định dạng. */
+  private toColorSuggestions(value: unknown): ColorSuggestion[] {
+    if (!Array.isArray(value)) {
+      throw new Error('Gemini JSON thiếu field "colorSuggestions" hoặc sai kiểu (cần mảng).');
+    }
+    return value
+      .map((item): ColorSuggestion | null => {
+        if (typeof item === 'string') return item.trim() ? { name: item.trim(), hex: null } : null;
+        if (!item || typeof item !== 'object') return null;
+        const obj = item as Record<string, unknown>;
+        const name = typeof obj.name === 'string' ? obj.name.trim() : typeof obj.color === 'string' ? obj.color.trim() : '';
+        if (!name) return null;
+        const hex = typeof obj.hex === 'string' && /^#[0-9a-f]{6}$/i.test(obj.hex.trim()) ? obj.hex.trim().toUpperCase() : null;
+        return { name, hex };
+      })
+      .filter((color): color is ColorSuggestion => color !== null)
+      .slice(0, 6);
   }
 
   async getUserHistory(userId: string, page = 1, limit = 20) {

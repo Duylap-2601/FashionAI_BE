@@ -27,10 +27,13 @@ export class StylistResponseDto {
   productCompatibilityScore?: number | null;
 
   @ApiProperty({
-    type: [String],
-    example: ['Navy Blue', 'Charcoal Gray', 'Midnight Black'],
+    description: 'Màu nên mặc; hex dạng #RRGGBB hoặc null nếu AI không trả mã hợp lệ (kết quả cũ chỉ có tên).',
+    example: [
+      { name: 'Navy', hex: '#1F2A44' },
+      { name: 'Trắng kem', hex: '#F5EFE3' },
+    ],
   })
-  colorSuggestions!: string[];
+  colorSuggestions!: { name: string; hex: string | null }[];
 
   @ApiProperty({
     type: [String],
