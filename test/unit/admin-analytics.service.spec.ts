@@ -48,6 +48,10 @@ function createClient() {
             report([{ dims: ['mobile'], metrics: [7] }]),
             report([{ dims: ['Ho Chi Minh City'], metrics: [6] }]),
             report([{ dims: ['try_on_generate'], metrics: [15, 4] }]),
+            report([
+              { dims: ['tiktok'], metrics: [4] },
+              { dims: ['facebook'], metrics: [3] },
+            ]),
           ],
         },
       ]),
@@ -96,6 +100,10 @@ describe('AdminAnalyticsService', () => {
       count: 15,
       users: 4,
     });
+    expect(result.platformSources).toEqual([
+      { source: 'tiktok', users: 4 },
+      { source: 'facebook', users: 3 },
+    ]);
 
     const [trafficCall] = client.batchRunReports.mock.calls[0];
     expect(trafficCall.property).toBe('properties/42');
@@ -113,7 +121,7 @@ describe('AdminAnalyticsService', () => {
     await service.getReport('28d');
 
     expect(client.batchRunReports).toHaveBeenCalledTimes(2);
-    expect(redis.set).toHaveBeenCalledWith('ga4:report:properties/42:28d', expect.any(String), 900);
+    expect(redis.set).toHaveBeenCalledWith('ga4:report:v2:properties/42:28d', expect.any(String), 900);
   });
 
   it('chỉ cache ngắn báo cáo chưa có lượt truy cập để số liệu mới hiện ngay khi GA4 xử lý xong', async () => {
@@ -121,7 +129,7 @@ describe('AdminAnalyticsService', () => {
     client.batchRunReports.mockReset();
     client.batchRunReports
       .mockResolvedValueOnce([{ reports: [report([]), report([]), report([]), report([]), report([])] }])
-      .mockResolvedValueOnce([{ reports: [report([]), report([]), report([]), report([])] }]);
+      .mockResolvedValueOnce([{ reports: [report([]), report([]), report([]), report([]), report([])] }]);
     const { service, redis } = createService(client);
 
     const result = await service.getReport('7d');
@@ -129,6 +137,6 @@ describe('AdminAnalyticsService', () => {
 
     expect(result.kpis.current.activeUsers).toBe(0);
     expect(result.trend.every((point) => point.activeUsers === 0 && point.sessions === 0)).toBe(true);
-    expect(redis.set).toHaveBeenCalledWith('ga4:report:properties/42:7d', expect.any(String), 60);
+    expect(redis.set).toHaveBeenCalledWith('ga4:report:v2:properties/42:7d', expect.any(String), 60);
   });
 });
