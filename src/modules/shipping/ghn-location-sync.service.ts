@@ -7,6 +7,9 @@ import { GhnClient } from './providers/ghn/ghn.client';
 
 type LocationInput = { code: string; parentCode: string | null; name: string; aliases?: string[]; providerStatus?: number; isActive?: boolean };
 
+const CATALOG_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
+const SYNC_LOCK_TTL_SECONDS = 15 * 60;
+
 @Injectable()
 export class GhnLocationSyncService {
   private readonly logger = new Logger(GhnLocationSyncService.name);
@@ -25,40 +28,51 @@ export class GhnLocationSyncService {
 
   async sync(trigger: 'cron' | 'admin' | 'startup' = 'admin') {
     const lockKey = 'ghn:location-sync';
-    const locked = await this.redisService.acquireLock(lockKey, 60);
+    const locked = await this.redisService.acquireLock(lockKey, SYNC_LOCK_TTL_SECONDS);
     if (!locked) {
       this.logger.warn(`GHN location sync skipped | trigger=${trigger} reason=already_running`);
       return { skipped: true, reason: 'already_running' };
     }
 
     const startedAt = Date.now();
-    const metadata = await this.prisma.ghnCatalogMetadata.findUnique({ where: { addressModel: GhnAddressModel.POST_MERGER_2_LEVEL } });
-    const generation = (metadata?.publishedGeneration ?? BigInt(0)) + BigInt(1);
-    const run = await this.prisma.ghnLocationSyncRun.create({
-      data: { addressModel: GhnAddressModel.POST_MERGER_2_LEVEL, catalogGeneration: generation, status: 'RUNNING' },
-    });
-
     const counts = { provinces: 0, wards: 0 };
+    let run: { id: string } | null = null;
     try {
+      const allocated = await this.createSyncRun();
+      const { generation } = allocated;
+      const syncRun = allocated.run;
+      run = syncRun;
+
       const provinces = await this.fetchProvinces();
       if (provinces.length === 0) throw new Error('GHN province catalog is empty');
-      await this.upsertLocations(GhnLocationLevel.PROVINCE, generation, provinces, run.id);
+      await this.upsertLocations(GhnLocationLevel.PROVINCE, generation, provinces, syncRun.id);
       counts.provinces = provinces.length;
 
       await this.eachLimit(provinces, 4, async (province) => {
         const wards = await this.fetchWards(province.code);
-        await this.upsertLocations(GhnLocationLevel.WARD, generation, wards, run.id);
+        await this.upsertLocations(GhnLocationLevel.WARD, generation, wards, syncRun.id);
         counts.wards += wards.length;
       });
 
       await this.prisma.$transaction(async (tx) => {
-        const nextRevision = (metadata?.catalogRevision ?? BigInt(0)) + BigInt(1);
+        const currentMetadata = await tx.ghnCatalogMetadata.findUnique({ where: { addressModel: GhnAddressModel.POST_MERGER_2_LEVEL } });
+        const nextRevision = (currentMetadata?.catalogRevision ?? BigInt(0)) + BigInt(1);
+        const retainedUntil = new Date(Date.now() + CATALOG_RETENTION_MS);
+
+        // Revision vừa bị thay thế được giữ thêm 7 ngày kể từ lúc deprecate.
+        if (currentMetadata) {
+          await tx.ghnCatalogPublication.updateMany({
+            where: { addressModel: GhnAddressModel.POST_MERGER_2_LEVEL, catalogRevision: currentMetadata.catalogRevision },
+            data: { retainedUntil },
+          });
+        }
+
         await tx.ghnCatalogPublication.create({
           data: {
             addressModel: GhnAddressModel.POST_MERGER_2_LEVEL,
             catalogGeneration: generation,
             catalogRevision: nextRevision,
-            retainedUntil: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+            retainedUntil,
           },
         });
         await tx.ghnCatalogMetadata.upsert({
@@ -67,7 +81,7 @@ export class GhnLocationSyncService {
           update: { publishedGeneration: generation, catalogRevision: nextRevision },
         });
         await tx.ghnLocationSyncRun.update({
-          where: { id: run.id },
+          where: { id: syncRun.id },
           data: { status: 'SUCCEEDED', fetchedCounts: counts as Prisma.InputJsonValue, completedAt: new Date() },
         });
       });
@@ -75,14 +89,54 @@ export class GhnLocationSyncService {
       this.logger.log(`GHN location sync completed | trigger=${trigger} provinces=${counts.provinces} wards=${counts.wards} generation=${generation} duration=${Date.now() - startedAt}`);
       return { skipped: false, generation: generation.toString(), counts };
     } catch (error) {
-      await this.prisma.ghnLocationSyncRun.update({
-        where: { id: run.id },
-        data: { status: 'FAILED', fetchedCounts: counts as Prisma.InputJsonValue, errorSummary: this.safeError(error), completedAt: new Date() },
-      });
+      if (run) {
+        await this.prisma.ghnLocationSyncRun.update({
+          where: { id: run.id },
+          data: { status: 'FAILED', fetchedCounts: counts as Prisma.InputJsonValue, errorSummary: this.safeError(error), completedAt: new Date() },
+        });
+      }
       throw error;
     } finally {
       await this.redisService.releaseLock(lockKey);
     }
+  }
+
+  private async createSyncRun() {
+    let generation = await this.nextCatalogGeneration();
+    for (let attempt = 1; attempt <= 3; attempt += 1) {
+      try {
+        const run = await this.prisma.ghnLocationSyncRun.create({
+          data: { addressModel: GhnAddressModel.POST_MERGER_2_LEVEL, catalogGeneration: generation, status: 'RUNNING' },
+        });
+        return { generation, run };
+      } catch (error) {
+        if (!this.isUniqueConstraintViolation(error) || attempt === 3) throw error;
+        generation = await this.nextCatalogGeneration();
+      }
+    }
+    throw new Error('Unable to allocate GHN catalog generation');
+  }
+
+  private async nextCatalogGeneration() {
+    const [metadata, latestRun] = await Promise.all([
+      this.prisma.ghnCatalogMetadata.findUnique({
+        where: { addressModel: GhnAddressModel.POST_MERGER_2_LEVEL },
+        select: { publishedGeneration: true },
+      }),
+      this.prisma.ghnLocationSyncRun.findFirst({
+        where: { addressModel: GhnAddressModel.POST_MERGER_2_LEVEL },
+        orderBy: { catalogGeneration: 'desc' },
+        select: { catalogGeneration: true },
+      }),
+    ]);
+
+    const publishedGeneration = metadata?.publishedGeneration ?? BigInt(0);
+    const attemptedGeneration = latestRun?.catalogGeneration ?? BigInt(0);
+    return (publishedGeneration > attemptedGeneration ? publishedGeneration : attemptedGeneration) + BigInt(1);
+  }
+
+  private isUniqueConstraintViolation(error: unknown) {
+    return error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002';
   }
 
   private async upsertLocations(level: GhnLocationLevel, generation: bigint, locations: LocationInput[], syncRunId: string) {

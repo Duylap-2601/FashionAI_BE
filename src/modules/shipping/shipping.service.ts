@@ -164,9 +164,19 @@ export class ShippingService {
     }
 
     if (revision !== undefined) {
-      const publication = await this.prisma.ghnCatalogPublication.findUnique({
-        where: { addressModel_catalogRevision: { addressModel: model, catalogRevision: BigInt(revision) } },
-      });
+      const requestedRevision = BigInt(revision);
+      const [metadata, publication] = await Promise.all([
+        this.prisma.ghnCatalogMetadata.findUnique({ where: { addressModel: model } }),
+        this.prisma.ghnCatalogPublication.findUnique({
+          where: { addressModel_catalogRevision: { addressModel: model, catalogRevision: requestedRevision } },
+        }),
+      ]);
+
+      // Revision đang hoạt động không bao giờ hết hạn; retainedUntil chỉ áp dụng cho revision cũ.
+      if (metadata?.catalogRevision === requestedRevision) {
+        return { generation: metadata.publishedGeneration, revision: metadata.catalogRevision };
+      }
+
       if (!publication || publication.retainedUntil <= new Date()) {
         throw new ConflictException({ code: 'CATALOG_REVISION_STALE', message: 'Danh mục địa chỉ đã hết hiệu lực.' });
       }
