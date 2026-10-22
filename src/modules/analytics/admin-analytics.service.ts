@@ -102,7 +102,7 @@ export class AdminAnalyticsService {
     if (!client || !property) return { configured: false };
 
     return this.cached(
-      `ga4:report:${property}:${range}`,
+      `ga4:report:v2:${property}:${range}`,
       (report) => (hasActivity(report) ? REPORT_CACHE_TTL_SECONDS : EMPTY_REPORT_CACHE_TTL_SECONDS),
       () => this.fetchReport(client, property, range),
     );
@@ -181,6 +181,13 @@ export class AdminAnalyticsService {
         metrics: [{ name: 'eventCount' }, { name: 'totalUsers' }],
         dimensionFilter: inListFilter('eventName', FEATURE_EVENTS),
       },
+      {
+        dateRanges: [current],
+        dimensions: [{ name: 'sessionSource' }],
+        metrics: [{ name: 'totalUsers' }],
+        orderBys: orderByMetricDesc('totalUsers'),
+        limit: TOP_LIMIT,
+      },
     ];
 
     const [[traffic], [audience]] = await Promise.all([
@@ -189,7 +196,7 @@ export class AdminAnalyticsService {
     ]).catch((err: unknown) => this.toUpstreamError(err));
 
     const [kpiReport, trendReport, funnelReport, channelReport, pageReport] = traffic.reports ?? [];
-    const [productReport, deviceReport, cityReport, featureReport] = audience.reports ?? [];
+    const [productReport, deviceReport, cityReport, featureReport, sourceReport] = audience.reports ?? [];
 
     const trendByDate = new Map(rowsOf(trendReport).map((row) => [toIsoDate(dimensionOf(row)), row]));
     const funnelByEvent = new Map(rowsOf(funnelReport).map((row) => [dimensionOf(row), row]));
@@ -233,6 +240,10 @@ export class AdminAnalyticsService {
         event,
         count: metricOf(featureByEvent.get(event), 0),
         users: metricOf(featureByEvent.get(event), 1),
+      })),
+      platformSources: rowsOf(sourceReport).map((row) => ({
+        source: dimensionOf(row),
+        users: metricOf(row, 0),
       })),
     };
   }

@@ -65,7 +65,20 @@ describe('Admin analytics (e2e)', () => {
             ],
           },
         ])
-        .mockResolvedValueOnce([{ reports: [report([]), report([]), report([]), report([])] }]),
+        .mockResolvedValueOnce([
+          {
+            reports: [
+              report([]),
+              report([]),
+              report([]),
+              report([]),
+              report([
+                { dims: ['tiktok'], metrics: [12] },
+                { dims: ['facebook'], metrics: [8] },
+              ]),
+            ],
+          },
+        ]),
       runRealtimeReport: jest.fn().mockResolvedValue([report([{ dims: [], metrics: [7] }])]),
     };
   });
@@ -107,6 +120,10 @@ describe('Admin analytics (e2e)', () => {
       },
       channels: [{ channel: 'Organic Search', sessions: 90, activeUsers: 70, engagementRate: 0.7 }],
       topPages: [{ path: '/products', views: 300, activeUsers: 90 }],
+      platformSources: [
+        { source: 'tiktok', users: 12 },
+        { source: 'facebook', users: 8 },
+      ],
     });
     expect(res.body.data.trend).toHaveLength(28);
     expect(client!.batchRunReports).toHaveBeenCalledWith(
