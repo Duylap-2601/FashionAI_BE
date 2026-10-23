@@ -20,10 +20,11 @@ export class AdminAnalyticsController {
   @Get('report')
   @ApiOperation({
     summary: 'Báo cáo truy cập và hành vi từ Google Analytics 4 (Admin Only)',
-    description: 'Trả `{ configured: false }` khi server chưa cấu hình GA4. Kết quả được cache 15 phút.',
+    description:
+      'Trả `{ configured: false }` khi server chưa cấu hình GA4. Kết quả được cache 15 phút; gửi `refresh=true` để bỏ qua cache.',
   })
   async getReport(@Req() req: Request, @Query() query: QueryAnalyticsReportDto) {
-    const data = await this.adminAnalyticsService.getReport(query.range);
+    const data = await this.adminAnalyticsService.getReport(query.range, { refresh: query.refresh });
     return buildApiResponse(req, 'ADMIN_ANALYTICS_REPORT_SUCCESS', 'Lấy báo cáo GA4 thành công', data);
   }
 
