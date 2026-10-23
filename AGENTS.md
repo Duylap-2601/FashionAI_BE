@@ -220,8 +220,9 @@ When schema changes are required:
   amounts, or totals as the source of truth; use client totals only as a
   double-check after recomputing prices, GHN shipping fees, and coupon discounts.
 - Product orders that require shipping should validate structured GHN address
-  fields before pricing or shipment creation, especially `ghnDistrictId` and
-  `ghnWardCode`.
+  fields before pricing or shipment creation, especially `ghnProvinceV3Id` and
+  `ghnWardV3Id`. GHN uses the post-merger 2-level catalog only; district-level
+  legacy data is removed.
 - GHN pickup origin should be read from `/admin/settings/ghn-pickup` persisted
   settings when available. `GHN_FROM_*` environment variables are fallback
   values, not the primary runtime configuration.

@@ -133,11 +133,19 @@ export class AdminSettingsService {
       this.prisma.ghnLocation.findFirst({ where: { addressModel: GhnAddressModel.POST_MERGER_2_LEVEL, catalogGeneration: metadata.publishedGeneration, level: 'WARD', code: wardV3Id, parentCode: provinceV3Id, isActive: true } }),
     ]);
     if (!province || !ward) throw new BadRequestException({ code: 'ADDRESS_INVALID', message: 'Địa chỉ lấy hàng GHN không hợp lệ.' });
+
+    // Older admin clients only send province/ward; keep the existing street line
+    // instead of wiping it on save. An explicitly empty string clears it.
+    const current = await this.getGhnPickupSettings();
+    const addressLine = dto.addressLine === undefined
+      ? current.addressLine
+      : dto.addressLine.trim() || undefined;
+
     return {
       addressModel: GhnAddressModel.POST_MERGER_2_LEVEL,
       provinceV3Id: province.code,
       wardV3Id: ward.code,
-      addressLine: dto.addressLine?.trim() || undefined,
+      addressLine,
       provinceName: province.name,
       wardName: ward.name,
     };

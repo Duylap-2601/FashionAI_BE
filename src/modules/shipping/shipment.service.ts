@@ -1,4 +1,4 @@
-import { Injectable, Logger, NotFoundException } from '@nestjs/common';
+import { ConflictException, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { Prisma, ShipmentStatus } from '@prisma/client';
 import { PrismaService } from '../../database/prisma.service';
 import { ShippingService } from './shipping.service';
@@ -22,6 +22,7 @@ export class ShipmentService {
   async createShipmentFromOrder(order: OrderWithItems) {
     const provider = this.shippingService.getConfiguredProvider();
     const shippingInfo = this.buildShippingInfo(order);
+    this.assertShipmentAddress(shippingInfo);
     const shipmentInput = this.buildShipmentInput(order, shippingInfo);
 
     const requestKey = `order:${order.id}:shipment:${Date.now()}`;
@@ -166,6 +167,19 @@ export class ShipmentService {
       ghnWardV3Id?: string;
     };
     return shippingInfo;
+  }
+
+  private assertShipmentAddress(shippingInfo: Record<string, unknown>) {
+    if (shippingInfo.ghnProvinceV3Id && shippingInfo.ghnWardV3Id) return;
+    throw new ConflictException({
+      code: 'ADDRESS_RECONFIRM_REQUIRED',
+      message: 'Địa chỉ giao hàng thiếu Tỉnh/Phường mới. Vui lòng yêu cầu khách xác nhận lại địa chỉ trước khi tạo vận đơn.',
+      details: {
+        addressId: typeof shippingInfo.addressId === 'string' ? shippingInfo.addressId : null,
+        currentVersion: typeof shippingInfo.addressVersion === 'number' ? shippingInfo.addressVersion : null,
+        reason: 'ADDRESS_INCOMPLETE',
+      },
+    });
   }
 
   private buildShipmentInput(order: OrderWithItems, shippingInfo: Record<string, unknown>) {

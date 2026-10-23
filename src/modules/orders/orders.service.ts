@@ -2,6 +2,7 @@ import {
   BadRequestException,
   ConflictException,
   Injectable,
+  Logger,
   NotFoundException,
 } from '@nestjs/common';
 import { CouponDiscountType, GarmentType, NotificationType, OrderStatus, PaymentStatus, Prisma, Product, RefundStatus, Role, ShipmentStatus } from '@prisma/client';
@@ -68,6 +69,8 @@ type QuotePayload = {
 
 @Injectable()
 export class OrdersService {
+  private readonly logger = new Logger(OrdersService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly mailQueueService: MailQueueService,
@@ -712,6 +715,7 @@ export class OrdersService {
     if (order.fulfillmentFlowVersion !== 1 || order.status !== OrderStatus.READY_TO_SHIP || order.paymentStatus !== PaymentStatus.PAID) {
       throw new BadRequestException('Chỉ tạo vận đơn cho đơn may đo READY_TO_SHIP đã thanh toán.');
     }
+    this.assertShipmentAddress(order.shippingInfo);
 
     const requestKey = dto.requestKey ?? `order:${order.id}:shipment:${order.updatedAt.getTime()}`;
     const existingShipment = await this.prisma.shipment.findFirst({
@@ -733,7 +737,17 @@ export class OrdersService {
       },
     });
 
-    const result = await this.shippingService.createShipment(this.buildShipmentInput(order), requestKey);
+    let result: Awaited<ReturnType<ShippingService['createShipment']>>;
+    try {
+      result = await this.shippingService.createShipment(this.buildShipmentInput(order), requestKey);
+    } catch (error) {
+      await this.prisma.shipment.update({
+        where: { id: pendingShipment.id },
+        data: { status: ShipmentStatus.FAILED, lastSyncedAt: new Date() },
+      }).catch(() => undefined);
+      this.logger.error(`Failed to create shipment for order ${order.id}`, error instanceof Error ? error.stack : String(error));
+      throw error;
+    }
 
     const shipment = await this.prisma.$transaction(async (tx) => {
       const created = await tx.shipment.update({
@@ -1475,6 +1489,26 @@ export class OrdersService {
       scrap: { label: 'Hàng bị hủy', providerTerminal: true, issue: true },
     };
     return labels[status] ?? { label: status || 'Trạng thái vận chuyển chưa xác định', providerTerminal: false, issue: false };
+  }
+
+  private assertShipmentAddress(shippingInfoValue: Prisma.JsonValue | null) {
+    const shippingInfo = (shippingInfoValue ?? {}) as {
+      addressId?: string;
+      addressVersion?: number;
+      ghnProvinceV3Id?: string;
+      ghnWardV3Id?: string;
+    };
+    if (shippingInfo.ghnProvinceV3Id && shippingInfo.ghnWardV3Id) return;
+
+    throw new ConflictException({
+      code: 'ADDRESS_RECONFIRM_REQUIRED',
+      message: 'Địa chỉ giao hàng thiếu Tỉnh/Phường mới. Vui lòng yêu cầu khách xác nhận lại địa chỉ trước khi tạo vận đơn.',
+      details: {
+        addressId: shippingInfo.addressId ?? null,
+        currentVersion: shippingInfo.addressVersion ?? null,
+        reason: 'ADDRESS_INCOMPLETE',
+      },
+    });
   }
 
   private buildShipmentInput(order: IOrderWithRelations) {

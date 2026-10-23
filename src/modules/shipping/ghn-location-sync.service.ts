@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { GhnAddressModel, GhnLocationLevel, Prisma } from '@prisma/client';
 import { PrismaService } from '../../database/prisma.service';
@@ -9,9 +9,10 @@ type LocationInput = { code: string; parentCode: string | null; name: string; al
 
 const CATALOG_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 const SYNC_LOCK_TTL_SECONDS = 15 * 60;
+const STALE_SYNC_RUN_MS = 20 * 60 * 1000;
 
 @Injectable()
-export class GhnLocationSyncService {
+export class GhnLocationSyncService implements OnModuleInit {
   private readonly logger = new Logger(GhnLocationSyncService.name);
 
   constructor(
@@ -19,6 +20,10 @@ export class GhnLocationSyncService {
     private readonly ghnClient: GhnClient,
     private readonly redisService: RedisService,
   ) {}
+
+  async onModuleInit() {
+    await this.reconcileStaleRuns();
+  }
 
   @Cron(CronExpression.EVERY_DAY_AT_3AM, { name: 'ghn-location-sync', timeZone: 'Asia/Ho_Chi_Minh' })
   async syncFromCron() {
@@ -34,6 +39,7 @@ export class GhnLocationSyncService {
       return { skipped: true, reason: 'already_running' };
     }
 
+    await this.reconcileStaleRuns();
     const startedAt = Date.now();
     const counts = { provinces: 0, wards: 0 };
     let run: { id: string } | null = null;
@@ -98,6 +104,29 @@ export class GhnLocationSyncService {
       throw error;
     } finally {
       await this.redisService.releaseLock(lockKey);
+    }
+  }
+
+  private async reconcileStaleRuns() {
+    const cutoff = new Date(Date.now() - STALE_SYNC_RUN_MS);
+    try {
+      const result = await this.prisma.ghnLocationSyncRun.updateMany({
+        where: {
+          addressModel: GhnAddressModel.POST_MERGER_2_LEVEL,
+          status: 'RUNNING',
+          startedAt: { lt: cutoff },
+        },
+        data: {
+          status: 'FAILED',
+          completedAt: new Date(),
+          errorSummary: 'Sync run was interrupted before publishing (process restart or timeout).',
+        },
+      });
+      if (result.count > 0) {
+        this.logger.warn(`Recovered ${result.count} stale GHN location sync run(s) | status=FAILED`);
+      }
+    } catch (error) {
+      this.logger.warn(`Unable to reconcile stale GHN location sync runs | error=${this.safeError(error)}`);
     }
   }
 
