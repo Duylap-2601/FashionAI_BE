@@ -97,12 +97,19 @@ export class AdminAnalyticsService {
     this.property = propertyId ? `properties/${propertyId}` : undefined;
   }
 
-  async getReport(range: AnalyticsRange = '28d'): Promise<AnalyticsReport | AnalyticsNotConfigured> {
+  async getReport(
+    range: AnalyticsRange = '28d',
+    options: { refresh?: boolean } = {},
+  ): Promise<AnalyticsReport | AnalyticsNotConfigured> {
     const { client, property } = this;
     if (!client || !property) return { configured: false };
 
+    const key = `ga4:report:v2:${property}:${range}`;
+    // Admin bấm làm mới: xoá cache để lấy số liệu mới thay vì đợi hết 15 phút.
+    if (options.refresh) await this.redisService.del(key);
+
     return this.cached(
-      `ga4:report:v2:${property}:${range}`,
+      key,
       (report) => (hasActivity(report) ? REPORT_CACHE_TTL_SECONDS : EMPTY_REPORT_CACHE_TTL_SECONDS),
       () => this.fetchReport(client, property, range),
     );
