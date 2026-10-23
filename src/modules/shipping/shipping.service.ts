@@ -40,7 +40,8 @@ export class ShippingService {
     input: Parameters<ReturnType<ShippingProviderFactory['get']>['createShipment']>[0],
     idempotencyKey?: string,
   ) {
-    return this.factory.get(this.getConfiguredProvider()).createShipment(input, idempotencyKey);
+    const sender = await this.resolvePickupAddress();
+    return this.factory.get(this.getConfiguredProvider()).createShipment({ ...input, sender }, idempotencyKey);
   }
 
   async calculateFee(params: {
@@ -59,25 +60,10 @@ export class ShippingService {
     codAmount?: number;
     content?: string;
   }) {
-    const pickupSettings = await this.adminSettingsService.getGhnPickupSettings();
-    if (!pickupSettings.provinceV3Id || !pickupSettings.wardV3Id || !pickupSettings.provinceName || !pickupSettings.wardName) {
-      throw new BadRequestException({ code: 'CAPABILITY_DISABLED', message: 'Vui lòng cấu hình địa chỉ lấy hàng GHN trong Admin trước khi checkout.' });
-    }
-
-    const fromAddressLine = pickupSettings.addressLine?.trim() || this.configService.get<string>('GHN_FROM_ADDRESS_LINE')?.trim() || 'FashionAI workshop';
-    const fromPhone = this.configService.get<string>('GHN_FROM_PHONE')?.trim() || this.configService.get<string>('SHOP_PHONE')?.trim() || '0900000000';
-    const fromName = this.configService.get<string>('GHN_FROM_NAME')?.trim() || 'FashionAI workshop';
+    const sender = await this.resolvePickupAddress();
 
     return this.ghnProvider.calculateFee({
-      sender: {
-        name: fromName,
-        phone: fromPhone,
-        address: [fromAddressLine, pickupSettings.wardName, pickupSettings.provinceName].filter(Boolean).join(', '),
-        provinceId: pickupSettings.provinceV3Id,
-        wardId: pickupSettings.wardV3Id,
-        provinceName: pickupSettings.provinceName,
-        wardName: pickupSettings.wardName,
-      },
+      sender,
       receiver: {
         name: params.receiver.name,
         phone: params.receiver.phone,
@@ -93,6 +79,30 @@ export class ShippingService {
       codAmount: params.codAmount,
       content: params.content,
     });
+  }
+
+  private async resolvePickupAddress() {
+    const pickupSettings = await this.adminSettingsService.getGhnPickupSettings();
+    if (!pickupSettings.provinceV3Id || !pickupSettings.wardV3Id || !pickupSettings.provinceName || !pickupSettings.wardName) {
+      throw new BadRequestException({ code: 'CAPABILITY_DISABLED', message: 'Vui lòng cấu hình địa chỉ lấy hàng GHN trong Admin trước khi checkout.' });
+    }
+
+    // GHN luôn cần sender block cho địa chỉ 2 cấp; nếu bỏ trống GHN sẽ dùng
+    // warehouse cũ trên shop (có thể rỗng) và trả FROM_ADDRESS_CONVERT_FAIL.
+    const addressLine = pickupSettings.addressLine?.trim() || this.configService.get<string>('GHN_FROM_ADDRESS_LINE')?.trim();
+    if (!addressLine) {
+      throw new BadRequestException({ code: 'ADDRESS_INVALID', message: 'Vui lòng cấu hình số nhà/tên đường lấy hàng GHN trong Admin.' });
+    }
+
+    return {
+      name: this.configService.get<string>('GHN_FROM_NAME')?.trim() || 'FashionAI workshop',
+      phone: this.configService.get<string>('GHN_FROM_PHONE')?.trim() || this.configService.get<string>('SHOP_PHONE')?.trim() || '0900000000',
+      address: [addressLine, pickupSettings.wardName, pickupSettings.provinceName].filter(Boolean).join(', '),
+      provinceId: pickupSettings.provinceV3Id,
+      wardId: pickupSettings.wardV3Id,
+      provinceName: pickupSettings.provinceName,
+      wardName: pickupSettings.wardName,
+    };
   }
 
   async validateGhnLocation(provinceId: string | undefined, wardId: string | undefined) {
@@ -115,7 +125,6 @@ export class ShippingService {
     if (!province) throw new BadRequestException({ code: 'ADDRESS_INVALID', message: 'Tỉnh/Thành sau sáp nhập không hợp lệ.' });
     if (!ward) throw new BadRequestException({ code: 'ADDRESS_INVALID', message: 'Phường/Xã không thuộc Tỉnh/Thành đã chọn.' });
     return {
-      ghnAddressModel: GhnAddressModel.POST_MERGER_2_LEVEL,
       ghnProvinceV3Id: province.code,
       ghnWardV3Id: ward.code,
       provinceName: province.name,
