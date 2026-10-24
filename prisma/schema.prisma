@@ -44,6 +44,13 @@ enum GarmentType {
   JUMPSUIT
 }
 
+enum LayerRole {
+  OUTER
+  INNER
+  BOTTOM
+  FULL_BODY
+}
+
 enum ProductStatus {
   DRAFT
   ACTIVE
@@ -482,6 +489,7 @@ model Product {
   description   String?         @db.Text
   category      GarmentCategory @default(UPPER)
   garmentType   GarmentType?    @map("garment_type")
+  layerRole     LayerRole?      @map("layer_role")
   color         String?
   price         Decimal         @db.Decimal(10, 2)
   originalPrice Decimal?        @map("original_price") @db.Decimal(10, 2)

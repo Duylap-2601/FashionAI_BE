@@ -11,30 +11,45 @@ import { ConfigService } from '@nestjs/config';
 import { GoogleGenAI } from '@google/genai';
 import axios from 'axios';
 import * as crypto from 'crypto';
-import { GarmentCategory, Prisma, UserTier } from '@prisma/client';
+import { GarmentCategory, LayerRole, Prisma, UserTier } from '@prisma/client';
 import { PrismaService } from '../../database/prisma.service';
 import { StorageService } from '../storage/storage.service';
 import { QuotaService } from '../../common/services/quota.service';
 import { RedisService } from '../../common/services/redis.service';
 import { resolveGarmentUrlForColor } from '../../common/utils/garment-image.util';
-
-type FashnCategory = 'tops' | 'bottoms' | 'one-pieces';
+import {
+  layerRoleOrder,
+  layerRoleToFashnCategory,
+  resolveLayerRole,
+} from '../products/utils/layer-role.util';
+import {
+  assertValidLayerCombination,
+  MAX_TRY_ON_LAYERS,
+} from './utils/garment-combo.util';
 
 export interface TryOnGarmentInput {
   category?: GarmentCategory;
+  /** Chỉ dùng cho ảnh upload tự do; khi có productId thì backend đọc layerRole từ DB. */
+  layerRole?: LayerRole;
   productId?: string;
   image?: Express.Multer.File;
   color?: string;
 }
 
-interface ResolvedGarment {
+interface GarmentContext {
+  index: number;
   category: GarmentCategory;
+  layerRole: LayerRole;
   productId: string | null;
+  product: any | null;
+  image?: Express.Multer.File;
+  color?: string | null;
+}
+
+interface ResolvedGarment extends GarmentContext {
   buffer: Buffer;
   mime: string;
   hash: string;
-  product: any | null;
-  color?: string | null;
 }
 
 export interface TryOnQuotaContext {
@@ -46,7 +61,12 @@ export interface TryOnResultResponse {
   id: string;
   resultUrl: string;
   category: GarmentCategory;
-  garments?: Array<{ category: GarmentCategory; productId: string | null; color?: string | null }>;
+  garments?: Array<{
+    category: GarmentCategory;
+    layerRole: LayerRole;
+    productId: string | null;
+    color?: string | null;
+  }>;
   isCached: boolean;
   cacheKey: string;
   expiresAt: Date | null;
@@ -60,7 +80,7 @@ export class TryOnService {
   private readonly TIMEOUT_MS: number;
   private readonly provider: 'fashn' | 'mock';
   private readonly CACHE_TTL_MS: number;
-  private readonly MAX_GARMENTS = 2;
+  private readonly MAX_GARMENTS = MAX_TRY_ON_LAYERS;
 
   private readonly FASHN_API_KEY: string;
   private readonly FASHN_MODEL: string;
@@ -108,19 +128,13 @@ export class TryOnService {
     );
   }
 
-  private mapCategory(garmentCategory: GarmentCategory): FashnCategory {
-    switch (garmentCategory) {
-      case GarmentCategory.LOWER:
-        return 'bottoms';
-      case GarmentCategory.FULL_BODY:
-        return 'one-pieces';
-      case GarmentCategory.UPPER:
-      default:
-        return 'tops';
-    }
-  }
-
-  private validateGarments(garments: TryOnGarmentInput[]): void {
+  /**
+   * Kiểm tra shape input và load context (product + layerRole) từ DB.
+   * Không tải ảnh ở bước này để combo sai bị chặn trước khi tốn băng thông/FASHN.
+   */
+  private async loadGarmentContexts(
+    garments: TryOnGarmentInput[],
+  ): Promise<GarmentContext[]> {
     if (!garments || garments.length === 0) {
       throw new BadRequestException(
         'Vui lòng truyền ít nhất 1 trang phục trong garments[]',
@@ -133,24 +147,7 @@ export class TryOnService {
       );
     }
 
-    const categories = garments
-      .map((g) => g.category ?? GarmentCategory.UPPER)
-      .filter((c) => c);
-    const uniqueCategories = new Set(categories);
-
-    if (categories.length !== uniqueCategories.size) {
-      throw new BadRequestException('Không thể chọn nhiều trang phục cùng phân loại');
-    }
-
-    if (
-      garments.length > 1 &&
-      categories.some((c) => c === GarmentCategory.FULL_BODY)
-    ) {
-      throw new BadRequestException(
-        'FULL_BODY (toàn thân) chỉ có thể đứng riêng, không kết hợp với trang phục khác',
-      );
-    }
-
+    const contexts: GarmentContext[] = [];
     for (let i = 0; i < garments.length; i++) {
       const g = garments[i];
       const hasImage = !!g.image;
@@ -167,35 +164,66 @@ export class TryOnService {
           `Trang phục ${i + 1}: chỉ chọn 1 trong image hoặc productId, không cả 2`,
         );
       }
-    }
-  }
-
-  private async resolveGarments(
-    garments: TryOnGarmentInput[],
-  ): Promise<ResolvedGarment[]> {
-    const resolved: ResolvedGarment[] = [];
-
-    for (let i = 0; i < garments.length; i++) {
-      const g = garments[i];
-      const category = g.category ?? GarmentCategory.UPPER;
-      let buffer: Buffer;
-      let mime = 'image/jpeg';
-      let productId: string | null = null;
-      let product = null;
 
       if (g.productId) {
-        productId = g.productId;
-        product = await this.prisma.product.findUnique({
-          where: { id: productId },
+        const product = await this.prisma.product.findUnique({
+          where: { id: g.productId },
           include: { images: true },
         });
         if (!product) {
           throw new NotFoundException(
-            `Sản phẩm ${i + 1} có ID ${productId} không tồn tại`,
+            `Sản phẩm ${i + 1} có ID ${g.productId} không tồn tại`,
           );
         }
 
-        const garmentUrl = resolveGarmentUrlForColor(product.images, product.garmentUrl, g.color);
+        contexts.push({
+          index: i,
+          category: product.category,
+          layerRole: resolveLayerRole(product),
+          productId: g.productId,
+          product,
+          color: g.color ?? null,
+        });
+        continue;
+      }
+
+      // Ảnh upload tự do: client là nguồn duy nhất biết đây là áo khoác hay áo
+      // trong, nên cho phép gửi layerRole; mặc định UPPER là lớp mặc trong.
+      const category = g.category ?? GarmentCategory.UPPER;
+      contexts.push({
+        index: i,
+        category,
+        layerRole: resolveLayerRole({
+          category,
+          garmentType: null,
+          layerRole: g.layerRole ?? null,
+        }),
+        productId: null,
+        product: null,
+        image: g.image,
+        color: g.color ?? null,
+      });
+    }
+
+    return contexts;
+  }
+
+  /** Tải buffer ảnh, dùng lại product đã load khi resolve context. */
+  private async resolveGarments(
+    contexts: GarmentContext[],
+  ): Promise<ResolvedGarment[]> {
+    const resolved: ResolvedGarment[] = [];
+
+    for (const context of contexts) {
+      let buffer: Buffer;
+      let mime = 'image/jpeg';
+
+      if (context.product) {
+        const garmentUrl = resolveGarmentUrlForColor(
+          context.product.images,
+          context.product.garmentUrl,
+          context.color ?? undefined,
+        );
 
         if (this.provider === 'mock') {
           buffer = Buffer.from(garmentUrl);
@@ -206,24 +234,20 @@ export class TryOnService {
           });
           buffer = Buffer.from(imgRes.data);
         }
-      } else if (g.image) {
-        buffer = g.image.buffer;
-        mime = g.image.mimetype;
+      } else if (context.image) {
+        buffer = context.image.buffer;
+        mime = context.image.mimetype;
       } else {
         throw new BadRequestException(
-          `Trang phục ${i + 1}: không tìm thấy image hoặc productId`,
+          `Trang phục ${context.index + 1}: không tìm thấy image hoặc productId`,
         );
       }
 
-      const hash = this.computeHash(buffer);
       resolved.push({
-        category,
-        productId,
+        ...context,
         buffer,
         mime,
-        hash,
-        product,
-        color: g.color ?? null,
+        hash: this.computeHash(buffer),
       });
     }
 
@@ -239,24 +263,11 @@ export class TryOnService {
       .map((g) => g.hash)
       .sort()
       .join(':');
-    const categories = garments
-      .map((g) => g.category)
+    const layers = garments
+      .map((g) => g.layerRole)
       .sort()
       .join(':');
-    return `${userId}:${humanHash}:${garmentHashes}:${categories}`;
-  }
-
-  private categoryOrder(category: GarmentCategory): number {
-    switch (category) {
-      case GarmentCategory.UPPER:
-        return 0;
-      case GarmentCategory.LOWER:
-        return 1;
-      case GarmentCategory.FULL_BODY:
-        return 2;
-      default:
-        return 3;
-    }
+    return `${userId}:${humanHash}:${garmentHashes}:${layers}`;
   }
 
   private toDataUri(buffer: Buffer, mimetype: string): string {
@@ -410,9 +421,9 @@ export class TryOnService {
     userId: string,
     humanHash: string,
     garmentHash: string,
-    category: GarmentCategory,
+    layerRole: LayerRole,
   ): string {
-    return `${userId}:${humanHash}:${garmentHash}:${category}`;
+    return `${userId}:${humanHash}:${garmentHash}:${layerRole}`;
   }
 
   private buildCacheExpiry(): Date {
@@ -425,19 +436,21 @@ export class TryOnService {
     garments: TryOnGarmentInput[],
     quotaCtx: TryOnQuotaContext = {},
   ): Promise<TryOnResultResponse> {
-    this.validateGarments(garments);
+    const contexts = await this.loadGarmentContexts(garments);
+    // Validate trên layerRole thật (từ DB nếu có productId) trước khi tải ảnh.
+    assertValidLayerCombination(contexts.map((g) => g.layerRole));
 
-    const resolved = await this.resolveGarments(garments);
-    // Chuỗi thứ tự: áo trên trước, rồi quần/váy, cuối là toàn thân.
+    const resolved = await this.resolveGarments(contexts);
+    // Thứ tự mặc: áo trong → quần/váy → áo khoác → toàn thân.
     resolved.sort(
-      (a, b) => this.categoryOrder(a.category) - this.categoryOrder(b.category),
+      (a, b) => layerRoleOrder(a.layerRole) - layerRoleOrder(b.layerRole),
     );
 
     const humanHash = this.computeHash(humanImage.buffer);
     const isCombo = resolved.length > 1;
     const cacheKey = isCombo
       ? this.buildComboCacheKey(userId, humanHash, resolved)
-      : this.buildCacheKey(userId, humanHash, resolved[0].hash, resolved[0].category);
+      : this.buildCacheKey(userId, humanHash, resolved[0].hash, resolved[0].layerRole);
 
     const lockKey = `lock:tryon:${userId}:${humanHash}:${resolved
       .map((g) => g.hash)
@@ -459,6 +472,7 @@ export class TryOnService {
     const finalCategory = resolved[resolved.length - 1].category;
     const garmentsMeta = resolved.map((g) => ({
       category: g.category,
+      layerRole: g.layerRole,
       productId: g.productId,
       color: g.color ?? null,
     }));
@@ -518,14 +532,14 @@ export class TryOnService {
 
       for (const g of resolved) {
         const garmentImageInput = this.toDataUri(g.buffer, g.mime);
-        this.logger.log(`[FASHN] Gửi request | category=${g.category} | model=${this.FASHN_MODEL}`);
+        this.logger.log(`[FASHN] Gửi request | layer=${g.layerRole} | model=${this.FASHN_MODEL}`);
 
         const predictionId = await this.callFashnRun({
           model_name: this.FASHN_MODEL,
           inputs: {
             model_image: modelImageInput,
             garment_image: garmentImageInput,
-            category: this.mapCategory(g.category),
+            category: layerRoleToFashnCategory(g.layerRole),
             mode,
             garment_photo_type: 'auto',
             segmentation_free: true,
@@ -652,7 +666,12 @@ export class TryOnService {
     humanHash: string,
     garments: ResolvedGarment[],
     cacheKey: string,
-    garmentsMeta: Array<{ category: GarmentCategory; productId: string | null; color?: string | null }>,
+    garmentsMeta: Array<{
+      category: GarmentCategory;
+      layerRole: LayerRole;
+      productId: string | null;
+      color?: string | null;
+    }>,
   ): Promise<TryOnResultResponse> {
     const configuredUrl = this.config.get<string>('MOCK_TRYON_RESULT_URL');
     const resultUrl =

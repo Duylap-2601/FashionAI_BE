@@ -14,6 +14,8 @@ export class ProductsService {
   ) {}
 
   async create(dto: CreateProductDto, images?: Express.Multer.File[]) {
+    this.assertOriginalPrice(dto.price, dto.originalPrice);
+
     let garmentUrl = dto.garmentUrl;
     const uploadedImages: string[] = [];
 
@@ -40,6 +42,7 @@ export class ProductsService {
       description: dto.description,
       category: dto.category,
       garmentType: dto.garmentType,
+      layerRole: dto.layerRole,
       color: dto.color,
       price: dto.price,
       originalPrice: dto.originalPrice,
@@ -93,6 +96,18 @@ export class ProductsService {
     });
   }
 
+  private assertOriginalPrice(price: number, originalPrice?: number | null) {
+    if (
+      originalPrice !== undefined &&
+      originalPrice !== null &&
+      originalPrice < price
+    ) {
+      throw new BadRequestException(
+        'Giá gốc (originalPrice) phải lớn hơn hoặc bằng giá bán (price)',
+      );
+    }
+  }
+
   async findAll(query: QueryProductDto) {
     const {
       search,
@@ -101,6 +116,7 @@ export class ProductsService {
       subCategory,
       material,
       garmentType,
+      layerRole,
       minPrice,
       maxPrice,
       status = ProductStatus.ACTIVE,
@@ -157,6 +173,7 @@ export class ProductsService {
       ...(status ? { status } : {}),
       ...(category ? { category } : {}),
       ...(garmentType ? { garmentType } : {}),
+      ...(layerRole ? { layerRole } : {}),
       ...(material ? { material: { contains: material, mode: Prisma.QueryMode.insensitive } } : {}),
       ...(minPrice !== undefined || maxPrice !== undefined
         ? {
@@ -207,7 +224,17 @@ export class ProductsService {
   }
 
   async update(id: string, dto: Partial<CreateProductDto>) {
-    await this.findOne(id);
+    const existing = await this.findOne(id);
+
+    const nextPrice = dto.price ?? Number(existing.price);
+    const nextOriginalPrice =
+      dto.originalPrice !== undefined
+        ? dto.originalPrice
+        : existing.originalPrice === null || existing.originalPrice === undefined
+          ? null
+          : Number(existing.originalPrice);
+    this.assertOriginalPrice(nextPrice, nextOriginalPrice);
+
     // Loại bỏ fields từ FilesInterceptor trước khi pass vào Prisma
     const { images: _images, image: _image, isMainIndex: _isMainIndex, imageColors: _imageColors, ...updateData } = dto;
      if (dto.images && Array.isArray(dto.images)) {

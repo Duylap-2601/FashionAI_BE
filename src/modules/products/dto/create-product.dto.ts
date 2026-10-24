@@ -1,5 +1,5 @@
 import { ApiProperty } from '@nestjs/swagger';
-import { GarmentCategory, ProductStatus } from '@prisma/client';
+import { GarmentCategory, LayerRole, ProductStatus } from '@prisma/client';
 import { Transform, Type } from 'class-transformer';
 import {
   IsArray,
@@ -54,6 +54,17 @@ export class CreateProductDto {
   @IsEnum(GarmentType)
   @IsOptional()
   garmentType?: GarmentType;
+
+  @ApiProperty({
+    enum: LayerRole,
+    description:
+      'Lớp mặc: OUTER (khoác ngoài), INNER (mặc trong), BOTTOM (quần/chân váy), FULL_BODY (đầm/jumpsuit)',
+    example: LayerRole.INNER,
+    required: false,
+  })
+  @IsEnum(LayerRole)
+  @IsOptional()
+  layerRole?: LayerRole;
 
   @ApiProperty({ description: 'Màu sắc', example: 'Trắng', required: false })
   @IsString()
