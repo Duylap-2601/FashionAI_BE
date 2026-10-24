@@ -11,6 +11,7 @@ import { Cron, CronExpression } from '@nestjs/schedule';
 import axios from 'axios';
 import {
   GarmentCategory,
+  LayerRole,
   LiveTryOnCredentialStatus,
   LiveTryOnReservationStatus,
   LiveTryOnSessionStatus,
@@ -22,6 +23,7 @@ import {
 } from '@prisma/client';
 import * as crypto from 'crypto';
 import { PrismaService } from '../../database/prisma.service';
+import { resolveLayerRole } from '../products/utils/layer-role.util';
 import { AdminSettingsService } from '../admin/admin-settings.service';
 import { AuthenticatedUser } from '../auth/interfaces/authenticated-user.interface';
 import { CreateLiveSessionDto } from './dto/create-live-session.dto';
@@ -642,6 +644,7 @@ export class LiveTryOnService {
       imageUrl: reference.imageUrl,
       prompt: buildPrompt(reference.product, reference.color),
       category: reference.product.category,
+      layerRole: resolveLayerRole(reference.product),
       color: reference.color,
     };
   }
@@ -713,20 +716,30 @@ export class LiveTryOnService {
   }
 }
 
+// Decart chỉ nhận prompt text, nên lớp mặc phải nói rõ bằng lời; thiếu nó thì
+// provider không biết blazer phải khoác ngoài hay áo sơ mi mặc bên trong.
+const LAYER_PROMPT_HINTS: Record<LayerRole, string> = {
+  [LayerRole.OUTER]: 'Wear it as an outer layer, open over the existing top.',
+  [LayerRole.INNER]: 'Wear it as the top layer on the torso.',
+  [LayerRole.BOTTOM]: 'Wear it on the lower body, keeping the existing top.',
+  [LayerRole.FULL_BODY]: 'Wear it as a single full-body garment.',
+};
+
 function buildPrompt(product: Product, selectedColor?: string | null) {
   // Leave room below the provider's reported prompt limit.
   const maxPromptLength = 700;
   const instruction = 'Try on the reference garment. Match its color, pattern, fabric and fit.';
+  const layerHint = LAYER_PROMPT_HINTS[resolveLayerRole(product)];
   const details = [selectedColor ?? product.color, product.material, product.name, product.description]
     .filter(Boolean)
     .join(' ')
     .replace(/\s+/g, ' ')
     .trim();
-  const availableLength = maxPromptLength - instruction.length - 1;
+  const availableLength = maxPromptLength - instruction.length - layerHint.length - 2;
   const shortenedDetails = details.length > availableLength
     ? `${details.slice(0, availableLength - 3).trimEnd()}...`
     : details;
-  return [instruction, shortenedDetails].filter(Boolean).join(' ');
+  return [instruction, layerHint, shortenedDetails].filter(Boolean).join(' ');
 }
 
 function normalizeColorName(color?: string | null) {
