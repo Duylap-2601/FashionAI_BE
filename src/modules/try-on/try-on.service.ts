@@ -542,7 +542,11 @@ export class TryOnService {
             category: layerRoleToFashnCategory(g.layerRole),
             mode,
             garment_photo_type: 'auto',
-            segmentation_free: true,
+            // Combo nhiều món: phải xoá lớp trước (segmentation_free=false) để
+            // áo/quần cũ không lộ viền dưới lớp mới khi chain nhiều request.
+            // Chỉ 1 món: segmentation_free=true giữ dáng người/da tốt hơn.
+            segmentation_free: resolved.length === 1,
+            output_format: 'png',
           },
         });
 

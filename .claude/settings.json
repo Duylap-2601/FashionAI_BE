@@ -1,7 +1,12 @@
 {
   "permissions": {
     "allow": [
-      "Bash(node -e ' *)"
+      "Bash(node -e ' *)",
+      "Bash(sed 's/\\\\\\(KEY=\\\\\\).*/\\\\1***/')",
+      "WebFetch(domain:docs.fashn.ai)",
+      "WebSearch",
+      "WebFetch(domain:fashn.ai)",
+      "WebFetch(domain:help.fashn.ai)"
     ]
   }
 }
