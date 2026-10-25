@@ -274,6 +274,63 @@ export class TryOnService {
     return `data:${mimetype || 'image/jpeg'};base64,${buffer.toString('base64')}`;
   }
 
+  /**
+   * Prompt styling cho Try-On Max. Chỉ dùng khi đắp lớp lên trang phục đã có
+   * từ bước trước: Max không có `category` nên không tự xoá vùng áo trên,
+   * nhưng cần nói rõ là khoác ngoài để nó không thay chỗ áo sơ mi bên trong.
+   */
+  private buildMaxLayeringPrompt(layerRole: LayerRole): string | undefined {
+    switch (layerRole) {
+      case LayerRole.OUTER:
+        return 'Wear this as an open outer layer on top of the garment the person is already wearing. Keep the inner top fully visible at the chest and collar, and keep its original color and pattern unchanged.';
+      case LayerRole.BOTTOM:
+        return 'Replace only the lower-body garment. Keep the upper-body garments exactly as they are.';
+      case LayerRole.INNER:
+        return 'Replace only the inner top. Keep any outer layer, jacket, and lower-body garments exactly as they are.';
+      default:
+        return undefined;
+    }
+  }
+
+  /**
+   * Try-On Max và Try-On v1.6 nhận tên input khác nhau:
+   * - Max: `product_image`, `generation_mode`, `resolution`, `prompt`; không có
+   *   `category`/`segmentation_free`. Hỗ trợ outerwear nên ghép lớp được.
+   * - v1.6: `garment_image` + `category` (auto/tops/bottoms/one-pieces). Vì
+   *   không có category outerwear, lớp OUTER phải gửi là `tops` và sẽ ghi đè
+   *   mất lớp trong — đó là giới hạn của endpoint này, không phải của code.
+   */
+  private buildFashnInputs(
+    layerRole: LayerRole,
+    modelImage: string,
+    garmentImage: string,
+    isLayering: boolean,
+  ): Record<string, unknown> {
+    if (this.FASHN_MODEL === 'tryon-max') {
+      const prompt = isLayering
+        ? this.buildMaxLayeringPrompt(layerRole)
+        : undefined;
+      return {
+        model_image: modelImage,
+        product_image: garmentImage,
+        generation_mode: this.config.get<string>('FASHN_MODE', 'balanced'),
+        resolution: this.config.get<string>('FASHN_RESOLUTION', '2k'),
+        output_format: 'png',
+        ...(prompt ? { prompt } : {}),
+      };
+    }
+
+    return {
+      model_image: modelImage,
+      garment_image: garmentImage,
+      category: layerRoleToFashnCategory(layerRole),
+      mode: this.config.get<string>('FASHN_MODE', 'balanced'),
+      garment_photo_type: 'auto',
+      segmentation_free: true,
+      output_format: 'png',
+    };
+  }
+
   private async callFashnRun(body: object): Promise<string> {
     const res = await axios.post<{ id: string; error?: any }>(
       `${this.FASHN_BASE_URL}/v1/run`,
@@ -526,33 +583,28 @@ export class TryOnService {
         await this.assertHumanImageUsable(humanImage);
       }
       // ── Chuỗi FASHN: kết quả bước trước là model_image của bước sau ─────
-      const mode = this.config.get<string>('FASHN_MODE', 'balanced');
+      // Từ bước 2 trở đi là "layering": người trong ảnh đã mặc món trước đó,
+      // nên với tryon-max ta thêm prompt yêu cầu giữ lớp trong thay vì thay nó.
       let modelImageInput: string = this.toDataUri(humanImage.buffer, humanImage.mimetype);
       const providerMeta: any[] = [];
 
-      for (const g of resolved) {
+      for (const [index, g] of resolved.entries()) {
         const garmentImageInput = this.toDataUri(g.buffer, g.mime);
         this.logger.log(`[FASHN] Gửi request | layer=${g.layerRole} | model=${this.FASHN_MODEL}`);
 
         const predictionId = await this.callFashnRun({
           model_name: this.FASHN_MODEL,
-          inputs: {
-            model_image: modelImageInput,
-            garment_image: garmentImageInput,
-            category: layerRoleToFashnCategory(g.layerRole),
-            mode,
-            garment_photo_type: 'auto',
-            // Combo nhiều món: phải xoá lớp trước (segmentation_free=false) để
-            // áo/quần cũ không lộ viền dưới lớp mới khi chain nhiều request.
-            // Chỉ 1 món: segmentation_free=true giữ dáng người/da tốt hơn.
-            segmentation_free: resolved.length === 1,
-            output_format: 'png',
-          },
+          inputs: this.buildFashnInputs(
+            g.layerRole,
+            modelImageInput,
+            garmentImageInput,
+            index > 0,
+          ),
         });
 
         this.logger.log(`[FASHN] Prediction ID=${predictionId}, bắt đầu poll...`);
         const { output, raw } = await this.pollFashnStatus(predictionId);
-        // Bước sau dùng URL kết quả (public CDN của FASHN) làm model_image
+        // Bước sau dùng URL kết quả (public CDN của FASHN) làm ảnh nền tiếp theo
         modelImageInput = output[0];
         providerMeta.push(raw);
       }
