@@ -21,7 +21,7 @@ const product = {
   garmentType: null,
   price: 1290000,
   garmentUrl: 'https://img/suit.png',
-  brand: 'StAle. SIGNATURE',
+  brand: 'StAie. SIGNATURE',
   material: null,
   status: 'ACTIVE',
   colors: [{ name: 'Black', hex: '#000000' }],

@@ -82,7 +82,7 @@ export class CreateProductDto {
   @IsOptional()
   originalPrice?: number;
 
-  @ApiProperty({ description: 'Thương hiệu', required: false, example: 'StAle. SIGNATURE' })
+  @ApiProperty({ description: 'Thương hiệu', required: false, example: 'StAie. SIGNATURE' })
   @IsString()
   @IsOptional()
   brand?: string;

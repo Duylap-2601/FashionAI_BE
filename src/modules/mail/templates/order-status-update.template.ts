@@ -49,7 +49,7 @@ export function renderOrderStatusUpdateMail(input: OrderStatusUpdateData & { det
     subject,
     html: renderMailLayout({ subject, preheader, content }),
     text: textLines([
-      'StAle. FashionAI',
+      'StAie. FashionAI',
       meta.title,
       '',
       meta.message,
