@@ -17,9 +17,18 @@ describe('NotificationService', () => {
     toUser: jest.fn(),
   };
 
+  const mockPushService = {
+    sendToUser: jest.fn().mockResolvedValue(undefined),
+  };
+
   beforeEach(() => {
     jest.clearAllMocks();
-    service = new NotificationService(mockPrisma as any, mockEmitter as any);
+    mockPushService.sendToUser.mockResolvedValue(undefined);
+    service = new NotificationService(
+      mockPrisma as any,
+      mockEmitter as any,
+      mockPushService as any,
+    );
   });
 
   describe('create', () => {
@@ -36,16 +45,18 @@ describe('NotificationService', () => {
 
       expect(mockPrisma.notification.create).toHaveBeenCalled();
       expect(mockEmitter.toUser).toHaveBeenCalledWith('u1', 'notification', saved);
+      expect(mockPushService.sendToUser).toHaveBeenCalledWith('u1', saved);
       expect(result).toBe(saved);
     });
 
-    it('KHÔNG emit nếu ghi DB thất bại', async () => {
+    it('KHÔNG emit/push nếu ghi DB thất bại', async () => {
       mockPrisma.notification.create.mockRejectedValue(new Error('db down'));
 
       await expect(
         service.create({ userId: 'u1', type: 'SYSTEM' as any, title: 't', message: 'm' }),
       ).rejects.toThrow('db down');
       expect(mockEmitter.toUser).not.toHaveBeenCalled();
+      expect(mockPushService.sendToUser).not.toHaveBeenCalled();
     });
   });
 
