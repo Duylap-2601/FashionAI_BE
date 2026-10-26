@@ -493,7 +493,7 @@ model Product {
   color         String?
   price         Decimal         @db.Decimal(10, 2)
   originalPrice Decimal?        @map("original_price") @db.Decimal(10, 2)
-  brand         String?         @default("StAle. SIGNATURE")
+  brand         String?         @default("StAie. SIGNATURE")
   garmentUrl    String          @map("garment_url")
   status        ProductStatus   @default(ACTIVE)
   colors        Json? // [{ name: string, hex: string }]

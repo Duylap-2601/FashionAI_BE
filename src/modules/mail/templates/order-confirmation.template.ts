@@ -30,7 +30,7 @@ export function renderOrderConfirmationMail(input: OrderConfirmationData & { det
     subject,
     html: renderMailLayout({ subject, preheader, content }),
     text: textLines([
-      'StAle. FashionAI',
+      'StAie. FashionAI',
       `Cảm ơn bạn đã đặt hàng #${input.orderCode}`,
       'Trạng thái: Đã thanh toán',
       '',

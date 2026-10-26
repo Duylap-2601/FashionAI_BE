@@ -19,7 +19,7 @@ export const mailTheme = {
 
 export const mailIdentity = {
   product: 'FashionAI',
-  fromName: 'StAle. FashionAI',
-  subjectPrefix: '[StAle.]',
+  fromName: 'StAie. FashionAI',
+  subjectPrefix: '[StAie.]',
   wordmarkHtml: 'St<strong style="font-weight:700;">A</strong>le.',
 } as const;
