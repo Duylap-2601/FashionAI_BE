@@ -79,6 +79,9 @@ Existing ownership boundaries:
 - `users`: profile and body measurements. User measurement input belongs here;
   order measurement snapshots belong to `orders`.
 - `products`: product catalog, product images, reviews, and review replies.
+  `Product.layerRole` (OUTER/INNER/BOTTOM/FULL_BODY) is the source of truth for
+  garment layering; nullable for legacy rows, with `resolveLayerRole` fallback in
+  `products/utils/layer-role.util.ts` used by try-on and AI suggestions.
 - `cart`: the logged-in user's cart, synced across devices (`CartItem`, one line
   per product/color/comboType). Guest carts stay on the client and are merged
   through `POST /cart/merge` (duplicate lines keep the larger quantity, so a
@@ -226,8 +229,9 @@ When schema changes are required:
   amounts, or totals as the source of truth; use client totals only as a
   double-check after recomputing prices, GHN shipping fees, and coupon discounts.
 - Product orders that require shipping should validate structured GHN address
-  fields before pricing or shipment creation, especially `ghnDistrictId` and
-  `ghnWardCode`.
+  fields before pricing or shipment creation, especially `ghnProvinceV3Id` and
+  `ghnWardV3Id`. GHN uses the post-merger 2-level catalog only; district-level
+  legacy data is removed.
 - GHN pickup origin should be read from `/admin/settings/ghn-pickup` persisted
   settings when available. `GHN_FROM_*` environment variables are fallback
   values, not the primary runtime configuration.

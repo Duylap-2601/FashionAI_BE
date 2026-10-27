@@ -16,7 +16,7 @@ import {
 import { ApiTags, ApiOperation, ApiResponse, ApiConsumes, ApiBody, ApiBearerAuth } from '@nestjs/swagger';
 import { AnyFilesInterceptor } from '@nestjs/platform-express';
 import { Request } from 'express';
-import { GarmentCategory } from '@prisma/client';
+import { GarmentCategory, LayerRole } from '@prisma/client';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { AuthenticatedUser } from '../auth/interfaces/authenticated-user.interface';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
@@ -38,7 +38,7 @@ export class TryOnController {
   @AiAction('TRY_ON')
   @ApiOperation({
     summary: 'AI Virtual Try-On (Bảo vệ bởi Auth & Quota)',
-    description: `Upload ảnh người + ảnh trang phục (hoặc truyền productId) → trả về kết quả thử đồ.\n\n**garmentCategory:**\n- \`UPPER\` = Áo trên\n- \`LOWER\` = Quần/Váy\n- \`FULL_BODY\` = Toàn thân`,
+    description: `Upload ảnh người + ảnh trang phục (hoặc truyền productId) → trả về kết quả thử đồ.\n\n**Tối đa 3 món**, mỗi lớp 1 món: \`OUTER\` + \`INNER\` + \`BOTTOM\`, hoặc 1 \`FULL_BODY\` đứng riêng.\n\n**garmentCategory:**\n- \`UPPER\` = Áo trên\n- \`LOWER\` = Quần/Váy\n- \`FULL_BODY\` = Toàn thân\n\n**layerRole** (chỉ cần khi upload ảnh tự do, không có productId):\n- \`OUTER\` = Khoác ngoài\n- \`INNER\` = Mặc trong\n- \`BOTTOM\` = Quần/Chân váy\n- \`FULL_BODY\` = Toàn thân`,
   })
   @ApiConsumes('multipart/form-data')
   @ApiBody({
@@ -47,16 +47,23 @@ export class TryOnController {
       required: ['humanImage'],
       properties: {
         humanImage: { type: 'string', format: 'binary', description: 'Ảnh người dùng (toàn thân)' },
-        // Combo (Phase 3): gửi mảng garments[N][image]/[category]/[productId]. Tối đa 2 món
-        // (1 UPPER + 1 LOWER) hoặc 1 FULL_BODY. Mỗi món tính 1 lượt quota.
+        // Combo: gửi mảng garments[N][image]/[category]/[layerRole]/[productId]. Tối đa 3 món
+        // (OUTER + INNER + BOTTOM) hoặc 1 FULL_BODY. Mỗi món tính 1 lượt quota.
         'garments[0][image]': { type: 'string', format: 'binary', description: 'Ảnh món 1 (nếu không dùng productId)' },
-        'garments[0][category]': { type: 'string', enum: ['UPPER', 'LOWER', 'FULL_BODY'], description: 'Phân loại món 1' },
+        'garments[0][category]': { type: 'string', enum: ['UPPER', 'LOWER', 'FULL_BODY'], description: 'Phân loại vùng cơ thể của món 1' },
+        'garments[0][layerRole]': { type: 'string', enum: ['OUTER', 'INNER', 'BOTTOM', 'FULL_BODY'], description: 'Lớp mặc của món 1 (chỉ dùng khi upload ảnh, không có productId)' },
         'garments[0][productId]': { type: 'string', description: 'ID sản phẩm cho món 1 (thay cho ảnh)' },
         'garments[0][color]': { type: 'string', description: 'Màu đã chọn cho món 1 (chỉ áp dụng khi dùng productId)' },
         'garments[1][image]': { type: 'string', format: 'binary', description: 'Ảnh món 2' },
-        'garments[1][category]': { type: 'string', enum: ['UPPER', 'LOWER', 'FULL_BODY'], description: 'Phân loại món 2' },
+        'garments[1][category]': { type: 'string', enum: ['UPPER', 'LOWER', 'FULL_BODY'], description: 'Phân loại vùng cơ thể của món 2' },
+        'garments[1][layerRole]': { type: 'string', enum: ['OUTER', 'INNER', 'BOTTOM', 'FULL_BODY'], description: 'Lớp mặc của món 2 (chỉ dùng khi upload ảnh)' },
         'garments[1][productId]': { type: 'string', description: 'ID sản phẩm cho món 2' },
         'garments[1][color]': { type: 'string', description: 'Màu đã chọn cho món 2 (chỉ áp dụng khi dùng productId)' },
+        'garments[2][image]': { type: 'string', format: 'binary', description: 'Ảnh món 3' },
+        'garments[2][category]': { type: 'string', enum: ['UPPER', 'LOWER', 'FULL_BODY'], description: 'Phân loại vùng cơ thể của món 3' },
+        'garments[2][layerRole]': { type: 'string', enum: ['OUTER', 'INNER', 'BOTTOM', 'FULL_BODY'], description: 'Lớp mặc của món 3 (chỉ dùng khi upload ảnh)' },
+        'garments[2][productId]': { type: 'string', description: 'ID sản phẩm cho món 3' },
+        'garments[2][color]': { type: 'string', description: 'Màu đã chọn cho món 3 (chỉ áp dụng khi dùng productId)' },
         // Legacy 1 món: vẫn hỗ trợ để tương thích ngược.
         garmentImage: { type: 'string', format: 'binary', description: '[Legacy] Ảnh trang phục đơn' },
         productId: { type: 'string', description: '[Legacy] ID sản phẩm đơn' },
@@ -113,7 +120,7 @@ export class TryOnController {
   // rơi về shape đơn cũ (garmentImage/garmentCategory/productId) và bọc thành 1 phần tử.
   private parseGarments(body: Record<string, unknown>, files: Express.Multer.File[]): TryOnGarmentInput[] {
     const indexed = new Map<number, TryOnGarmentInput>();
-    const bracket = /^garments\[(\d+)\]\[(image|category|productId|color)\]$/;
+    const bracket = /^garments\[(\d+)\]\[(image|category|layerRole|productId|color)\]$/;
 
     const ensure = (idx: number): TryOnGarmentInput => {
       let g = indexed.get(idx);
@@ -141,6 +148,7 @@ export class TryOnController {
         const entry = item as Record<string, unknown>;
         const g = ensure(idx);
         if (entry.category != null) g.category = this.toGarmentCategory(entry.category);
+        if (entry.layerRole != null) g.layerRole = this.toLayerRole(entry.layerRole);
         if (entry.productId != null) g.productId = String(entry.productId);
         if (entry.color != null) g.color = String(entry.color);
       }
@@ -173,6 +181,15 @@ export class TryOnController {
       return GarmentCategory[upper as keyof typeof GarmentCategory];
     }
     throw new BadRequestException(`garmentCategory không hợp lệ: ${value}`);
+  }
+
+  private toLayerRole(value: unknown): LayerRole | undefined {
+    if (typeof value !== 'string') return undefined;
+    const upper = value.toUpperCase();
+    if (upper in LayerRole) {
+      return LayerRole[upper as keyof typeof LayerRole];
+    }
+    throw new BadRequestException(`layerRole không hợp lệ: ${value}`);
   }
 
   @Get('history')

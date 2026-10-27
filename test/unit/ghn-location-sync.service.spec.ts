@@ -21,6 +21,7 @@ function createService(previousRevision = BigInt(2), latestRunGeneration: bigint
       findFirst: jest.fn().mockResolvedValue(latestRunGeneration === null ? null : { catalogGeneration: latestRunGeneration }),
       create: jest.fn().mockResolvedValue({ id: 'sync-run-1' }),
       update: jest.fn().mockResolvedValue({}),
+      updateMany: jest.fn().mockResolvedValue({ count: 0 }),
     },
     ghnLocation: {
       upsert: jest.fn().mockImplementation((args) => Promise.resolve(args)),

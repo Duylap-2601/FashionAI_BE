@@ -11,6 +11,7 @@ import { Cron, CronExpression } from '@nestjs/schedule';
 import axios from 'axios';
 import {
   GarmentCategory,
+  LayerRole,
   LiveTryOnCredentialStatus,
   LiveTryOnReservationStatus,
   LiveTryOnSessionStatus,
@@ -22,10 +23,14 @@ import {
 } from '@prisma/client';
 import * as crypto from 'crypto';
 import { PrismaService } from '../../database/prisma.service';
+import { resolveLayerRole } from '../products/utils/layer-role.util';
 import { AdminSettingsService } from '../admin/admin-settings.service';
 import { AuthenticatedUser } from '../auth/interfaces/authenticated-user.interface';
-import { CreateLiveSessionDto } from './dto/create-live-session.dto';
+import { CreateLiveSessionDto, LiveSessionItemDto } from './dto/create-live-session.dto';
 import { DecartRealtimeService } from './decart-realtime.service';
+import { buildCleanGarmentImageUrl } from './utils/garment-image.util';
+import { assertValidLayerCombination } from './utils/garment-combo.util';
+import { buildLiveComboPrompt, pickPrimaryIndex } from './utils/live-combo.util';
 
 interface LiveTryOnPolicy {
   enabled: boolean;
@@ -54,6 +59,43 @@ interface LiveGarmentReference {
   color: string | null;
 }
 
+/**
+ * Một combo Live Try-On. Decart chỉ nhận 1 ảnh tham chiếu mỗi phiên nên
+ * `primaryIndex` trỏ tới món cấp ảnh; các món còn lại chỉ nằm trong prompt.
+ */
+interface LiveComboReference {
+  items: LiveGarmentReference[];
+  primaryIndex: number;
+}
+
+/** Include dùng chung cho mọi lượt đọc session cần trả về garment. */
+const LIVE_SESSION_GARMENT_INCLUDE = {
+  product: { include: { images: true } },
+  items: { include: { product: { include: { images: true } } } },
+} as const;
+
+interface LiveSessionWithGarments {
+  id: string;
+  status: LiveTryOnSessionStatus;
+  reservedSeconds: number;
+  usedSeconds: number;
+  activeStartedAt: Date | null;
+  blockedUntil: Date;
+  pauseExpiresAt: Date | null;
+  revision: number;
+  colorName: string | null;
+  product: LiveProduct;
+  providerMetadata?: Prisma.JsonValue | null;
+  items?: {
+    productId: string;
+    imageUrl: string;
+    colorName: string | null;
+    isPrimary: boolean;
+    position: number;
+    product: LiveProduct;
+  }[];
+}
+
 @Injectable()
 export class LiveTryOnService {
   private readonly logger = new Logger(LiveTryOnService.name);
@@ -75,7 +117,10 @@ export class LiveTryOnService {
     });
     const activeLease = await this.prisma.liveTryOnLease.findUnique({ where: { userId: user.id } });
     const activeSession = activeLease && activeLease.expiresAt > new Date()
-      ? await this.prisma.liveTryOnSession.findUnique({ where: { id: activeLease.sessionId } })
+      ? await this.prisma.liveTryOnSession.findUnique({
+          where: { id: activeLease.sessionId },
+          include: { items: { orderBy: { position: 'asc' } } },
+        })
       : null;
 
     const reserved = budget?.reservedSeconds ?? 0;
@@ -97,6 +142,9 @@ export class LiveTryOnService {
         ? {
             sessionId: activeSession.id,
             productId: activeSession.productId,
+            productIds: activeSession.items.length
+              ? activeSession.items.map((item) => item.productId)
+              : [activeSession.productId],
             status: activeSession.status,
             blockedUntil: activeSession.blockedUntil.toISOString(),
             remainingSeconds: this.computeRemainingSeconds(activeSession, new Date()),
@@ -114,7 +162,18 @@ export class LiveTryOnService {
     const product = await this.resolveLiveProduct(productId, policy);
     const garment = this.resolveLiveGarment(product, color);
     await this.assertGarmentUrlReadable(garment.imageUrl);
-    return this.mapGarment(garment);
+    return this.mapGarment({ items: [garment], primaryIndex: 0 });
+  }
+
+  /**
+   * Preview combo trước khi mở phiên: FE gọi để biết ảnh tham chiếu nào sẽ được
+   * dùng và prompt nào sẽ gửi, không tiêu quota.
+   */
+  async previewCombo(user: AuthenticatedUser, dto: CreateLiveSessionDto) {
+    const policy = await this.getPolicy(user.tier);
+    this.assertEnabledAndEligible(user, policy);
+    const combo = await this.resolveLiveCombo(normalizeRequestedItems(dto), policy);
+    return this.mapGarment(combo);
   }
 
   async createSession(user: AuthenticatedUser, dto: CreateLiveSessionDto, idempotencyKey: string, origin?: string) {
@@ -123,12 +182,13 @@ export class LiveTryOnService {
     if (!idempotencyKey || !isUuid(idempotencyKey)) {
       throw new BadRequestException({ code: 'INVALID_IDEMPOTENCY_KEY', message: 'Idempotency-Key must be a UUID' });
     }
-    if (!isUuid(dto.productId)) {
-      throw new BadRequestException({ code: 'INVALID_PRODUCT_ID', message: 'productId must be a UUID' });
-    }
-
-    const requestedColor = normalizeColorName(dto.color);
-    const bodyHash = hashJson({ productId: dto.productId, color: requestedColor || null });
+    const requested = normalizeRequestedItems(dto);
+    const bodyHash = hashJson({
+      items: requested.map((item) => ({
+        productId: item.productId,
+        color: normalizeColorName(item.color) || null,
+      })),
+    });
     const existing = await this.prisma.liveTryOnSession.findUnique({
       where: { userId_idempotencyKey: { userId: user.id, idempotencyKey } },
     });
@@ -149,14 +209,13 @@ export class LiveTryOnService {
       throw new ConflictException({ code: 'LIVE_SESSION_ACTIVE', message: 'A Live Try-On lease is still active', blockedUntil: activeLease.expiresAt.toISOString() });
     }
 
-    const product = await this.resolveLiveProduct(dto.productId, policy);
-    const garment = this.resolveLiveGarment(product, dto.color);
-    await this.assertGarmentUrlReadable(garment.imageUrl);
+    const combo = await this.resolveLiveCombo(requested, policy);
+    const primary = combo.items[combo.primaryIndex];
     const now = new Date();
     const quotaDate = utcDateKey(now);
     const blockedUntil = new Date(now.getTime() + (policy.tokenTtlSeconds + policy.maxDurationSeconds + policy.graceSeconds + policy.pauseTimeoutSeconds) * 1000);
 
-    const session = await this.reserveSession(user.id, product.id, idempotencyKey, bodyHash, quotaDate, blockedUntil, policy, garment.color);
+    const session = await this.reserveSession(user.id, primary.product.id, idempotencyKey, bodyHash, quotaDate, blockedUntil, policy, primary.color, combo);
 
     try {
       const token = await this.decart.createClientToken({ origin, maxDurationSeconds: session.reservedSeconds });
@@ -167,7 +226,7 @@ export class LiveTryOnService {
           issuedAt: now,
           tokenExpiresAt: token.tokenExpiresAt,
           activeStartedAt: now,
-          providerMetadata: this.buildProviderMetadata(token.raw, garment),
+          providerMetadata: this.buildProviderMetadata(token.raw, combo),
         },
       });
 
@@ -185,7 +244,7 @@ export class LiveTryOnService {
         remainingSeconds: session.reservedSeconds,
         status: LiveTryOnSessionStatus.ACTIVE,
         revision: session.revision,
-        garment: this.mapGarment(garment),
+        garment: this.mapGarment(combo),
       };
     } catch (error) {
       await this.releaseFailedReservation(session.id, user.id, quotaDate, session.reservedSeconds);
@@ -194,7 +253,7 @@ export class LiveTryOnService {
   }
 
   async getSession(user: AuthenticatedUser, sessionId: string) {
-    const session = await this.prisma.liveTryOnSession.findUnique({ where: { id: sessionId }, include: { product: { include: { images: true } } } });
+    const session = await this.prisma.liveTryOnSession.findUnique({ where: { id: sessionId }, include: LIVE_SESSION_GARMENT_INCLUDE });
     if (!session || session.userId !== user.id) {
       throw new NotFoundException({ code: 'LIVE_SESSION_NOT_FOUND', message: 'Live Try-On session not found' });
     }
@@ -202,7 +261,7 @@ export class LiveTryOnService {
   }
 
   async pauseSession(user: AuthenticatedUser, sessionId: string, reason?: string) {
-    const session = await this.prisma.liveTryOnSession.findUnique({ where: { id: sessionId }, include: { product: { include: { images: true } } } });
+    const session = await this.prisma.liveTryOnSession.findUnique({ where: { id: sessionId }, include: LIVE_SESSION_GARMENT_INCLUDE });
     if (!session || session.userId !== user.id) {
       throw new NotFoundException({ code: 'LIVE_SESSION_NOT_FOUND', message: 'Live Try-On session not found' });
     }
@@ -222,13 +281,13 @@ export class LiveTryOnService {
         revision: { increment: 1 },
         endedReason: reason ?? session.endedReason,
       },
-      include: { product: { include: { images: true } } },
+      include: LIVE_SESSION_GARMENT_INCLUDE,
     });
     return this.mapSessionStatus(updated);
   }
 
   async resumeSession(user: AuthenticatedUser, sessionId: string, origin?: string, productId?: string, color?: string) {
-    const session = await this.prisma.liveTryOnSession.findUnique({ where: { id: sessionId }, include: { product: { include: { images: true } } } });
+    const session = await this.prisma.liveTryOnSession.findUnique({ where: { id: sessionId }, include: LIVE_SESSION_GARMENT_INCLUDE });
     if (!session || session.userId !== user.id) {
       throw new NotFoundException({ code: 'LIVE_SESSION_NOT_FOUND', message: 'Live Try-On session not found' });
     }
@@ -246,9 +305,12 @@ export class LiveTryOnService {
       throw new ConflictException({ code: 'LIVE_SESSION_EXHAUSTED', message: 'Live session has no remaining seconds' });
     }
 
-    const product = await this.resolveLiveProduct(productId ?? session.productId, policy);
-    const garment = this.resolveLiveGarment(product, color ?? session.colorName);
-    await this.assertGarmentUrlReadable(garment.imageUrl);
+    // Resume: nếu client gửi productId thì coi là đổi sang 1 món mới, ngược lại
+    // dựng lại đúng combo đã lưu của phiên.
+    const combo = productId
+      ? await this.resolveLiveCombo([{ productId, color }], policy)
+      : await this.reResolveCombo(session, policy);
+    const primary = combo.items[combo.primaryIndex];
     const token = await this.decart.createClientToken({ origin, maxDurationSeconds: remainingSeconds });
     const now = new Date();
     const updated = await this.prisma.liveTryOnSession.update({
@@ -260,12 +322,21 @@ export class LiveTryOnService {
         tokenExpiresAt: token.tokenExpiresAt,
         activeStartedAt: now,
         pausedAt: null,
-        productId: product.id,
-        colorName: garment.color,
+        productId: primary.product.id,
+        colorName: primary.color,
         revision: { increment: 1 },
-        providerMetadata: this.buildProviderMetadata(token.raw, garment),
+        providerMetadata: this.buildProviderMetadata(token.raw, combo),
+        ...(productId
+          ? {
+              // Đổi món khi resume: thay toàn bộ items bằng món mới.
+              items: {
+                deleteMany: {},
+                create: this.buildSessionItemsData(combo),
+              },
+            }
+          : {}),
       },
-      include: { product: { include: { images: true } } },
+      include: LIVE_SESSION_GARMENT_INCLUDE,
     });
 
     return {
@@ -277,7 +348,7 @@ export class LiveTryOnService {
       },
       model: updated.model,
       maxDurationSeconds: remainingSeconds,
-      garment: this.mapGarment(garment),
+      garment: this.mapGarment(combo),
     };
   }
 
@@ -335,7 +406,7 @@ export class LiveTryOnService {
     };
   }
 
-  private mapSessionStatus(session: { id: string; status: LiveTryOnSessionStatus; reservedSeconds: number; usedSeconds: number; activeStartedAt: Date | null; blockedUntil: Date; pauseExpiresAt: Date | null; revision: number; colorName: string | null; product: LiveProduct; providerMetadata?: Prisma.JsonValue | null }) {
+  private mapSessionStatus(session: LiveSessionWithGarments) {
     const now = new Date();
     return {
       sessionId: session.id,
@@ -346,8 +417,31 @@ export class LiveTryOnService {
       blockedUntil: session.blockedUntil.toISOString(),
       pauseExpiresAt: session.pauseExpiresAt?.toISOString() ?? null,
       revision: session.revision,
-      garment: this.mapGarment(this.garmentFromSession(session.product, session.colorName, session.providerMetadata)),
+      garment: this.mapGarment(this.comboFromSession(session)),
     };
+  }
+
+  /**
+   * Dựng lại combo từ DB. Phiên cũ (trước migration) không có `items` nên fall
+   * back về 1 món từ `productId` + providerMetadata.
+   */
+  private comboFromSession(session: LiveSessionWithGarments): LiveComboReference {
+    const persisted = sessionItems(session);
+    if (persisted.length === 0) {
+      return {
+        items: [this.garmentFromSession(session.product, session.colorName, session.providerMetadata)],
+        primaryIndex: 0,
+      };
+    }
+
+    const sorted = [...persisted].sort((a, b) => a.position - b.position);
+    const items = sorted.map((item) => ({
+      product: item.product,
+      imageUrl: item.imageUrl,
+      color: item.colorName,
+    }));
+    const primaryIndex = Math.max(0, sorted.findIndex((item) => item.isPrimary));
+    return { items, primaryIndex };
   }
 
   private computeUsedSeconds(session: { reservedSeconds: number; usedSeconds: number; activeStartedAt: Date | null }, now: Date) {
@@ -425,6 +519,7 @@ export class LiveTryOnService {
     blockedUntil: Date,
     policy: LiveTryOnPolicy,
     colorName: string | null = null,
+    combo?: LiveComboReference,
   ) {
     return this.withSerializableRetry((tx) => this.reserveSessionTx(
       tx,
@@ -436,6 +531,7 @@ export class LiveTryOnService {
       blockedUntil,
       policy,
       colorName,
+      combo,
     ));
   }
 
@@ -449,6 +545,7 @@ export class LiveTryOnService {
     blockedUntil: Date,
     policy: LiveTryOnPolicy,
     colorName: string | null = null,
+    combo?: LiveComboReference,
   ) {
       const activeConcurrency = await tx.liveTryOnLease.count({ where: { expiresAt: { gt: new Date() } } });
       if (activeConcurrency >= policy.maxConcurrentSessions) {
@@ -498,6 +595,8 @@ export class LiveTryOnService {
           policyVersion: policy.policyVersion,
           rateCreditsPerSecond: policy.rateCreditsPerSecond,
           blockedUntil,
+          // Lưu từng món trong cùng transaction với reservation.
+          ...(combo ? { items: { create: this.buildSessionItemsData(combo) } } : {}),
         },
       });
 
@@ -612,11 +711,63 @@ export class LiveTryOnService {
       ? product.images?.find(image => normalizeColorName(image.colorName) === normalizedColor)
       : undefined;
     const genericImage = product.images?.find(image => image.colorName == null);
+    const rawImageUrl = colorImage?.imageUrl || genericImage?.imageUrl || product.garmentUrl;
     return {
       product,
-      imageUrl: colorImage?.imageUrl || genericImage?.imageUrl || product.garmentUrl,
+      // Chuẩn hoá về khung vuông nền trắng: Decart coi ảnh tham chiếu là source
+      // of truth nên ảnh catalog còn người mẫu/phông sẽ bị tái tạo theo.
+      imageUrl: buildCleanGarmentImageUrl(rawImageUrl),
       color,
     };
+  }
+
+  /**
+   * Resolve cả combo: validate luật ghép lớp, lấy ảnh đã chuẩn hoá cho từng món
+   * và chọn món cấp ảnh tham chiếu cho Decart.
+   */
+  private async resolveLiveCombo(
+    requested: LiveSessionItemDto[],
+    policy: LiveTryOnPolicy,
+  ): Promise<LiveComboReference> {
+    const items: LiveGarmentReference[] = [];
+    for (const item of requested) {
+      if (!isUuid(item.productId)) {
+        throw new BadRequestException({ code: 'INVALID_PRODUCT_ID', message: 'productId must be a UUID' });
+      }
+      const product = await this.resolveLiveProduct(item.productId, policy);
+      items.push(this.resolveLiveGarment(product, item.color));
+    }
+
+    assertValidLayerCombination(items.map((item) => resolveLayerRole(item.product)));
+
+    const primaryIndex = pickPrimaryIndex(items.map((item) => resolveLayerRole(item.product)));
+    await this.assertGarmentUrlReadable(items[primaryIndex].imageUrl);
+    return { items, primaryIndex };
+  }
+
+  /**
+   * Resume phiên cũ: resolve lại từ DB để ảnh/màu phản ánh catalog hiện tại
+   * (sản phẩm có thể đã bị gỡ hoặc đổi ảnh trong lúc phiên đang pause).
+   */
+  private async reResolveCombo(session: LiveSessionWithGarments, policy: LiveTryOnPolicy) {
+    const persisted = sessionItems(session);
+    const requested: LiveSessionItemDto[] = persisted.length
+      ? [...persisted]
+          .sort((a, b) => a.position - b.position)
+          .map((item) => ({ productId: item.productId, color: item.colorName ?? undefined }))
+      : [{ productId: session.product.id, color: session.colorName ?? undefined }];
+    return this.resolveLiveCombo(requested, policy);
+  }
+
+  private buildSessionItemsData(combo: LiveComboReference) {
+    return combo.items.map((item, index) => ({
+      productId: item.product.id,
+      layerRole: resolveLayerRole(item.product),
+      colorName: item.color,
+      imageUrl: item.imageUrl,
+      isPrimary: index === combo.primaryIndex,
+      position: index,
+    }));
   }
 
   private garmentFromSession(product: LiveProduct, colorName: string | null, providerMetadata?: Prisma.JsonValue | null): LiveGarmentReference {
@@ -636,22 +787,50 @@ export class LiveTryOnService {
     };
   }
 
-  private mapGarment(reference: LiveGarmentReference) {
+  /**
+   * Shape trả về cho client: giữ nguyên các field cũ (ứng với món primary) và
+   * thêm `items` để FE hiển thị cả combo.
+   */
+  private mapGarment(combo: LiveComboReference) {
+    const primary = combo.items[combo.primaryIndex];
+    const isCombo = combo.items.length > 1;
+    const prompt = isCombo
+      ? buildLiveComboPrompt(
+          combo.items.map((item) => ({
+            layerRole: resolveLayerRole(item.product),
+            name: item.product.name,
+            color: item.color,
+            material: item.product.material,
+          })),
+        )
+      : buildPrompt(primary.product, primary.color);
+
     return {
-      productId: reference.product.id,
-      imageUrl: reference.imageUrl,
-      prompt: buildPrompt(reference.product, reference.color),
-      category: reference.product.category,
-      color: reference.color,
+      productId: primary.product.id,
+      imageUrl: primary.imageUrl,
+      prompt,
+      category: primary.product.category,
+      layerRole: resolveLayerRole(primary.product),
+      color: primary.color,
+      items: combo.items.map((item, index) => ({
+        productId: item.product.id,
+        name: item.product.name,
+        imageUrl: item.imageUrl,
+        layerRole: resolveLayerRole(item.product),
+        category: item.product.category,
+        color: item.color,
+        isPrimary: index === combo.primaryIndex,
+      })),
     };
   }
 
-  private buildProviderMetadata(raw: unknown, garment: LiveGarmentReference): Prisma.InputJsonValue {
+  private buildProviderMetadata(raw: unknown, combo: LiveComboReference): Prisma.InputJsonValue {
+    const primary = combo.items[combo.primaryIndex];
     return {
       decart: raw ?? null,
       garment: {
-        imageUrl: garment.imageUrl,
-        color: garment.color,
+        imageUrl: primary.imageUrl,
+        color: primary.color,
       },
     } as Prisma.InputJsonValue;
   }
@@ -713,20 +892,54 @@ export class LiveTryOnService {
   }
 }
 
+// Decart chỉ nhận prompt text, nên lớp mặc phải nói rõ bằng lời; thiếu nó thì
+// provider không biết blazer phải khoác ngoài hay áo sơ mi mặc bên trong.
+const LAYER_PROMPT_HINTS: Record<LayerRole, string> = {
+  [LayerRole.OUTER]: 'Wear it as an outer layer, open over the existing top.',
+  [LayerRole.INNER]: 'Wear it as the top layer on the torso.',
+  [LayerRole.BOTTOM]: 'Wear it on the lower body, keeping the existing top.',
+  [LayerRole.FULL_BODY]: 'Wear it as a single full-body garment.',
+};
+
 function buildPrompt(product: Product, selectedColor?: string | null) {
   // Leave room below the provider's reported prompt limit.
   const maxPromptLength = 700;
   const instruction = 'Try on the reference garment. Match its color, pattern, fabric and fit.';
+  const layerHint = LAYER_PROMPT_HINTS[resolveLayerRole(product)];
   const details = [selectedColor ?? product.color, product.material, product.name, product.description]
     .filter(Boolean)
     .join(' ')
     .replace(/\s+/g, ' ')
     .trim();
-  const availableLength = maxPromptLength - instruction.length - 1;
+  const availableLength = maxPromptLength - instruction.length - layerHint.length - 2;
   const shortenedDetails = details.length > availableLength
     ? `${details.slice(0, availableLength - 3).trimEnd()}...`
     : details;
-  return [instruction, shortenedDetails].filter(Boolean).join(' ');
+  return [instruction, layerHint, shortenedDetails].filter(Boolean).join(' ');
+}
+
+/**
+ * Chuẩn hoá input về danh sách món. Client cũ gửi `productId`/`color` phẳng,
+ * client mới gửi `items`. Gửi `items` thì bỏ qua field phẳng.
+ */
+function normalizeRequestedItems(dto: CreateLiveSessionDto): LiveSessionItemDto[] {
+  if (dto.items?.length) return dto.items;
+  if (dto.productId) return [{ productId: dto.productId, color: dto.color }];
+  throw new BadRequestException({
+    code: 'LIVE_ITEMS_REQUIRED',
+    message: 'Provide either productId or a non-empty items array',
+  });
+}
+
+type PersistedSessionItem = NonNullable<LiveSessionWithGarments['items']>[number];
+
+/**
+ * Chỉ nhận item đã load đủ product. Phiên tạo trước migration không có items,
+ * và một số lượt update không include quan hệ này.
+ */
+function sessionItems(session: LiveSessionWithGarments): PersistedSessionItem[] {
+  if (!Array.isArray(session.items)) return [];
+  return session.items.filter((item) => item?.product?.id);
 }
 
 function normalizeColorName(color?: string | null) {

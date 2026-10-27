@@ -28,7 +28,7 @@ const productOrder = {
     {
       productId: 'product-1',
       productNameSnapshot: 'Suit Navy',
-      brandSnapshot: 'StAle.',
+      brandSnapshot: 'StAie.',
       productCategorySnapshot: 'Suit',
       comboType: 'combo',
       color: 'Navy',
@@ -72,7 +72,7 @@ describe('buildPurchasePayload', () => {
           {
             item_id: 'product-1',
             item_name: 'Suit Navy',
-            item_brand: 'StAle.',
+            item_brand: 'StAie.',
             item_category: 'Suit',
             item_variant: 'combo / Navy',
             price: 1290000,

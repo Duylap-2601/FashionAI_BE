@@ -1,5 +1,5 @@
 import { ApiProperty } from '@nestjs/swagger';
-import { IsIn, IsOptional } from 'class-validator';
+import { IsBoolean, IsIn, IsOptional } from 'class-validator';
 import { ANALYTICS_RANGES, AnalyticsRange } from '../constants/analytics.constants';
 
 export class QueryAnalyticsReportDto {
@@ -12,4 +12,13 @@ export class QueryAnalyticsReportDto {
   @IsIn(ANALYTICS_RANGES)
   @IsOptional()
   range?: AnalyticsRange;
+
+  @ApiProperty({
+    description: 'Bỏ qua cache 15 phút để lấy số liệu mới từ GA4 (nút làm mới của admin).',
+    required: false,
+    type: Boolean,
+  })
+  @IsBoolean()
+  @IsOptional()
+  refresh?: boolean;
 }

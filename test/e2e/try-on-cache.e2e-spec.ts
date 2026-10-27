@@ -156,7 +156,7 @@ describe('Try-On cache scoping (e2e)', () => {
       .expect(200);
 
     const createArg = prisma.tryOnResult.create.mock.calls[0][0];
-    expect(createArg.data.cacheKey).toMatch(/^user-a:[a-f0-9]{64}:[a-f0-9]{64}:UPPER$/);
+    expect(createArg.data.cacheKey).toMatch(/^user-a:[a-f0-9]{64}:[a-f0-9]{64}:INNER$/);
     expect(createArg.data.expiresAt).toBeInstanceOf(Date);
     expect(createArg.data.expiresAt.getTime()).toBeGreaterThan(Date.now());
   });
@@ -215,6 +215,96 @@ describe('Try-On cache scoping (e2e)', () => {
       GarmentCategory.UPPER,
       GarmentCategory.LOWER,
     ]);
+  });
+
+  it('combo 3 lớp INNER + BOTTOM + OUTER được phép và gửi ảnh đúng thứ tự mặc', async () => {
+    await bootstrap('user-a');
+
+    prisma.tryOnResult.findFirst.mockResolvedValue(null);
+    prisma.tryOnResult.create.mockResolvedValue({
+      id: 'combo-3',
+      createdAt: new Date(),
+    });
+
+    const res = await request(app.getHttpServer())
+      .post('/api/try-on')
+      .attach('humanImage', PNG_1X1, { filename: 'h.png', contentType: 'image/png' })
+      .attach('garments[0][image]', PNG_1X1, { filename: 'inner.png', contentType: 'image/png' })
+      .field('garments[0][category]', GarmentCategory.UPPER)
+      .attach('garments[1][image]', PNG_1X1, { filename: 'bottom.png', contentType: 'image/png' })
+      .field('garments[1][category]', GarmentCategory.LOWER)
+      .attach('garments[2][image]', PNG_1X1, { filename: 'outer.png', contentType: 'image/png' })
+      .field('garments[2][category]', GarmentCategory.UPPER)
+      .field('garments[2][layerRole]', 'OUTER')
+      .expect(200);
+
+    expect(res.body.data.id).toBe('combo-3');
+    expect(redis.incrBy).toHaveBeenCalledWith(
+      expect.stringContaining('quota:try_on:user-a:'),
+      3,
+      expect.any(Number),
+    );
+
+    const createArg = prisma.tryOnResult.create.mock.calls[0][0];
+    expect(createArg.data.garments.map((g: any) => g.layerRole)).toEqual([
+      'INNER',
+      'BOTTOM',
+      'OUTER',
+    ]);
+  });
+
+  it('chặn combo 2 áo khoác (OUTER + OUTER)', async () => {
+    await bootstrap('user-a');
+
+    await request(app.getHttpServer())
+      .post('/api/try-on')
+      .attach('humanImage', PNG_1X1, { filename: 'h.png', contentType: 'image/png' })
+      .attach('garments[0][image]', PNG_1X1, { filename: 'outer-1.png', contentType: 'image/png' })
+      .field('garments[0][layerRole]', 'OUTER')
+      .attach('garments[1][image]', PNG_1X1, { filename: 'outer-2.png', contentType: 'image/png' })
+      .field('garments[1][layerRole]', 'OUTER')
+      .expect(400);
+
+    expect(prisma.tryOnResult.create).not.toHaveBeenCalled();
+  });
+
+  it('productId dùng layerRole từ DB, bỏ qua category client gửi sai', async () => {
+    await bootstrap('user-a');
+
+    prisma.product.findUnique.mockResolvedValue({
+      id: 'product-pants',
+      name: 'Quần Tây',
+      category: GarmentCategory.LOWER,
+      garmentType: 'PANTS',
+      layerRole: null,
+      price: '500000',
+      garmentUrl: 'https://cdn.test/pants.png',
+      brand: null,
+      material: null,
+      colors: null,
+      status: 'ACTIVE',
+      images: [],
+    });
+    prisma.tryOnResult.findFirst.mockResolvedValue(null);
+    prisma.tryOnResult.create.mockResolvedValue({
+      id: 'product-1',
+      createdAt: new Date(),
+    });
+
+    const res = await request(app.getHttpServer())
+      .post('/api/try-on')
+      .attach('humanImage', PNG_1X1, { filename: 'h.png', contentType: 'image/png' })
+      .field('garments[0][productId]', 'product-pants')
+      .field('garments[0][category]', GarmentCategory.UPPER)
+      .expect(200);
+
+    expect(res.body.data.id).toBe('product-1');
+    const createArg = prisma.tryOnResult.create.mock.calls[0][0];
+    expect(createArg.data.garments[0]).toMatchObject({
+      category: GarmentCategory.LOWER,
+      layerRole: 'BOTTOM',
+      productId: 'product-pants',
+    });
   });
 
   it('DELETE /try-on/history/all xóa toàn bộ lịch sử của user', async () => {

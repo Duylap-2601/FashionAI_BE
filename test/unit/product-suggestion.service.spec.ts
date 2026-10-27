@@ -33,9 +33,9 @@ describe('ProductSuggestionService', () => {
     expect(prisma.product.findMany).toHaveBeenCalledTimes(1);
   });
 
-  it('formatCatalogForPrompt ghi mã, tên, loại, màu, chất liệu và giá', async () => {
+  it('formatCatalogForPrompt ghi mã, tên, loại, lớp, màu, chất liệu và giá', async () => {
     const text = service.formatCatalogForPrompt(await service.getCatalog());
-    expect(text.split('\n')[0]).toBe('P1 | Áo Sơ Mi Basic | Áo sơ mi/áo kiểu | màu: Trắng | chất liệu: kate | 550.000đ');
+    expect(text.split('\n')[0]).toBe('P1 | Áo Sơ Mi Basic | Áo sơ mi/áo kiểu | lớp: Mặc trong | màu: Trắng | chất liệu: kate | 550.000đ');
   });
 
   it('resolveOutfits bỏ mã bịa, bỏ trùng, chuẩn hóa mã và loại bộ chỉ có một món không phải đầm', async () => {
@@ -88,9 +88,9 @@ describe('ProductSuggestionService', () => {
 
   it('buildOutfits sắp xếp theo vai trò, bỏ món đã xóa và không tính món ngừng bán vào tổng giá', () => {
     const products = new Map<string, any>([
-      ['shirt-1', { id: 'shirt-1', name: 'Áo', price: 550000, image: null, color: 'Trắng', garmentType: 'SHIRT', category: 'UPPER', available: true }],
-      ['pants-1', { id: 'pants-1', name: 'Quần', price: 550000, image: null, color: null, garmentType: 'PANTS', category: 'LOWER', available: false }],
-      ['blazer-1', { id: 'blazer-1', name: 'Blazer', price: 750000, image: null, color: null, garmentType: 'JACKET', category: 'UPPER', available: true }],
+      ['shirt-1', { id: 'shirt-1', name: 'Áo', price: 550000, image: null, color: 'Trắng', garmentType: 'SHIRT', category: 'UPPER', layerRole: 'INNER', available: true }],
+      ['pants-1', { id: 'pants-1', name: 'Quần', price: 550000, image: null, color: null, garmentType: 'PANTS', category: 'LOWER', layerRole: 'BOTTOM', available: false }],
+      ['blazer-1', { id: 'blazer-1', name: 'Blazer', price: 750000, image: null, color: null, garmentType: 'JACKET', category: 'UPPER', layerRole: 'OUTER', available: true }],
     ]);
 
     const [outfit] = service.buildOutfits(
@@ -138,6 +138,7 @@ describe('ProductSuggestionService', () => {
       color: 'Trắng',
       garmentType: 'SHIRT',
       category: 'UPPER',
+      layerRole: 'INNER',
       available: false,
     });
     expect(prisma.product.findMany).toHaveBeenCalledWith({

@@ -29,7 +29,7 @@ export function renderRenewalReminderMail(input: RenewalReminderData & { subscri
     subject,
     html: renderMailLayout({ subject, preheader, content }),
     text: textLines([
-      'StAle. FashionAI',
+      'StAie. FashionAI',
       `Gói ${tier.label} sắp hết hạn`,
       '',
       `Xin chào ${input.name},`,

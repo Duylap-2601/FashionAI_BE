@@ -1,8 +1,9 @@
 import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { GarmentCategory, GarmentType, ProductStatus } from '@prisma/client';
+import { GarmentCategory, GarmentType, LayerRole, ProductStatus } from '@prisma/client';
 import * as crypto from 'crypto';
 import { PrismaService } from '../../database/prisma.service';
+import { resolveLayerRole } from './utils/layer-role.util';
 
 export type OutfitRole = 'outer' | 'top' | 'dress' | 'bottom';
 
@@ -13,6 +14,7 @@ export interface StylingCatalogEntry {
   name: string;
   category: GarmentCategory;
   garmentType: GarmentType | null;
+  layerRole: LayerRole;
   colors: string[];
   material: string | null;
   price: number;
@@ -44,6 +46,7 @@ export interface SuggestedProduct {
   color: string | null;
   garmentType: GarmentType | null;
   category: GarmentCategory;
+  layerRole: LayerRole;
   available: boolean;
 }
 
@@ -92,6 +95,13 @@ const CATEGORY_LABELS: Record<GarmentCategory, string> = {
   FULL_BODY: 'Toàn thân',
 };
 
+const LAYER_ROLE_LABELS: Record<LayerRole, string> = {
+  OUTER: 'Khoác ngoài',
+  INNER: 'Mặc trong',
+  BOTTOM: 'Quần/Chân váy',
+  FULL_BODY: 'Toàn thân',
+};
+
 /**
  * Catalog cho AI Stylist/Chat: đưa danh sách sản phẩm đang bán vào prompt bằng mã ngắn,
  * rồi đổi mã AI trả về thành sản phẩm thật. Mã AI tự bịa (không có trong catalog) bị bỏ.
@@ -119,6 +129,7 @@ export class ProductSuggestionService {
         name: true,
         category: true,
         garmentType: true,
+        layerRole: true,
         color: true,
         colors: true,
         material: true,
@@ -134,6 +145,7 @@ export class ProductSuggestionService {
         name: product.name.trim(),
         category: product.category,
         garmentType: product.garmentType,
+        layerRole: resolveLayerRole(product),
         colors: colorNames.length ? colorNames : product.color?.trim() ? [product.color.trim()] : [],
         material: product.material?.trim() || null,
         price: Number(product.price),
@@ -161,6 +173,7 @@ export class ProductSuggestionService {
           entry.code,
           entry.name,
           entry.garmentType ? GARMENT_TYPE_LABELS[entry.garmentType] : CATEGORY_LABELS[entry.category],
+          `lớp: ${LAYER_ROLE_LABELS[entry.layerRole]}`,
           entry.colors.length ? `màu: ${entry.colors.join(', ')}` : null,
           entry.material ? `chất liệu: ${entry.material}` : null,
           `${entry.price.toLocaleString('vi-VN')}đ`,
@@ -272,6 +285,7 @@ export class ProductSuggestionService {
             color: toColorNames(product.colors)[0] ?? null,
             garmentType: product.garmentType,
             category: product.category,
+            layerRole: resolveLayerRole(product),
             available: product.status === ProductStatus.ACTIVE,
           },
         ];
@@ -286,7 +300,7 @@ export class ProductSuggestionService {
         const items = outfit.items
           .map((item) => {
             const product = products.get(item.productId);
-            return product ? { role: toRole(product), note: item.note, product } : null;
+            return product ? { role: toOutfitRole(product), note: item.note, product } : null;
           })
           .filter((item): item is OutfitSuggestionItem => item !== null)
           .sort((a, b) => ROLE_ORDER.indexOf(a.role) - ROLE_ORDER.indexOf(b.role));
@@ -321,23 +335,18 @@ export function collectProductIds(outfits: StoredOutfit[]): string[] {
   return outfits.flatMap((outfit) => outfit.items.map((item) => item.productId));
 }
 
-function toRole(product: Pick<SuggestedProduct, 'category' | 'garmentType'>): OutfitRole {
-  if (product.garmentType === GarmentType.JACKET) return 'outer';
-  if (
-    product.garmentType === GarmentType.DRESS ||
-    product.garmentType === GarmentType.JUMPSUIT ||
-    product.category === GarmentCategory.FULL_BODY
-  ) {
-    return 'dress';
+function toOutfitRole(product: Pick<SuggestedProduct, 'layerRole'>): OutfitRole {
+  switch (product.layerRole) {
+    case LayerRole.OUTER:
+      return 'outer';
+    case LayerRole.FULL_BODY:
+      return 'dress';
+    case LayerRole.BOTTOM:
+      return 'bottom';
+    case LayerRole.INNER:
+    default:
+      return 'top';
   }
-  if (
-    product.garmentType === GarmentType.PANTS ||
-    product.garmentType === GarmentType.SKIRT ||
-    product.category === GarmentCategory.LOWER
-  ) {
-    return 'bottom';
-  }
-  return 'top';
 }
 
 function toColorNames(colors: unknown): string[] {

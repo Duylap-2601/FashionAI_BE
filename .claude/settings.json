@@ -1,10 +1,19 @@
 {
   "permissions": {
     "allow": [
-      "PowerShell(Move-Item -Path \"d:\\\\EXE_Project\\\\fashionai-backend\\\\implementation_plan.md\" -Destination \"d:\\\\EXE_Project\\\\fashionai-backend\\\\docs\\\\\" -Force)",
-      "PowerShell(Move-Item -Path \"d:\\\\EXE_Project\\\\fashionai-backend\\\\test-admin-user.js\" -Destination \"d:\\\\EXE_Project\\\\fashionai-backend\\\\docs\\\\\" -Force)",
-      "PowerShell(Move-Item -Path \"d:\\\\EXE_Project\\\\fashionai-backend\\\\test-admin-self-modification.js\" -Destination \"d:\\\\EXE_Project\\\\fashionai-backend\\\\docs\\\\\" -Force)",
-      "PowerShell(Get-ChildItem -Path \"D:\\\\EXE_Project\\\\fashionai-backend\" -MaxDepth 1 -Name | Where-Object { $_ -match \"^test-|^valiant-|^implementation_plan\" })"
+      "Bash(node -e ' *)",
+      "Bash(sed 's/\\\\\\(KEY=\\\\\\).*/\\\\1***/')",
+      "WebFetch(domain:docs.fashn.ai)",
+      "WebSearch",
+      "WebFetch(domain:fashn.ai)",
+      "WebFetch(domain:help.fashn.ai)",
+      "WebFetch(domain:docs.platform.decart.ai)",
+      "Bash(node -e \"const p=require\\('./package.json'\\);console.log\\(Object.keys\\(p.dependencies\\).join\\('\\\\n'\\)\\)\")",
+      "WebFetch(domain:cloudinary.com)",
+      "Bash(npx jest *)",
+      "Bash(npx eslint *)",
+      "Bash(npx prisma *)",
+      "Bash(python -)"
     ]
   }
 }

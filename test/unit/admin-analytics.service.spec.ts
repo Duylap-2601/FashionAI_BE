@@ -24,37 +24,41 @@ function gaDate(daysAgo: number) {
 
 function createClient() {
   const today = gaDate(0);
+  // Mỗi báo cáo gọi 2 batch (traffic rồi audience); trả lặp lại để test được nhiều lần tải.
+  const responses = [
+    [
+      {
+        reports: [
+          report([{ dims: ['current'], metrics: [10, 5, 12, 0.5, 60, 40, 1] }]),
+          report([{ dims: [today.ga], metrics: [9, 11] }]),
+          report([
+            { dims: ['purchase'], metrics: [1, 1] },
+            { dims: ['view_item'], metrics: [8, 20] },
+          ]),
+          report([]),
+          report([]),
+        ],
+      },
+    ],
+    [
+      {
+        reports: [
+          report([{ dims: ['Suit Navy'], metrics: [20, 3, 1] }]),
+          report([{ dims: ['mobile'], metrics: [7] }]),
+          report([{ dims: ['Ho Chi Minh City'], metrics: [6] }]),
+          report([{ dims: ['try_on_generate'], metrics: [15, 4] }]),
+          report([
+            { dims: ['tiktok'], metrics: [4] },
+            { dims: ['facebook'], metrics: [3] },
+          ]),
+        ],
+      },
+    ],
+  ];
+  let call = 0;
+
   return {
-    batchRunReports: jest
-      .fn()
-      .mockResolvedValueOnce([
-        {
-          reports: [
-            report([{ dims: ['current'], metrics: [10, 5, 12, 0.5, 60, 40, 1] }]),
-            report([{ dims: [today.ga], metrics: [9, 11] }]),
-            report([
-              { dims: ['purchase'], metrics: [1, 1] },
-              { dims: ['view_item'], metrics: [8, 20] },
-            ]),
-            report([]),
-            report([]),
-          ],
-        },
-      ])
-      .mockResolvedValueOnce([
-        {
-          reports: [
-            report([{ dims: ['Suit Navy'], metrics: [20, 3, 1] }]),
-            report([{ dims: ['mobile'], metrics: [7] }]),
-            report([{ dims: ['Ho Chi Minh City'], metrics: [6] }]),
-            report([{ dims: ['try_on_generate'], metrics: [15, 4] }]),
-            report([
-              { dims: ['tiktok'], metrics: [4] },
-              { dims: ['facebook'], metrics: [3] },
-            ]),
-          ],
-        },
-      ]),
+    batchRunReports: jest.fn().mockImplementation(async () => responses[call++ % responses.length]),
     runRealtimeReport: jest.fn(),
   };
 }
@@ -122,6 +126,17 @@ describe('AdminAnalyticsService', () => {
 
     expect(client.batchRunReports).toHaveBeenCalledTimes(2);
     expect(redis.set).toHaveBeenCalledWith('ga4:report:v2:properties/42:28d', expect.any(String), 900);
+  });
+
+  it('bỏ cache khi admin yêu cầu làm mới báo cáo', async () => {
+    const client = createClient();
+    const { service, redis } = createService(client);
+
+    await service.getReport('28d');
+    await service.getReport('28d', { refresh: true });
+
+    expect(redis.del).toHaveBeenCalledWith('ga4:report:v2:properties/42:28d');
+    expect(client.batchRunReports).toHaveBeenCalledTimes(4);
   });
 
   it('chỉ cache ngắn báo cáo chưa có lượt truy cập để số liệu mới hiện ngay khi GA4 xử lý xong', async () => {

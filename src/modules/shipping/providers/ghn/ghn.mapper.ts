@@ -1,7 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { ShipmentStatus } from '@prisma/client';
 import { ShippingProviderType } from '../../constants/shipping-provider.enum';
-import { CreateShipmentInput, CreateShipmentResult, PreviewShippingFeeInput, ShipmentTracking, ShippingFee } from '../../types/shipping.types';
+import { CreateShipmentInput, CreateShipmentResult, IShippingAddress, PreviewShippingFeeInput, ShipmentTracking, ShippingFee } from '../../types/shipping.types';
 
 export interface IGhnEnvelope<T> {
   code?: number;
@@ -85,7 +85,7 @@ export class GhnMapper {
       payment_type_id: 1,
       required_note: 'KHONGCHOXEMHANG',
       client_order_code: input.clientOrderCode,
-      is_new_from_address: true,
+      ...this.toNewSenderBlock(input.sender),
       is_new_to_address: true,
       to_name: input.receiver.name,
       to_phone: input.receiver.phone,
@@ -114,13 +114,8 @@ export class GhnMapper {
     return {
       payment_type_id: 1,
       required_note: 'KHONGCHOXEMHANG',
-      is_new_from_address: true,
+      ...this.toNewSenderBlock(input.sender),
       is_new_to_address: true,
-      from_name: input.sender.name ?? 'FashionAI workshop',
-      from_phone: input.sender.phone ?? '0900000000',
-      from_address: input.sender.address,
-      from_ward_name: input.sender.wardName,
-      from_province_name: input.sender.provinceName,
       to_name: input.receiver.name ?? 'FashionAI customer',
       to_phone: input.receiver.phone ?? '0900000000',
       to_address: input.receiver.address,
@@ -180,6 +175,16 @@ export class GhnMapper {
     if (!value) return undefined;
     const parsed = new Date(value);
     return Number.isNaN(parsed.getTime()) ? undefined : parsed;
+  }
+
+  private toNewSenderBlock(sender: IShippingAddress) {
+    const block: Record<string, unknown> = { is_new_from_address: true };
+    if (sender.name) block.from_name = sender.name;
+    if (sender.phone) block.from_phone = sender.phone;
+    if (sender.address) block.from_address = sender.address;
+    if (sender.wardName) block.from_ward_name = sender.wardName;
+    if (sender.provinceName) block.from_province_name = sender.provinceName;
+    return block;
   }
 
   private resolveServiceType(weight: number) {

@@ -36,6 +36,18 @@ export class LiveTryOnController {
     return buildApiResponse(req, 'LIVE_TRYON_GARMENT_SUCCESS', 'Lấy garment Live Try-On thành công', data);
   }
 
+  @Post('garments/preview')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Xem trước combo Live Try-On (ảnh tham chiếu + prompt), không tiêu quota' })
+  async previewCombo(
+    @Req() req: Request,
+    @CurrentUser() user: AuthenticatedUser,
+    @Body() dto: CreateLiveSessionDto,
+  ) {
+    const data = await this.liveTryOnService.previewCombo(user, dto);
+    return buildApiResponse(req, 'LIVE_TRYON_COMBO_PREVIEW_SUCCESS', 'Xem trước combo Live Try-On thành công', data);
+  }
+
   @Post('sessions')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'Tạo phiên Live Try-On Decart' })

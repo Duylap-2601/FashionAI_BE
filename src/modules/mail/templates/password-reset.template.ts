@@ -21,7 +21,7 @@ export function renderPasswordResetMail(input: PasswordResetMailData): RenderedM
     subject,
     html: renderMailLayout({ subject, preheader, content }),
     text: textLines([
-      'StAle. FashionAI',
+      'StAie. FashionAI',
       'Đặt lại mật khẩu',
       '',
       'Chúng tôi nhận được yêu cầu đặt lại mật khẩu cho tài khoản FashionAI của bạn.',

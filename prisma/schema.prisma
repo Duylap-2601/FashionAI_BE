@@ -44,6 +44,13 @@ enum GarmentType {
   JUMPSUIT
 }
 
+enum LayerRole {
+  OUTER
+  INNER
+  BOTTOM
+  FULL_BODY
+}
+
 enum ProductStatus {
   DRAFT
   ACTIVE
@@ -199,12 +206,10 @@ enum OrderIssueStatus {
 
 enum GhnLocationLevel {
   PROVINCE
-  DISTRICT
   WARD
 }
 
 enum GhnAddressModel {
-  LEGACY_3_LEVEL
   POST_MERGER_2_LEVEL
 }
 
@@ -266,9 +271,8 @@ model UserAddress {
   phone         String
   addressLine   String   @map("address_line")
   label         String?
-  ghnAddressModel GhnAddressModel @default(POST_MERGER_2_LEVEL) @map("ghn_address_model")
-  ghnProvinceV3Id String?         @map("ghn_province_v3_id")
-  ghnWardV3Id     String?         @map("ghn_ward_v3_id")
+  ghnProvinceV3Id String          @map("ghn_province_v3_id")
+  ghnWardV3Id     String          @map("ghn_ward_v3_id")
   provinceName  String   @map("province_name")
   wardName      String   @map("ward_name")
   isDefault     Boolean  @default(false) @map("is_default")
@@ -322,7 +326,7 @@ model AppSetting {
 
 model GhnLocation {
   id         String           @id @default(uuid()) @db.Uuid
-  addressModel GhnAddressModel @default(LEGACY_3_LEVEL) @map("address_model")
+  addressModel GhnAddressModel @default(POST_MERGER_2_LEVEL) @map("address_model")
   catalogGeneration BigInt    @default(1) @map("catalog_generation")
   level      GhnLocationLevel
   code       String
@@ -485,10 +489,11 @@ model Product {
   description   String?         @db.Text
   category      GarmentCategory @default(UPPER)
   garmentType   GarmentType?    @map("garment_type")
+  layerRole     LayerRole?      @map("layer_role")
   color         String?
   price         Decimal         @db.Decimal(10, 2)
   originalPrice Decimal?        @map("original_price") @db.Decimal(10, 2)
-  brand         String?         @default("StAle. SIGNATURE")
+  brand         String?         @default("StAie. SIGNATURE")
   garmentUrl    String          @map("garment_url")
   status        ProductStatus   @default(ACTIVE)
   colors        Json? // [{ name: string, hex: string }]
@@ -501,6 +506,7 @@ model Product {
   images            ProductImage[]
   tryOnResults      TryOnResult[]
   liveTryOnSessions LiveTryOnSession[]
+  liveTryOnItems    LiveTryOnSessionItem[]
   stylistResults    StylistResult[]
   orderItems        OrderItem[]
   rackItems         RackItem[]
@@ -654,6 +660,7 @@ model LiveTryOnSession {
   createdAt            DateTime                   @default(now()) @map("created_at")
   updatedAt            DateTime                   @updatedAt @map("updated_at")
   lease                LiveTryOnLease?
+  items                LiveTryOnSessionItem[]
 
   user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
   product Product @relation(fields: [productId], references: [id], onDelete: Restrict)
@@ -663,6 +670,29 @@ model LiveTryOnSession {
   @@index([reservationStatus, blockedUntil])
   @@index([credentialStatus, blockedUntil])
   @@map("live_try_on_sessions")
+}
+
+/// Các món của một phiên Live Try-On. Decart chỉ nhận 1 ảnh tham chiếu mỗi
+/// phiên nên `isPrimary` đánh dấu món cấp ảnh đó; các món còn lại được mô tả
+/// trong prompt. LiveTryOnSession.productId giữ nguyên = productId của món
+/// primary để tương thích client cũ.
+model LiveTryOnSessionItem {
+  id        String    @id @default(uuid()) @db.Uuid
+  sessionId String    @map("session_id") @db.Uuid
+  productId String    @map("product_id") @db.Uuid
+  layerRole LayerRole @map("layer_role")
+  colorName String?   @map("color_name")
+  imageUrl  String    @map("image_url")
+  isPrimary Boolean   @default(false) @map("is_primary")
+  position  Int       @default(0)
+  createdAt DateTime  @default(now()) @map("created_at")
+
+  session LiveTryOnSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  product Product          @relation(fields: [productId], references: [id], onDelete: Restrict)
+
+  @@unique([sessionId, productId])
+  @@index([sessionId, position])
+  @@map("live_try_on_session_items")
 }
 
 model LiveTryOnBudget {
