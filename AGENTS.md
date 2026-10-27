@@ -3,6 +3,12 @@
 This repo is a NestJS 10 backend for FashionAI. Follow the existing module-first
 structure and keep changes scoped to the feature that owns the behavior.
 
+> **Note on AI Assistance:** This project uses Claude AI to assist with development
+> (as documented in `.claude/`). When discussing your work in interviews, you should
+> be able to explain the architectural decisions, module ownership, and design patterns
+> you chose—not just what the code does. Use AI as a tool for implementation efficiency,
+> but ensure you can articulate the "why" behind the design.
+
 ## Stack And Commands
 
 - Runtime: NestJS, TypeScript, Prisma Client, PostgreSQL.
