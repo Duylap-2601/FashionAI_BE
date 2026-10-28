@@ -2,6 +2,7 @@ import { Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { NotificationType, Prisma } from '@prisma/client';
 import { PrismaService } from '../../database/prisma.service';
 import { RealtimeEmitter } from '../realtime/realtime.emitter';
+import { PushService } from './push.service';
 
 export interface CreateNotificationInput {
   userId: string;
@@ -18,6 +19,7 @@ export class NotificationService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly emitter: RealtimeEmitter,
+    private readonly pushService: PushService,
   ) {}
 
   /**
@@ -36,6 +38,10 @@ export class NotificationService {
     });
 
     this.emitter.toUser(input.userId, 'notification', notification);
+
+    // Push là best-effort cho app background/killed; không chặn flow chính.
+    void this.pushService.sendToUser(input.userId, notification).catch(() => {});
+
     return notification;
   }
 

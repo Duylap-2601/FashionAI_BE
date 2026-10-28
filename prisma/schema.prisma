@@ -245,6 +245,7 @@ model User {
   dailyUsages             DailyUsage[]
   chatSessions            ChatSession[]
   notifications           Notification[]
+  deviceTokens            DeviceToken[]
   subscriptions           Subscription[]
   rackItems               RackItem[]
   cartItems               CartItem[]
@@ -1187,6 +1188,20 @@ model Notification {
   @@index([userId, isRead])
   @@index([userId, createdAt])
   @@map("notifications")
+}
+
+model DeviceToken {
+  id        String   @id @default(uuid()) @db.Uuid
+  userId    String   @map("user_id") @db.Uuid
+  token     String   @unique
+  platform  String
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("device_tokens")
 }
 
 enum SubscriptionStatus {
