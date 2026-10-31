@@ -26,28 +26,28 @@ export class CreateCouponDto {
   @IsInt()
   @IsPositive()
   @IsOptional()
-  maxDiscountVnd?: number;
+  maxDiscountVnd?: number | null;
 
   @ApiProperty({ required: false, description: 'Giá trị đơn hàng tối thiểu để áp mã (VND)' })
   @Type(() => Number)
   @IsInt()
   @Min(0)
   @IsOptional()
-  minOrderVnd?: number;
+  minOrderVnd?: number | null;
 
   @ApiProperty({ required: false, description: 'Tổng số lượt dùng tối đa, bỏ trống = không giới hạn' })
   @Type(() => Number)
   @IsInt()
   @IsPositive()
   @IsOptional()
-  usageLimit?: number;
+  usageLimit?: number | null;
 
   @ApiProperty({ required: false, description: 'Số lượt dùng tối đa cho mỗi user, bỏ trống = không giới hạn' })
   @Type(() => Number)
   @IsInt()
   @IsPositive()
   @IsOptional()
-  usageLimitPerUser?: number;
+  usageLimitPerUser?: number | null;
 
   @ApiProperty({ required: false, default: true, description: 'Bật/tắt mã giảm giá' })
   @IsBoolean()
@@ -57,10 +57,10 @@ export class CreateCouponDto {
   @ApiProperty({ required: false, description: 'Thời điểm mã bắt đầu có hiệu lực (ISO date)' })
   @IsDateString()
   @IsOptional()
-  startsAt?: string;
+  startsAt?: string | null;
 
   @ApiProperty({ required: false, description: 'Thời điểm mã hết hiệu lực (ISO date)' })
   @IsDateString()
   @IsOptional()
-  expiresAt?: string;
+  expiresAt?: string | null;
 }

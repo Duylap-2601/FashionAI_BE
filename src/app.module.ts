@@ -26,6 +26,7 @@ import { RackModule } from './modules/rack/rack.module';
 import { CartModule } from './modules/cart/cart.module';
 import { CollectionsModule } from './modules/collections/collections.module';
 import { CouponsModule } from './modules/coupons/coupons.module';
+import { SaleCampaignsModule } from './modules/sale-campaigns/sale-campaigns.module';
 import { ShippingModule } from './modules/shipping/shipping.module';
 import { OutboxModule } from './modules/outbox/outbox.module';
 import { AnalyticsModule } from './modules/analytics/analytics.module';
@@ -104,6 +105,7 @@ import { parseRedisUrl } from './common/redis/redis-url.util';
     CartModule,
     CollectionsModule,
     CouponsModule,
+    SaleCampaignsModule,
     ShippingModule,
     OutboxModule,
     AnalyticsModule,

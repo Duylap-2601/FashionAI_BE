@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 import { StorageModule } from '../storage/storage.module';
 import { NotificationModule } from '../notification/notification.module';
+import { SaleCampaignsModule } from '../sale-campaigns/sale-campaigns.module';
 import { ProductsController } from './products.controller';
 import { ProductsService } from './products.service';
 import { ProductSuggestionService } from './product-suggestion.service';
@@ -8,7 +9,7 @@ import { ReviewsController } from './reviews.controller';
 import { ReviewsService } from './reviews.service';
 
 @Module({
-  imports: [StorageModule, NotificationModule],
+  imports: [StorageModule, NotificationModule, SaleCampaignsModule],
   controllers: [ProductsController, ReviewsController],
   providers: [ProductsService, ReviewsService, ProductSuggestionService],
   exports: [ProductsService, ReviewsService, ProductSuggestionService],

@@ -1,5 +1,5 @@
 import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
-import { Prisma } from '@prisma/client';
+import { Coupon, Prisma } from '@prisma/client';
 import { PrismaService } from '../../database/prisma.service';
 import { CreateCouponDto } from './dto/create-coupon.dto';
 import { UpdateCouponDto } from './dto/update-coupon.dto';
@@ -15,13 +15,13 @@ export class CouponsService {
       throw new ConflictException(`Mã giảm giá "${dto.code}" đã tồn tại`);
     }
 
-    return this.prisma.coupon.create({
+    const coupon = await this.prisma.coupon.create({
       data: {
         code: dto.code,
         discountType: dto.discountType,
         discountValue: new Prisma.Decimal(dto.discountValue),
-        maxDiscountVnd: dto.maxDiscountVnd !== undefined ? BigInt(dto.maxDiscountVnd) : undefined,
-        minOrderVnd: dto.minOrderVnd !== undefined ? BigInt(dto.minOrderVnd) : undefined,
+        maxDiscountVnd: dto.maxDiscountVnd != null ? BigInt(dto.maxDiscountVnd) : undefined,
+        minOrderVnd: dto.minOrderVnd != null ? BigInt(dto.minOrderVnd) : undefined,
         usageLimit: dto.usageLimit,
         usageLimitPerUser: dto.usageLimitPerUser,
         isActive: dto.isActive ?? true,
@@ -29,6 +29,7 @@ export class CouponsService {
         expiresAt: dto.expiresAt ? new Date(dto.expiresAt) : undefined,
       },
     });
+    return this.toPublicCoupon(coupon);
   }
 
   async findAll(query: QueryCouponDto) {
@@ -45,7 +46,7 @@ export class CouponsService {
     ]);
 
     return {
-      items,
+      items: items.map((coupon) => this.toPublicCoupon(coupon)),
       meta: {
         total,
         page,
@@ -60,7 +61,7 @@ export class CouponsService {
     if (!coupon) {
       throw new NotFoundException(`Không tìm thấy mã giảm giá có ID ${id}`);
     }
-    return coupon;
+    return this.toPublicCoupon(coupon);
   }
 
   async update(id: string, dto: UpdateCouponDto) {
@@ -73,27 +74,45 @@ export class CouponsService {
       }
     }
 
-    return this.prisma.coupon.update({
+    const updated = await this.prisma.coupon.update({
       where: { id },
       data: {
         code: dto.code,
         discountType: dto.discountType,
         discountValue: dto.discountValue !== undefined ? new Prisma.Decimal(dto.discountValue) : undefined,
-        maxDiscountVnd: dto.maxDiscountVnd !== undefined ? BigInt(dto.maxDiscountVnd) : undefined,
-        minOrderVnd: dto.minOrderVnd !== undefined ? BigInt(dto.minOrderVnd) : undefined,
+        maxDiscountVnd: dto.maxDiscountVnd === null
+          ? null
+          : dto.maxDiscountVnd !== undefined
+            ? BigInt(dto.maxDiscountVnd)
+            : undefined,
+        minOrderVnd: dto.minOrderVnd === null
+          ? null
+          : dto.minOrderVnd !== undefined
+            ? BigInt(dto.minOrderVnd)
+            : undefined,
         usageLimit: dto.usageLimit,
         usageLimitPerUser: dto.usageLimitPerUser,
         isActive: dto.isActive,
-        startsAt: dto.startsAt ? new Date(dto.startsAt) : undefined,
-        expiresAt: dto.expiresAt ? new Date(dto.expiresAt) : undefined,
+        startsAt: dto.startsAt === null
+          ? null
+          : dto.startsAt
+            ? new Date(dto.startsAt)
+            : undefined,
+        expiresAt: dto.expiresAt === null
+          ? null
+          : dto.expiresAt
+            ? new Date(dto.expiresAt)
+            : undefined,
       },
     });
+    return this.toPublicCoupon(updated);
   }
 
   async remove(id: string) {
     await this.findOne(id);
     try {
-      return await this.prisma.coupon.delete({ where: { id } });
+      const deleted = await this.prisma.coupon.delete({ where: { id } });
+      return this.toPublicCoupon(deleted);
     } catch (err) {
       const isFKViolation =
         (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2003') ||
@@ -106,5 +125,14 @@ export class CouponsService {
       }
       throw err;
     }
+  }
+
+  private toPublicCoupon(coupon: Coupon) {
+    return {
+      ...coupon,
+      discountValue: Number(coupon.discountValue),
+      maxDiscountVnd: coupon.maxDiscountVnd === null ? null : Number(coupon.maxDiscountVnd),
+      minOrderVnd: coupon.minOrderVnd === null ? null : Number(coupon.minOrderVnd),
+    };
   }
 }

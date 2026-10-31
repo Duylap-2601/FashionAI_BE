@@ -2,6 +2,9 @@
 
 Ngày: 2026-10-24. Trạng thái: kế hoạch, chưa triển khai.
 
+> Phase 2 (Promotions) đã được thay thế bởi `plans/sale-campaigns-plan.md` ở root repo.
+> Không triển khai Phase 2 theo tài liệu này nữa.
+
 Nguồn: `valiant-yawning-nygaard.md`. Kế hoạch này giữ nguyên mục tiêu 2 phase,
 bổ sung kết quả kiểm chứng code thực tế và các quyết định cần chốt trước khi code.
 

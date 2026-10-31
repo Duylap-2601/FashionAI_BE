@@ -27,25 +27,25 @@ export class UpdateCouponDto extends PartialType(CreateCouponDto) {
   @IsInt()
   @IsPositive()
   @IsOptional()
-  maxDiscountVnd?: number;
+  maxDiscountVnd?: number | null;
 
   @Type(() => Number)
   @IsInt()
   @Min(0)
   @IsOptional()
-  minOrderVnd?: number;
+  minOrderVnd?: number | null;
 
   @Type(() => Number)
   @IsInt()
   @IsPositive()
   @IsOptional()
-  usageLimit?: number;
+  usageLimit?: number | null;
 
   @Type(() => Number)
   @IsInt()
   @IsPositive()
   @IsOptional()
-  usageLimitPerUser?: number;
+  usageLimitPerUser?: number | null;
 
   @IsBoolean()
   @IsOptional()
@@ -53,9 +53,9 @@ export class UpdateCouponDto extends PartialType(CreateCouponDto) {
 
   @IsDateString()
   @IsOptional()
-  startsAt?: string;
+  startsAt?: string | null;
 
   @IsDateString()
   @IsOptional()
-  expiresAt?: string;
+  expiresAt?: string | null;
 }

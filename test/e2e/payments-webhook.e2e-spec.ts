@@ -10,6 +10,7 @@ import { MailQueueService } from '../../src/modules/mail/mail-queue.service';
 import { NotificationService } from '../../src/modules/notification/notification.service';
 import { OutboxService } from '../../src/modules/outbox/services/outbox.service';
 import { CartService } from '../../src/modules/cart/cart.service';
+import { SalePricingService } from '../../src/modules/sale-campaigns/sale-pricing.service';
 import { RealtimeEmitter } from '../../src/modules/realtime/realtime.emitter';
 import { JwtAuthGuard } from '../../src/modules/auth/guards/jwt-auth.guard';
 import { RateLimitGuard } from '../../src/common/guards/rate-limit.guard';
@@ -63,6 +64,7 @@ describe('SePay IPN (e2e)', () => {
           { provide: NotificationService, useValue: { create: jest.fn().mockResolvedValue({}) } },
           { provide: OutboxService, useValue: outboxService },
           CartService,
+          { provide: SalePricingService, useValue: { resolveSaleForProducts: jest.fn().mockResolvedValue(new Map()) } },
           { provide: RealtimeEmitter, useValue: realtimeEmitter },
         ],
       },
