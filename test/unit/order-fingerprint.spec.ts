@@ -2,7 +2,14 @@ import { createHash } from 'crypto';
 import { OrdersService } from '../../src/modules/orders/orders.service';
 
 describe('OrdersService fingerprint', () => {
-  const service = new OrdersService(null as never, null as never, null as never, null as never, null as never);
+  const service = new OrdersService(
+    null as never,
+    null as never,
+    null as never,
+    null as never,
+    null as never,
+    null as never,
+  );
   const fingerprint = (dto: unknown) => service['buildOrderFingerprint']('user-1', dto as never);
 
   const baseDto = {

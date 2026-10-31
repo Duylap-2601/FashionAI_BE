@@ -5,6 +5,7 @@ import { ComboType } from '../../common/constants/order.constants';
 import { resolveGarmentUrlForColor } from '../../common/utils/garment-image.util';
 import { resolveProductColor } from '../../common/utils/product-color.util';
 import { RealtimeEmitter } from '../realtime/realtime.emitter';
+import { SalePricingService } from '../sale-campaigns/sale-pricing.service';
 import { CART_MAX_LINES, CART_MAX_QUANTITY, CART_UPDATED_EVENT } from './constants/cart.constants';
 import { AddCartItemDto } from './dto/add-cart-item.dto';
 import { MergeCartDto } from './dto/merge-cart.dto';
@@ -35,6 +36,7 @@ export class CartService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly realtimeEmitter: RealtimeEmitter,
+    private readonly salePricingService: SalePricingService,
   ) {}
 
   async getCart(userId: string) {
@@ -43,7 +45,10 @@ export class CartService {
       orderBy: { createdAt: 'asc' },
       include: CART_ITEM_INCLUDE,
     });
-    return this.toCartResponse(items);
+    const saleMap = await this.salePricingService.resolveSaleForProducts(
+      items.map((item) => ({ id: item.productId, price: item.product.price })),
+    );
+    return this.toCartResponse(items, saleMap);
   }
 
   async addItem(userId: string, dto: AddCartItemDto) {
@@ -289,9 +294,13 @@ export class CartService {
   }
 
   // Giá trả về chỉ để hiển thị; quote/đặt hàng vẫn tự tính lại từ DB.
-  private toCartResponse(items: CartItemWithProduct[]) {
+  private toCartResponse(
+    items: CartItemWithProduct[],
+    saleMap: Map<string, { percent: number; salePrice: number }>,
+  ) {
     const lines = items.map((item) => {
       const { product } = item;
+      const sale = saleMap.get(product.id);
       return {
         id: item.id,
         productId: item.productId,
@@ -303,7 +312,7 @@ export class CartService {
           id: product.id,
           name: product.name,
           price: Number(product.price),
-          originalPrice: product.originalPrice === null ? null : Number(product.originalPrice),
+          sale: sale ? { percent: sale.percent, salePrice: sale.salePrice } : null,
           status: product.status,
           category: product.category,
           garmentType: product.garmentType,

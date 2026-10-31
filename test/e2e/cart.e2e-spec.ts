@@ -4,6 +4,7 @@ import { CartController } from '../../src/modules/cart/cart.controller';
 import { CartService } from '../../src/modules/cart/cart.service';
 import { JwtAuthGuard } from '../../src/modules/auth/guards/jwt-auth.guard';
 import { RealtimeEmitter } from '../../src/modules/realtime/realtime.emitter';
+import { SalePricingService } from '../../src/modules/sale-campaigns/sale-pricing.service';
 import { createPrismaMock, createTestApp, PrismaMock } from './helpers/test-app';
 
 const PRODUCT_ID = '11111111-1111-4111-8111-111111111111';
@@ -34,7 +35,10 @@ describe('Cart (e2e)', () => {
   let prisma: PrismaMock;
   let realtimeEmitter: { toUser: jest.Mock };
 
-  async function bootstrap(userId = 'user-a') {
+  async function bootstrap(
+    userId = 'user-a',
+    saleMap: Map<string, { campaignId: string; campaignName: string; percent: number; salePrice: number }> = new Map(),
+  ) {
     prisma = createPrismaMock();
     realtimeEmitter = { toUser: jest.fn() };
 
@@ -42,7 +46,14 @@ describe('Cart (e2e)', () => {
       prisma,
       metadata: {
         controllers: [CartController],
-        providers: [CartService, { provide: RealtimeEmitter, useValue: realtimeEmitter }],
+        providers: [
+          CartService,
+          { provide: RealtimeEmitter, useValue: realtimeEmitter },
+          {
+            provide: SalePricingService,
+            useValue: { resolveSaleForProducts: jest.fn().mockResolvedValue(saleMap) },
+          },
+        ],
       },
       configure: (builder) =>
         builder.overrideGuard(JwtAuthGuard).useValue(authGuardFor(userId)),
@@ -71,7 +82,6 @@ describe('Cart (e2e)', () => {
           product: {
             ...activeProduct,
             price: 750000,
-            originalPrice: null,
             category: 'UPPER',
             garmentType: null,
             garmentUrl: 'https://img/default.png',
@@ -93,7 +103,6 @@ describe('Cart (e2e)', () => {
             status: 'ARCHIVED',
             colors: null,
             price: 550000,
-            originalPrice: 690000,
             category: 'LOWER',
             garmentType: null,
             garmentUrl: 'https://img/pants.png',
@@ -119,7 +128,40 @@ describe('Cart (e2e)', () => {
         color: null,
         comboType: null,
         available: false,
-        product: { originalPrice: 690000, imageUrl: 'https://img/pants.png' },
+        product: { sale: null, imageUrl: 'https://img/pants.png' },
+      });
+    });
+
+    it('trả giá niêm yết và sale cho dòng đang giảm giá', async () => {
+      await bootstrap('user-a', new Map([
+        [PRODUCT_ID, { campaignId: 'campaign-a', campaignName: 'Sale Thu', percent: 30, salePrice: 700000 }],
+      ]));
+      prisma.cartItem.findMany.mockResolvedValue([
+        {
+          id: CART_ITEM_ID,
+          userId: 'user-a',
+          productId: PRODUCT_ID,
+          color: 'Black',
+          comboType: null,
+          quantity: 1,
+          createdAt: new Date(),
+          updatedAt: new Date(),
+          product: {
+            ...activeProduct,
+            price: 1000000,
+            category: 'UPPER',
+            garmentType: null,
+            garmentUrl: 'https://img/default.png',
+            images: [],
+          },
+        },
+      ]);
+
+      const res = await request(app.getHttpServer()).get('/api/cart').expect(200);
+
+      expect(res.body.data.items[0].product).toMatchObject({
+        price: 1000000,
+        sale: { percent: 30, salePrice: 700000 },
       });
     });
   });

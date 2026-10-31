@@ -1,21 +1,22 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../../database/prisma.service';
 import { StorageService } from '../storage/storage.service';
+import { SalePricingService } from '../sale-campaigns/sale-pricing.service';
 import { CreateProductDto } from './dto/create-product.dto';
 import { ProductColorDto } from './dto/product-color.dto';
 import { QueryProductDto } from './dto/query-product.dto';
 import { Prisma, ProductStatus } from '@prisma/client';
+import { filterAndSortByEffectivePrice } from './utils/effective-price-sort.util';
 
 @Injectable()
 export class ProductsService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly storageService: StorageService,
+    private readonly salePricingService: SalePricingService,
   ) {}
 
   async create(dto: CreateProductDto, images?: Express.Multer.File[]) {
-    this.assertOriginalPrice(dto.price, dto.originalPrice);
-
     let garmentUrl = dto.garmentUrl;
     const uploadedImages: string[] = [];
 
@@ -45,7 +46,6 @@ export class ProductsService {
       layerRole: dto.layerRole,
       color: dto.color,
       price: dto.price,
-      originalPrice: dto.originalPrice,
       brand: dto.brand ?? 'StAie. SIGNATURE',
       garmentUrl,
       status: dto.status ?? ProductStatus.ACTIVE,
@@ -96,18 +96,6 @@ export class ProductsService {
     });
   }
 
-  private assertOriginalPrice(price: number, originalPrice?: number | null) {
-    if (
-      originalPrice !== undefined &&
-      originalPrice !== null &&
-      originalPrice < price
-    ) {
-      throw new BadRequestException(
-        'Giá gốc (originalPrice) phải lớn hơn hoặc bằng giá bán (price)',
-      );
-    }
-  }
-
   async findAll(query: QueryProductDto) {
     const {
       search,
@@ -133,12 +121,6 @@ export class ProductsService {
       .map((item) => item.trim())
       .filter(Boolean);
 
-    const orderBy: Prisma.ProductOrderByWithRelationInput =
-      sort === 'price_asc'
-        ? { price: 'asc' }
-        : sort === 'price_desc'
-          ? { price: 'desc' }
-          : { createdAt: 'desc' };
     const andFilters: Prisma.ProductWhereInput[] = [];
 
     if (colors && colors.length > 0) {
@@ -169,38 +151,72 @@ export class ProductsService {
       );
     }
 
-    const where: Prisma.ProductWhereInput = {
+    const baseWhere: Prisma.ProductWhereInput = {
       ...(status ? { status } : {}),
       ...(category ? { category } : {}),
       ...(garmentType ? { garmentType } : {}),
       ...(layerRole ? { layerRole } : {}),
       ...(material ? { material: { contains: material, mode: Prisma.QueryMode.insensitive } } : {}),
-      ...(minPrice !== undefined || maxPrice !== undefined
-        ? {
-            price: {
-              ...(minPrice !== undefined ? { gte: minPrice } : {}),
-              ...(maxPrice !== undefined ? { lte: maxPrice } : {}),
-            },
-          }
-        : {}),
       ...(andFilters.length > 0 ? { AND: andFilters } : {}),
     };
 
     const skip = (page - 1) * limit;
+    const needsEffectivePrice = sort === 'price_asc' || sort === 'price_desc' || minPrice !== undefined || maxPrice !== undefined;
+    const at = new Date();
 
-    const [items, total] = await Promise.all([
-      this.prisma.product.findMany({
-        where,
-        skip,
-        take: limit,
-        orderBy,
-        include: { images: true },
-      }),
-      this.prisma.product.count({ where }),
-    ]);
+    if (!needsEffectivePrice) {
+      const [items, total] = await Promise.all([
+        this.prisma.product.findMany({
+          where: baseWhere,
+          skip,
+          take: limit,
+          orderBy: { createdAt: 'desc' },
+          include: { images: true },
+        }),
+        this.prisma.product.count({ where: baseWhere }),
+      ]);
+
+      const saleMap = await this.salePricingService.resolveSaleForProducts(items, at);
+      return {
+        items: this.attachSales(items, saleMap),
+        meta: {
+          total,
+          page,
+          limit,
+          totalPages: Math.ceil(total / limit),
+        },
+      };
+    }
+
+    const pricedProducts = await this.prisma.product.findMany({
+      where: baseWhere,
+      select: { id: true, price: true },
+    });
+    const saleMap = await this.salePricingService.resolveSaleForProducts(pricedProducts, at);
+    const ranked = filterAndSortByEffectivePrice(
+      pricedProducts.map((product) => ({
+        id: product.id,
+        price: Number(product.price),
+        effectivePrice: saleMap.get(product.id)?.salePrice ?? Number(product.price),
+      })),
+      { minPrice, maxPrice, sort },
+    );
+
+    const total = ranked.length;
+    const pageIds = ranked.slice(skip, skip + limit).map((item) => item.id);
+    const pageProducts = pageIds.length
+      ? await this.prisma.product.findMany({
+          where: { id: { in: pageIds } },
+          include: { images: true },
+        })
+      : [];
+    const productMap = new Map(pageProducts.map((product) => [product.id, product]));
+    const orderedItems = pageIds
+      .map((id) => productMap.get(id))
+      .filter((product): product is (typeof pageProducts)[number] => Boolean(product));
 
     return {
-      items,
+      items: this.attachSales(orderedItems, saleMap),
       meta: {
         total,
         page,
@@ -220,20 +236,25 @@ export class ProductsService {
       throw new NotFoundException(`Không tìm thấy sản phẩm có ID: ${id}`);
     }
 
-    return product;
+    const saleMap = await this.salePricingService.resolveSaleForProducts([product]);
+    return this.attachSales([product], saleMap)[0];
+  }
+
+  private attachSales<T extends { id: string }>(
+    products: T[],
+    saleMap: Map<string, { percent: number; salePrice: number }>,
+  ) {
+    return products.map((product) => {
+      const sale = saleMap.get(product.id);
+      return {
+        ...product,
+        sale: sale ? { percent: sale.percent, salePrice: sale.salePrice } : null,
+      };
+    });
   }
 
   async update(id: string, dto: Partial<CreateProductDto>) {
-    const existing = await this.findOne(id);
-
-    const nextPrice = dto.price ?? Number(existing.price);
-    const nextOriginalPrice =
-      dto.originalPrice !== undefined
-        ? dto.originalPrice
-        : existing.originalPrice === null || existing.originalPrice === undefined
-          ? null
-          : Number(existing.originalPrice);
-    this.assertOriginalPrice(nextPrice, nextOriginalPrice);
+    await this.findOne(id);
 
     // Loại bỏ fields từ FilesInterceptor trước khi pass vào Prisma
     const { images: _images, image: _image, isMainIndex: _isMainIndex, imageColors: _imageColors, ...updateData } = dto;

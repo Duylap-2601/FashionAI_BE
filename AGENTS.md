@@ -82,6 +82,14 @@ Existing ownership boundaries:
   `Product.layerRole` (OUTER/INNER/BOTTOM/FULL_BODY) is the source of truth for
   garment layering; nullable for legacy rows, with `resolveLayerRole` fallback in
   `products/utils/layer-role.util.ts` used by try-on and AI suggestions.
+- `sale-campaigns`: admin-managed percentage campaigns (`SaleCampaign` +
+  `SaleCampaignItem`) scoped to a product list with optional `startsAt`/`endsAt`.
+  The effective sale price is derived at read/checkout time by
+  `SalePricingService`; it is never stored on `Product`. `products`, `cart`, and
+  `orders` resolve sales through the exported `SalePricingService`, and the
+  order snapshots the list price only on discounted lines as
+  `OrderItem.listUnitPriceVnd`. Coupons apply to the post-sale subtotal, and
+  product price sort/filter uses the effective price.
 - `cart`: the logged-in user's cart, synced across devices (`CartItem`, one line
   per product/color/comboType). Guest carts stay on the client and are merged
   through `POST /cart/merge` (duplicate lines keep the larger quantity, so a

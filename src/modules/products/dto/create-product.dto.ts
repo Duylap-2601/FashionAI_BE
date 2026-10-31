@@ -76,12 +76,6 @@ export class CreateProductDto {
   @Min(0)
   price!: number;
 
-  @ApiProperty({ description: 'Giá gốc (trước giảm giá)', required: false, example: 450000 })
-  @IsNumber()
-  @Min(0)
-  @IsOptional()
-  originalPrice?: number;
-
   @ApiProperty({ description: 'Thương hiệu', required: false, example: 'StAie. SIGNATURE' })
   @IsString()
   @IsOptional()

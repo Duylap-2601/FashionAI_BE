@@ -493,7 +493,6 @@ model Product {
   layerRole     LayerRole?      @map("layer_role")
   color         String?
   price         Decimal         @db.Decimal(10, 2)
-  originalPrice Decimal?        @map("original_price") @db.Decimal(10, 2)
   brand         String?         @default("StAie. SIGNATURE")
   garmentUrl    String          @map("garment_url")
   status        ProductStatus   @default(ACTIVE)
@@ -514,6 +513,7 @@ model Product {
   cartItems         CartItem[]
   reviews           Review[]
   collections       ProductCollection[]
+  saleCampaignItems SaleCampaignItem[]
 
   @@map("products")
 }
@@ -872,6 +872,34 @@ model CouponRedemption {
   @@map("coupon_redemptions")
 }
 
+model SaleCampaign {
+  id              String    @id @default(uuid()) @db.Uuid
+  name            String
+  discountPercent Decimal   @map("discount_percent") @db.Decimal(5, 2)
+  isActive        Boolean   @default(true) @map("is_active")
+  startsAt        DateTime? @map("starts_at")
+  endsAt          DateTime? @map("ends_at")
+  createdAt       DateTime  @default(now()) @map("created_at")
+  updatedAt       DateTime  @updatedAt @map("updated_at")
+
+  items SaleCampaignItem[]
+
+  @@index([isActive, startsAt, endsAt])
+  @@map("sale_campaigns")
+}
+
+model SaleCampaignItem {
+  campaignId String @map("campaign_id") @db.Uuid
+  productId  String @map("product_id") @db.Uuid
+
+  campaign SaleCampaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  product  Product      @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  @@id([campaignId, productId])
+  @@index([productId])
+  @@map("sale_campaign_items")
+}
+
 model OrderItem {
   id                      String   @id @default(uuid()) @db.Uuid
   orderId                 String   @map("order_id") @db.Uuid
@@ -888,6 +916,7 @@ model OrderItem {
   fabricSnapshot          String?  @map("fabric_snapshot")
   measurementReview       Json?    @map("measurement_review")
   price                   Decimal  @db.Decimal(10, 2)
+  listUnitPriceVnd        BigInt?  @map("list_unit_price_vnd")
   unitPriceVnd            BigInt?  @map("unit_price_vnd")
   lineTotalVnd            BigInt?  @map("line_total_vnd")
   createdAt               DateTime @default(now()) @map("created_at")

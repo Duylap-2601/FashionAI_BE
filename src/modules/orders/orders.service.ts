@@ -29,6 +29,7 @@ import { RefundOrderDto } from './dto/refund-order.dto';
 import { CancelShipmentDto, CreateShipmentDto } from './dto/shipment.dto';
 import { ShippingProviderType } from '../shipping/constants/shipping-provider.enum';
 import { ShippingService } from '../shipping/shipping.service';
+import { SalePricingService } from '../sale-campaigns/sale-pricing.service';
 import { UserAddressesService } from '../users/user-addresses.service';
 import {
   MEASUREMENT_LABELS,
@@ -51,6 +52,12 @@ type FindUserOrdersOptions = {
   limit?: number;
   status?: string;
   search?: string;
+};
+type OrderItemPricing = {
+  listUnitPriceVnd: number;
+  unitPriceVnd: number;
+  lineTotalVnd: number;
+  hasSale: boolean;
 };
 type QuotePayload = {
   userId: string;
@@ -77,12 +84,14 @@ export class OrdersService {
     private readonly notificationService: NotificationService,
     private readonly shippingService: ShippingService,
     private readonly userAddressesService: UserAddressesService,
+    private readonly salePricingService: SalePricingService,
   ) {}
 
   async quote(userId: string, dto: CreateOrderDto) {
     const resolvedDto = await this.resolveOrderAddress(userId, dto);
     const products = await this.getActiveOrderProducts(dto);
-    const pricing = await this.buildOrderPricing(resolvedDto, products, userId);
+    const at = new Date();
+    const pricing = await this.buildOrderPricing(resolvedDto, products, userId, at);
     const fingerprint = this.buildOrderFingerprint(userId, resolvedDto);
     const quoteToken = this.signQuote({
       userId,
@@ -101,6 +110,7 @@ export class OrdersService {
     return {
       userId,
       itemsTotal: pricing.itemsTotal,
+      listItemsTotal: pricing.listItemsTotal,
       shippingFee: pricing.shippingFee,
       discountAmount: pricing.discountAmount,
       couponCode: pricing.couponCode,
@@ -177,8 +187,9 @@ export class OrdersService {
 
     // Luôn dùng giá trong DB, KHÔNG tin item.price do client gửi lên, tránh gian
     // lận giá (client không thể tự đặt giá sản phẩm).
-    const { itemsTotal, shippingFee, discountAmount, total, couponCode, couponId, shippingQuote } =
-      await this.buildOrderPricing(resolvedDto, products, userId);
+    const at = new Date();
+    const { itemsTotal, shippingFee, discountAmount, total, couponCode, couponId, shippingQuote, itemPricing } =
+      await this.buildOrderPricing(resolvedDto, products, userId, at);
 
     if (dto.quoteToken) {
       this.assertQuoteToken(dto.quoteToken, userId, requestFingerprint, total);
@@ -240,6 +251,7 @@ export class OrdersService {
             items: {
               create: resolvedDto.items.map((item) => {
                 const product = productMap.get(item.productId)!;
+                const pricing = itemPricing.get(item.productId)!;
                 return {
                   productId: item.productId,
                   quantity: item.quantity,
@@ -258,9 +270,10 @@ export class OrdersService {
                   fabricSnapshot: product.material,
                   // Chốt giá server tại thời điểm đặt hàng: đổi giá sản phẩm sau này
                   // không ảnh hưởng đơn cũ, và client không thể tự đặt giá.
-                  price: product.price,
-                  unitPriceVnd: this.toVnd(Number(product.price)),
-                  lineTotalVnd: this.toVnd(Number(product.price) * item.quantity),
+                  price: new Prisma.Decimal(pricing.unitPriceVnd),
+                  listUnitPriceVnd: pricing.hasSale ? this.toVnd(pricing.listUnitPriceVnd) : null,
+                  unitPriceVnd: this.toVnd(pricing.unitPriceVnd),
+                  lineTotalVnd: this.toVnd(pricing.lineTotalVnd),
                 };
               }),
             },
@@ -297,12 +310,41 @@ export class OrdersService {
         }
 
         if (couponId) {
+          // Claim lượt nguyên tử: kiểm tra + tăng used_count trong cùng một
+          // UPDATE. Row lock của Postgres tuần tự hoá các request đồng thời nên
+          // lượt cuối cùng chỉ một đơn thắng; đơn còn lại không update được row.
+          const [claim] = await tx.$queryRaw<Array<{ used_count: number; usage_limit_per_user: number | null }>>`
+            UPDATE coupons
+            SET used_count = used_count + 1
+            WHERE id = ${couponId}::uuid
+              AND is_active = true
+              AND (starts_at IS NULL OR starts_at <= ${at})
+              AND (expires_at IS NULL OR expires_at >= ${at})
+              AND (usage_limit IS NULL OR used_count < usage_limit)
+            RETURNING used_count, usage_limit_per_user
+          `;
+
+          if (!claim) {
+            throw new ConflictException({
+              code: 'COUPON_EXHAUSTED',
+              message: 'Mã giảm giá đã hết lượt sử dụng',
+            });
+          }
+
+          if (claim.usage_limit_per_user != null) {
+            const usedByUser = await tx.couponRedemption.count({
+              where: { couponId, userId },
+            });
+            if (usedByUser >= claim.usage_limit_per_user) {
+              throw new ConflictException({
+                code: 'COUPON_USER_LIMIT',
+                message: 'Bạn đã sử dụng hết số lượt cho phép của mã giảm giá này',
+              });
+            }
+          }
+
           await tx.couponRedemption.create({
             data: { couponId, userId, orderId: created.id },
-          });
-          await tx.coupon.update({
-            where: { id: couponId },
-            data: { usedCount: { increment: 1 } },
           });
         }
 
@@ -982,15 +1024,41 @@ export class OrdersService {
     return products;
   }
 
-  private async buildOrderPricing(dto: ResolvedCreateOrderDto, products: IOrderProduct[], userId: string) {
+  private async buildOrderPricing(
+    dto: ResolvedCreateOrderDto,
+    products: IOrderProduct[],
+    userId: string,
+    at: Date,
+  ) {
     const productMap = new Map(products.map((product) => [product.id, product]));
-    const itemsTotal = dto.items.reduce((sum, item) => {
+    const saleMap = await this.salePricingService.resolveSaleForProducts(products, at);
+
+    const itemPricing = new Map<string, OrderItemPricing>();
+    let itemsTotal = 0;
+    let listItemsTotal = 0;
+    for (const item of dto.items) {
       const product = productMap.get(item.productId)!;
-      return sum + Number(product.price) * item.quantity;
-    }, 0);
+      const listUnitPriceVnd = Number(product.price);
+      const sale = saleMap.get(item.productId);
+      const unitPriceVnd = sale?.salePrice ?? listUnitPriceVnd;
+      itemsTotal += unitPriceVnd * item.quantity;
+      listItemsTotal += listUnitPriceVnd * item.quantity;
+      itemPricing.set(item.productId, {
+        listUnitPriceVnd,
+        unitPriceVnd,
+        lineTotalVnd: unitPriceVnd * item.quantity,
+        hasSale: Boolean(sale),
+      });
+    }
+
     const shippingQuote = await this.calculateOrderShippingFee(dto, itemsTotal);
     const shippingFee = shippingQuote.totalFee;
-    const { discountAmount, couponId, couponCode } = await this.resolveDiscountAmount(dto.couponCode, itemsTotal, userId);
+    const { discountAmount, couponId, couponCode } = await this.resolveDiscountAmount(
+      dto.couponCode,
+      itemsTotal,
+      userId,
+      at,
+    );
 
     if (discountAmount > itemsTotal + shippingFee) {
       throw new BadRequestException('Discount amount exceeds order amount');
@@ -1003,11 +1071,13 @@ export class OrdersService {
 
     return {
       itemsTotal,
+      listItemsTotal,
       shippingFee,
       discountAmount,
       couponId,
       couponCode: discountAmount > 0 ? couponCode : undefined,
       total,
+      itemPricing,
       shippingQuote: {
         provider: shippingQuote.provider,
         totalFee: shippingQuote.totalFee,
@@ -1050,6 +1120,7 @@ export class OrdersService {
     couponCode: string | undefined,
     itemsTotal: number,
     userId: string,
+    at: Date = new Date(),
   ): Promise<{ discountAmount: number; couponId: string | null; couponCode?: string }> {
     const code = couponCode?.trim().toUpperCase();
     if (!code) return { discountAmount: 0, couponId: null };
@@ -1062,11 +1133,10 @@ export class OrdersService {
       throw new BadRequestException('Mã giảm giá đã bị tắt');
     }
 
-    const now = new Date();
-    if (coupon.startsAt && coupon.startsAt > now) {
+    if (coupon.startsAt && coupon.startsAt > at) {
       throw new BadRequestException('Mã giảm giá chưa đến thời gian áp dụng');
     }
-    if (coupon.expiresAt && coupon.expiresAt < now) {
+    if (coupon.expiresAt && coupon.expiresAt < at) {
       throw new BadRequestException('Mã giảm giá đã hết hạn');
     }
     if (coupon.minOrderVnd !== null && itemsTotal < Number(coupon.minOrderVnd)) {
@@ -1280,6 +1350,12 @@ export class OrdersService {
       (sum, item) => sum + Number(item.price) * item.quantity,
       0,
     );
+    const listItemsTotal = (order.items ?? []).reduce(
+      (sum, item) =>
+        sum +
+        Number(item.listUnitPriceVnd ?? item.unitPriceVnd ?? item.price) * item.quantity,
+      0,
+    );
     const currentShipment = this.getCurrentShipment(order);
     const activeShipment = this.getActiveShipment(order);
     const displayStatus = this.resolveDisplayStatus(order, currentShipment);
@@ -1290,6 +1366,7 @@ export class OrdersService {
       targetTier: order.targetTier,
       amount: Number(order.amount),
       itemsTotal,
+      listItemsTotal,
       status: order.status,
       displayStatus,
       paymentStatus: order.paymentStatus,
@@ -1332,6 +1409,10 @@ export class OrdersService {
         brandSnapshot: item.brandSnapshot,
         fabricSnapshot: item.fabricSnapshot,
         price: Number(item.price),
+        listUnitPriceVnd:
+          item.listUnitPriceVnd === null || item.listUnitPriceVnd === undefined
+            ? null
+            : Number(item.listUnitPriceVnd),
         unitPriceVnd: item.unitPriceVnd === null || item.unitPriceVnd === undefined ? null : Number(item.unitPriceVnd),
         lineTotalVnd: item.lineTotalVnd === null || item.lineTotalVnd === undefined ? null : Number(item.lineTotalVnd),
         product: item.product,
