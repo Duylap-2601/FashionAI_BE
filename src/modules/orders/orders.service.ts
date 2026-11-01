@@ -696,7 +696,12 @@ export class OrdersService {
     return this.findOne(userId, order.id);
   }
 
-  async updateRefund(id: string, dto: RefundOrderDto, actorId: string) {
+  async updateRefund(
+    id: string,
+    dto: RefundOrderDto,
+    actorId: string,
+    receiptImageUrls: string[] = [],
+  ) {
     const order = await this.findOrderByIdentifier(id);
     if (!order) throw new NotFoundException(`Không tìm thấy đơn hàng có ID ${id}`);
 
@@ -734,6 +739,8 @@ export class OrdersService {
     if (movesMoney && collectedVnd <= 0) {
       throw new BadRequestException('Đơn hàng chưa ghi nhận tiền thanh toán, không thể hoàn tiền.');
     }
+
+    const refundEvidence = this.buildRefundEvidence(dto, receiptImageUrls);
 
     await this.prisma.$transaction(async (tx) => {
       const completedBefore = await tx.refund.aggregate({
@@ -826,7 +833,7 @@ export class OrdersService {
         where: { id: order.id },
         data: {
           refundStatus: dto.refundStatus,
-          refundEvidence: dto.evidence as Prisma.InputJsonValue | undefined,
+          refundEvidence,
           paymentStatus,
           ...(dto.refundStatus === RefundStatus.COMPLETED || dto.refundStatus === RefundStatus.FAILED
             ? { amountRefundedVnd: BigInt(refundedVnd) }
@@ -878,6 +885,96 @@ export class OrdersService {
       .catch(() => undefined);
 
     return this.findOne(order.userId, order.id);
+  }
+
+  /**
+   * Ghép mã giao dịch + ảnh chứng từ chuyển khoản admin vừa tải lên. Trả về
+   * undefined khi không có gì mới để Prisma giữ nguyên evidence cũ.
+   */
+  private buildRefundEvidence(
+    dto: RefundOrderDto,
+    receiptImageUrls: string[],
+  ): Prisma.InputJsonValue | undefined {
+    const reference = dto.evidenceReference?.trim();
+    if (!reference && receiptImageUrls.length === 0) {
+      return dto.evidence as Prisma.InputJsonValue | undefined;
+    }
+
+    const base = (dto.evidence ?? {}) as Record<string, unknown>;
+    return {
+      ...base,
+      ...(reference ? { reference } : {}),
+      ...(receiptImageUrls.length > 0 ? { receiptImages: receiptImageUrls } : {}),
+    } as Prisma.InputJsonValue;
+  }
+
+  /**
+   * Khách báo chưa nhận được tiền hoàn: đánh dấu khoản hoàn đã chốt trước đó là
+   * FAILED (tiền thực tế chưa tới tay khách) rồi mở lại nghĩa vụ hoàn tiền để
+   * admin chuyển lại. Nhờ vậy `updateRefund(REQUIRED)` sau đó tính được phần
+   * còn lại thay vì báo "không còn số tiền nào để hoàn".
+   */
+  async reopenRefundNotReceived(orderId: string, issueId: string, actorId: string) {
+    const order = await this.findOrderByIdentifier(orderId);
+    if (!order) throw new NotFoundException(`Không tìm thấy đơn hàng có ID ${orderId}`);
+
+    const completedRefund = await this.prisma.refund.findFirst({
+      where: { orderId: order.id, status: RefundStatus.COMPLETED },
+      orderBy: [
+        { processedAt: { sort: 'desc', nulls: 'last' } },
+        { requestedAt: 'desc' },
+      ],
+    });
+    if (!completedRefund) {
+      throw new BadRequestException('Đơn hàng chưa có khoản hoàn tiền nào đã hoàn tất để mở lại.');
+    }
+    if (completedRefund.provider !== 'MANUAL') {
+      throw new BadRequestException(
+        'Khoản hoàn này được xử lý qua cổng thanh toán, vui lòng xử lý lại trong mục Payments.',
+      );
+    }
+
+    const collectedVnd = Number(order.amountPaidVnd) > 0
+      ? Number(order.amountPaidVnd)
+      : Math.round(Number(order.amount));
+
+    await this.prisma.$transaction(async (tx) => {
+      await tx.refund.update({
+        where: { id: completedRefund.id },
+        data: {
+          status: RefundStatus.FAILED,
+          failedReason: `Khách báo chưa nhận được tiền (issue ${issueId})`,
+        },
+      });
+
+      const completedAfter = await tx.refund.aggregate({
+        where: { orderId: order.id, provider: 'MANUAL', status: RefundStatus.COMPLETED },
+        _sum: { amountVnd: true },
+      });
+      const refundedVnd = Number(completedAfter._sum.amountVnd ?? 0);
+      if (refundedVnd >= collectedVnd) {
+        throw new BadRequestException('Không còn khoản hoàn tiền nào để mở lại cho đơn hàng này.');
+      }
+
+      await tx.order.update({
+        where: { id: order.id },
+        data: {
+          refundStatus: RefundStatus.REQUIRED,
+          amountRefundedVnd: BigInt(refundedVnd),
+          paymentStatus: resolveRefundPaymentStatus(collectedVnd, refundedVnd),
+        },
+      });
+
+      await this.createOrderEvent(tx, {
+        orderId: order.id,
+        type: 'REFUND_REOPENED',
+        source: 'ADMIN',
+        actorId,
+        publicMessage: 'Cửa hàng đang kiểm tra lại khoản hoàn tiền chưa đến tay bạn.',
+        internalNote: `Mở lại khoản hoàn tiền ${completedRefund.id} theo báo cáo của khách (issue ${issueId})`,
+        metadata: { issueId, refundId: completedRefund.id },
+      });
+    });
   }
 
   private buildRefundNotificationMessage(dto: RefundOrderDto) {

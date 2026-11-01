@@ -190,6 +190,7 @@ enum OrderIssueReason {
   WRONG_COLOR
   QUALITY_MISMATCH
   OTHER
+  REFUND_NOT_RECEIVED
 }
 
 enum OrderIssueResolution {

@@ -51,7 +51,15 @@ export class OrderIssuesController {
       properties: {
         reason: {
           type: "string",
-          enum: ["WRONG_SIZE", "WRONG_COLOR", "QUALITY_MISMATCH", "OTHER"],
+          enum: [
+            "WRONG_SIZE",
+            "WRONG_COLOR",
+            "QUALITY_MISMATCH",
+            "OTHER",
+            "REFUND_NOT_RECEIVED",
+          ],
+          description:
+            "REFUND_NOT_RECEIVED dùng khi khách báo chưa nhận được tiền hoàn (refund đã COMPLETED trong 7 ngày)",
         },
         description: {
           type: "string",
