@@ -39,10 +39,11 @@ export class UpdateLiveTryOnSettingsDto {
   @IsBoolean()
   enabled!: boolean;
 
-  @ApiProperty({ example: 12000 })
+  @ApiProperty({ example: 6000 })
   @IsInt()
   @Min(0)
-  globalDailyCredits!: number;
+  @Max(24 * 60 * 60 * 10)
+  globalDailySeconds!: number;
 
   @ApiProperty({ example: 5 })
   @IsInt()
@@ -60,18 +61,6 @@ export class UpdateLiveTryOnSettingsDto {
   @IsArray()
   @IsIn(['UPPER', 'LOWER', 'FULL_BODY'], { each: true })
   allowedCategories!: Array<'UPPER' | 'LOWER' | 'FULL_BODY'>;
-
-  @ApiPropertyOptional({ example: [] })
-  @IsArray()
-  @IsString({ each: true })
-  @IsOptional()
-  betaUserIds?: string[];
-
-  @ApiPropertyOptional({ example: [] })
-  @IsArray()
-  @IsString({ each: true })
-  @IsOptional()
-  betaProductIds?: string[];
 
   @ApiProperty()
   @IsObject()
