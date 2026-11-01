@@ -35,7 +35,7 @@ const authGuardStub = {
 describe("OrderIssues (e2e)", () => {
   let app: INestApplication;
   let prisma: PrismaMock;
-  let ordersService: { updateRefund: jest.Mock };
+  let ordersService: { updateRefund: jest.Mock; updateStatus: jest.Mock };
   let storageService: { uploadImage: jest.Mock };
 
   const completedOrder = {
@@ -48,7 +48,10 @@ describe("OrderIssues (e2e)", () => {
 
   beforeEach(async () => {
     currentUser = { id: USER_ID, email: "user@test.com", role: "USER" };
-    ordersService = { updateRefund: jest.fn().mockResolvedValue({}) };
+    ordersService = {
+      updateRefund: jest.fn().mockResolvedValue({}),
+      updateStatus: jest.fn().mockResolvedValue({}),
+    };
     storageService = {
       uploadImage: jest
         .fn()
@@ -103,6 +106,9 @@ describe("OrderIssues (e2e)", () => {
       reason: "WRONG_SIZE",
       description: "Áo bị lệch vai trái khoảng 4cm so với số đo đã đặt",
       desiredResolution: "REFUND",
+      bankName: "Vietcombank",
+      accountNumber: "0123456789",
+      accountHolder: "NGUYEN VAN A",
     };
 
     it("tạo issue khi đơn COMPLETED trong hạn 7 ngày", async () => {
@@ -194,7 +200,17 @@ describe("OrderIssues (e2e)", () => {
       );
     });
 
-    it("approve EXCHANGE chuyển issue sang APPROVED, không gọi refund", async () => {
+    it("trả 400 khi approve EXCHANGE (chỉ hỗ trợ REFUND)", async () => {
+      const res = await request(app.getHttpServer())
+        .patch("/api/order-issues/issue-1/review")
+        .send({ decision: "APPROVE", approvedResolution: "EXCHANGE" })
+        .expect(400);
+
+      expect(res.body.success).toBe(false);
+      expect(ordersService.updateRefund).not.toHaveBeenCalled();
+    });
+
+    it("approve thiếu approvedResolution vẫn duyệt REFUND", async () => {
       prisma.orderIssue.findUnique.mockResolvedValue({
         id: "issue-1",
         status: OrderIssueStatus.PENDING,
@@ -204,28 +220,20 @@ describe("OrderIssues (e2e)", () => {
       });
       prisma.orderIssue.update.mockResolvedValue({
         id: "issue-1",
-        status: "APPROVED",
+        status: "RESOLVED",
       });
 
       const res = await request(app.getHttpServer())
         .patch("/api/order-issues/issue-1/review")
-        .send({ decision: "APPROVE", approvedResolution: "EXCHANGE" })
+        .send({ decision: "APPROVE" })
         .expect(200);
 
-      expect(res.body.data.status).toBe("APPROVED");
-      expect(ordersService.updateRefund).not.toHaveBeenCalled();
-    });
-
-    it("trả 400 khi APPROVE thiếu approvedResolution", async () => {
-      prisma.orderIssue.findUnique.mockResolvedValue({
-        id: "issue-1",
-        status: "PENDING",
-      });
-
-      await request(app.getHttpServer())
-        .patch("/api/order-issues/issue-1/review")
-        .send({ decision: "APPROVE" })
-        .expect(400);
+      expect(res.body.data.status).toBe("RESOLVED");
+      expect(ordersService.updateRefund).toHaveBeenCalledWith(
+        ORDER_ID,
+        expect.objectContaining({ refundStatus: "REQUIRED" }),
+        ADMIN_ID,
+      );
     });
 
     it("trả 400 khi REJECT thiếu adminNote", async () => {
@@ -240,17 +248,6 @@ describe("OrderIssues (e2e)", () => {
         .expect(400);
     });
 
-    it("trả 400 khi resolve issue chưa APPROVED", async () => {
-      prisma.orderIssue.findUnique.mockResolvedValue({
-        id: "issue-1",
-        status: "PENDING",
-      });
-
-      await request(app.getHttpServer())
-        .patch("/api/order-issues/issue-1/resolve")
-        .send({})
-        .expect(400);
-    });
   });
 
   describe("GET /api/order-issues (admin)", () => {
