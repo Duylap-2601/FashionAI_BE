@@ -30,12 +30,11 @@ export interface LiveTryOnTierPolicySettings {
 export interface LiveTryOnPolicySettings {
   enabled: boolean;
   version: number;
-  globalDailyCredits: number;
+  /** Tổng số giây Live toàn hệ thống được dùng mỗi ngày (UTC+7). */
+  globalDailySeconds: number;
   maxConcurrentSessions: number;
   pauseTimeoutSeconds: number;
   allowedCategories: GarmentCategory[];
-  betaUserIds: string[];
-  betaProductIds: string[];
   tiers: Record<UserTier, LiveTryOnTierPolicySettings>;
   source: 'database' | 'env';
 }
@@ -83,8 +82,6 @@ export class AdminSettingsService {
     const next = this.normalizeLiveTryOnSettings({
       ...dto,
       version: (dto.version ?? before.version) + 1,
-      betaUserIds: dto.betaUserIds ?? [],
-      betaProductIds: dto.betaProductIds ?? [],
     });
 
     await this.prisma.$transaction(async (tx) => {
@@ -152,20 +149,26 @@ export class AdminSettingsService {
   }
 
   private getEnvLiveTryOnSettings(): LiveTryOnPolicySettings {
-    const memberDaily = Number(this.configService.get<string>('DECART_LIVE_MEMBER_DAILY_SECONDS') ?? this.configService.get<string>('DECART_LIVE_USER_DAILY_SECONDS') ?? '120');
-    const vipDaily = Number(this.configService.get<string>('DECART_LIVE_VIP_DAILY_SECONDS') ?? this.configService.get<string>('DECART_LIVE_USER_DAILY_SECONDS') ?? '300');
-    const memberSession = Number(this.configService.get<string>('DECART_LIVE_MEMBER_MAX_SESSION_SECONDS') ?? '30');
-    const vipSession = Number(this.configService.get<string>('DECART_LIVE_VIP_MAX_SESSION_SECONDS') ?? this.configService.get<string>('DECART_LIVE_MAX_DURATION_SECONDS') ?? '60');
+    const memberDaily = Number(this.configService.get<string>('DECART_LIVE_MEMBER_DAILY_SECONDS') ?? '300');
+    const vipDaily = Number(this.configService.get<string>('DECART_LIVE_VIP_DAILY_SECONDS') ?? '600');
+    const memberSession = Number(this.configService.get<string>('DECART_LIVE_MEMBER_MAX_SESSION_SECONDS') ?? '60');
+    const vipSession = Number(this.configService.get<string>('DECART_LIVE_VIP_MAX_SESSION_SECONDS') ?? '120');
+    const rateCreditsPerSecond = this.getRateCreditsPerSecond();
+    const credits = Number(this.configService.get<string>('DECART_LIVE_GLOBAL_DAILY_CREDITS') ?? '12000');
+    const configuredSeconds = Number(this.configService.get<string>('DECART_LIVE_GLOBAL_DAILY_SECONDS') ?? 'NaN');
+    const globalDailySeconds = Number.isFinite(configuredSeconds) && configuredSeconds >= 0
+      ? Math.floor(configuredSeconds)
+      : Number.isFinite(credits) && credits >= 0
+        ? Math.floor(credits / rateCreditsPerSecond)
+        : 6000;
 
     return {
       enabled: this.configService.get<string>('DECART_LIVE_TRYON_ENABLED') === 'true',
       version: 1,
-      globalDailyCredits: Number(this.configService.get<string>('DECART_LIVE_GLOBAL_DAILY_CREDITS') ?? '12000'),
+      globalDailySeconds,
       maxConcurrentSessions: Number(this.configService.get<string>('DECART_LIVE_MAX_CONCURRENT_SESSIONS') ?? '5'),
       pauseTimeoutSeconds: Number(this.configService.get<string>('DECART_LIVE_PAUSE_TIMEOUT_SECONDS') ?? '300'),
       allowedCategories: parseCategories(this.configService.get<string>('DECART_LIVE_ALLOWED_CATEGORIES') ?? 'UPPER,LOWER,FULL_BODY'),
-      betaUserIds: parseCsv(this.configService.get<string>('DECART_LIVE_BETA_USER_IDS')),
-      betaProductIds: parseCsv(this.configService.get<string>('DECART_LIVE_BETA_PRODUCT_IDS')),
       tiers: {
         FREE: { liveEnabled: this.configService.get<string>('DECART_LIVE_FREE_ENABLED') === 'true', dailySeconds: Number(this.configService.get<string>('DECART_LIVE_FREE_DAILY_SECONDS') ?? '0'), maxSessionSeconds: Number(this.configService.get<string>('DECART_LIVE_FREE_MAX_SESSION_SECONDS') ?? '0') },
         MEMBER: { liveEnabled: true, dailySeconds: memberDaily, maxSessionSeconds: memberSession },
@@ -186,12 +189,10 @@ export class AdminSettingsService {
     return {
       enabled: typeof value.enabled === 'boolean' ? value.enabled : fallback.enabled,
       version: Number.isInteger(value.version) ? Number(value.version) : fallback.version,
-      globalDailyCredits: positiveInt(value.globalDailyCredits, fallback.globalDailyCredits),
+      globalDailySeconds: resolveGlobalDailySeconds(value, fallback.globalDailySeconds, this.getRateCreditsPerSecond()),
       maxConcurrentSessions: positiveInt(value.maxConcurrentSessions, fallback.maxConcurrentSessions),
       pauseTimeoutSeconds: positiveInt(value.pauseTimeoutSeconds, fallback.pauseTimeoutSeconds),
       allowedCategories: Array.isArray(value.allowedCategories) ? parseCategories(value.allowedCategories.join(',')) : fallback.allowedCategories,
-      betaUserIds: Array.isArray(value.betaUserIds) ? value.betaUserIds.filter((item): item is string => typeof item === 'string') : [],
-      betaProductIds: Array.isArray(value.betaProductIds) ? value.betaProductIds.filter((item): item is string => typeof item === 'string') : [],
       tiers: {
         FREE: normalizeTier(tiers.FREE, fallback.tiers.FREE),
         MEMBER: normalizeTier(tiers.MEMBER, fallback.tiers.MEMBER),
@@ -199,10 +200,27 @@ export class AdminSettingsService {
       },
     };
   }
+
+  private getRateCreditsPerSecond() {
+    const rate = Number(this.configService.get<string>('DECART_LIVE_RATE_CREDITS_PER_SECOND') ?? '2');
+    return Number.isFinite(rate) && rate > 0 ? rate : 2;
+  }
 }
 
-function parseCsv(value?: string) {
-  return (value ?? '').split(',').map((item) => item.trim()).filter(Boolean);
+/**
+ * Policy cũ lưu `globalDailyCredits`; đổi sang giây để cùng đơn vị với quota
+ * từng gói và với thời gian thực tế bị trừ. Dữ liệu cũ được quy đổi một lần.
+ */
+function resolveGlobalDailySeconds(value: Record<string, unknown>, fallback: number, creditsPerSecond: number) {
+  const seconds = value.globalDailySeconds;
+  if (typeof seconds === 'number' && Number.isInteger(seconds) && seconds >= 0) return seconds;
+
+  const legacyCredits = value.globalDailyCredits;
+  if (typeof legacyCredits === 'number' && Number.isInteger(legacyCredits) && legacyCredits >= 0) {
+    return Math.floor(legacyCredits / creditsPerSecond);
+  }
+
+  return fallback;
 }
 
 function parseCategories(value: string) {
