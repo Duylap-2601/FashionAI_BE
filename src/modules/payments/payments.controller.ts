@@ -24,6 +24,7 @@ import { CheckoutDto } from './dto/checkout.dto';
 import { ConfirmManualPaymentDto } from './dto/confirm-manual-payment.dto';
 import { MomoIpnDto } from './dto/momo-ipn.dto';
 import { RefundPaymentDto } from './dto/refund-payment.dto';
+import { FinalizeRefundDto } from './dto/finalize-refund.dto';
 import { UnmatchedTransactionsQueryDto } from './dto/unmatched-transactions-query.dto';
 import { SubscriptionHistoryQueryDto } from './dto/subscription-history-query.dto';
 import { PaymentsService } from './payments.service';
@@ -173,6 +174,25 @@ export class PaymentsController {
   ) {
     const data = await this.paymentsService.refundGatewayPayment(paymentId, dto, user.id);
     return buildApiResponse(req, 'PAYMENT_REFUND_CREATED', 'Yêu cầu hoàn tiền đã được xử lý', data);
+  }
+
+  @Post('admin/refunds/:refundId/finalize')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(Role.ADMIN)
+  @ApiBearerAuth('access-token')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: 'Chốt trạng thái khoản hoàn tiền đang xử lý (Admin Only)',
+    description: 'Dùng khi cổng thanh toán không hỗ trợ truy vấn refund (ví dụ MoMo) và admin đã đối soát thủ công.',
+  })
+  async finalizeRefund(
+    @Req() req: Request,
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('refundId') refundId: string,
+    @Body() dto: FinalizeRefundDto,
+  ) {
+    const data = await this.paymentsService.finalizeRefundManually(refundId, dto.outcome, user.id, dto.note);
+    return buildApiResponse(req, 'PAYMENT_REFUND_FINALIZED', 'Đã chốt trạng thái hoàn tiền', data);
   }
 
   @Get('admin/unmatched-transactions')

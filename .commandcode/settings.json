@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "powershell",
+      "Shell(npm:*)",
+      "Shell(Select-Object:*)"
+    ],
+    "deny": [],
+    "defaultMode": "default"
+  }
+}

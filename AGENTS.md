@@ -105,7 +105,7 @@ Existing ownership boundaries:
   open task; do not treat `comboType` as priced until that lands.
 - `orders`: product order lifecycle, order status transitions, measurement
   review for made-to-measure orders, order history, shipment linkage, refunds,
-  stock changes, backend-authoritative order pricing, and customer-visible
+  backend-authoritative order pricing, and customer-visible
   order tracking.
 - `payments`: checkout links, payment gateway adapters, SePay webhooks/IPN
   handling, ZaloPay callbacks/reconcile/refunds, payment records, and
@@ -294,7 +294,7 @@ Match tests to risk:
   tests if available.
 - For API behavior changes, add or update e2e tests covering the user-visible
   contract.
-- For payment, stock, status transition, refund, or shipment changes, test
+- For payment, status transition, refund, or shipment changes, test
   idempotency and invalid-state paths, not only the happy path.
 
 ## Working Rules

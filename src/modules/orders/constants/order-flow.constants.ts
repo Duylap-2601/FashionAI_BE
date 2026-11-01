@@ -77,18 +77,24 @@ export const ORDER_STATUS_TRANSITIONS: Record<OrderStatus, OrderStatus[]> = {
   [OrderStatus.SHIPPING]: [
     OrderStatus.DELIVERED,
     OrderStatus.RETURN_REQUESTED,
+    OrderStatus.RETURN_APPROVED,
     OrderStatus.RETURNING,
     OrderStatus.RETURNED,
   ],
   [OrderStatus.DELIVERED]: [
     OrderStatus.COMPLETED,
     OrderStatus.RETURN_REQUESTED,
+    OrderStatus.RETURN_APPROVED,
     OrderStatus.RETURNING,
     OrderStatus.RETURNED,
   ],
-  [OrderStatus.COMPLETED]: [OrderStatus.RETURN_REQUESTED],
+  [OrderStatus.COMPLETED]: [
+    OrderStatus.RETURN_REQUESTED,
+    OrderStatus.RETURN_APPROVED,
+  ],
   [OrderStatus.CANCELLED]: [],
   [OrderStatus.RETURN_REQUESTED]: [
+    OrderStatus.RETURN_APPROVED,
     OrderStatus.RETURNING,
     OrderStatus.RETURNED,
     OrderStatus.CANCELLED,

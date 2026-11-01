@@ -9,9 +9,10 @@ import {
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../../database/prisma.service';
-import { UserTier, OrderStatus, Order, Prisma, PaymentStatus, RefundStatus } from '@prisma/client';
+import { UserTier, OrderStatus, Order, Prisma, PaymentStatus, RefundStatus, NotificationType } from '@prisma/client';
 import * as crypto from 'crypto';
 import { createWithUniqueOrderCode } from '../../common/utils/order-code.util';
+import { resolveRefundPaymentStatus } from '../../common/utils/refund.util';
 import { CheckoutDto } from './dto/checkout.dto';
 import { ConfirmManualPaymentDto } from './dto/confirm-manual-payment.dto';
 import { RefundPaymentDto } from './dto/refund-payment.dto';
@@ -352,9 +353,20 @@ export class PaymentsService {
       };
     }
 
-    const payment = existingPayment ?? await this.prisma.payment.create({
-      data: {
-        orderId: order.id,
+    let payment = existingPayment;
+    if (!payment) {
+      // Order tạo sẵn một payment placeholder PENDING; dùng lại row đó thay vì
+      // tạo row mới để không để lại payment treo vĩnh viễn.
+      const placeholder = await this.prisma.payment.findFirst({
+        where: {
+          orderId: order.id,
+          status: PaymentStatus.PENDING,
+          providerPaymentId: null,
+          transactionId: null,
+        },
+        orderBy: { createdAt: 'asc' },
+      });
+      const gatewayPaymentData = {
         provider: gateway.code,
         providerPaymentId: gateway.buildProviderOrderId(order.orderCode),
         idempotencyKey: crypto.randomUUID(),
@@ -362,8 +374,11 @@ export class PaymentsService {
         currency: 'VND',
         expiresAt,
         paymentData: { createdFor: order.targetTier ? 'SUBSCRIPTION' : 'PRODUCT' },
-      },
-    });
+      };
+      payment = placeholder
+        ? await this.prisma.payment.update({ where: { id: placeholder.id }, data: gatewayPaymentData })
+        : await this.prisma.payment.create({ data: { orderId: order.id, ...gatewayPaymentData } });
+    }
 
     const providerOrderId = payment.providerPaymentId!;
     const requestId = payment.idempotencyKey!;
@@ -786,6 +801,7 @@ export class PaymentsService {
             data: { refundStatus: RefundStatus.FAILED, paymentStatus: PaymentStatus.PAID },
           });
         }
+        this.notifyRefundUpdate(payment.order.userId, payment.order.orderCode, 'FAILED', dto.amountVnd);
         return this.toRefundResponse(failed);
       }
 
@@ -798,19 +814,28 @@ export class PaymentsService {
             metadata: { ...(refund.metadata as Record<string, unknown> | null), providerResponse: providerResponse.raw } as Prisma.InputJsonValue,
           },
         });
-        const totalCompleted = await tx.refund.aggregate({
+        const paymentCompleted = await tx.refund.aggregate({
           where: { paymentId: payment.id, status: RefundStatus.COMPLETED },
           _sum: { amountVnd: true },
         });
-        const refundedTotal = totalCompleted._sum.amountVnd ?? BigInt(0);
-        const fullyRefunded = refundedTotal >= paidAmount;
+        const fullyRefunded = (paymentCompleted._sum.amountVnd ?? BigInt(0)) >= paidAmount;
         if (!isPaymentOnly) {
+          // Tổng đã hoàn của cả đơn, không chỉ payment hiện tại, để đơn nhiều
+          // payment không bị ghi đè số đã hoàn của payment khác.
+          const orderCompleted = await tx.refund.aggregate({
+            where: { orderId: payment.orderId, status: RefundStatus.COMPLETED },
+            _sum: { amountVnd: true },
+          });
+          const orderRefundedTotal = orderCompleted._sum.amountVnd ?? BigInt(0);
+          const orderCollectedVnd = Number(payment.order.amountPaidVnd) > 0
+            ? Number(payment.order.amountPaidVnd)
+            : Math.round(Number(payment.order.amount));
           await tx.order.update({
             where: { id: payment.orderId },
             data: {
-              amountRefundedVnd: refundedTotal,
+              amountRefundedVnd: orderRefundedTotal,
               refundStatus: RefundStatus.COMPLETED,
-              paymentStatus: fullyRefunded ? PaymentStatus.REFUNDED : PaymentStatus.PARTIALLY_REFUNDED,
+              paymentStatus: resolveRefundPaymentStatus(orderCollectedVnd, Number(orderRefundedTotal)),
             },
           });
         }
@@ -840,6 +865,7 @@ export class PaymentsService {
         });
         return updated;
       });
+      this.notifyRefundUpdate(payment.order.userId, payment.order.orderCode, 'COMPLETED', dto.amountVnd);
       return this.toRefundResponse(updatedRefund);
     } catch (err) {
       await this.prisma.refund.update({
@@ -1290,12 +1316,12 @@ export class PaymentsService {
       return { message: 'Order is not pending' };
     }
 
-    await this.prisma.$transaction([
-      this.prisma.order.update({
+    await this.prisma.$transaction(async (tx) => {
+      await tx.order.update({
         where: { id: order.id },
         data: { status: OrderStatus.CANCELLED },
-      }),
-      this.prisma.orderEvent.create({
+      });
+      await tx.orderEvent.create({
         data: {
           orderId: order.id,
           type: 'PAYMENT_CANCELLED',
@@ -1305,16 +1331,27 @@ export class PaymentsService {
           publicMessage: 'Giao dịch thanh toán đã bị hủy.',
           deduplicationKey: `payment:${provider}:${paymentData?.transaction?.transaction_id ?? Date.now()}:cancelled`,
         },
-      }),
-      this.prisma.payment.create({
-        data: {
+      });
+      const reusable = await tx.payment.findFirst({
+        where: {
           orderId: order.id,
-          provider,
-          transactionId: String(paymentData?.transaction?.transaction_id ?? Date.now()),
-          paymentData,
+          status: PaymentStatus.PENDING,
+          OR: [{ provider }, { providerPaymentId: null, transactionId: null }],
         },
-      }),
-    ]);
+        orderBy: { createdAt: 'asc' },
+      });
+      const voidedPaymentData = {
+        provider,
+        transactionId: String(paymentData?.transaction?.transaction_id ?? Date.now()),
+        status: PaymentStatus.EXPIRED,
+        paymentData,
+      };
+      if (reusable) {
+        await tx.payment.update({ where: { id: reusable.id }, data: voidedPaymentData });
+      } else {
+        await tx.payment.create({ data: { orderId: order.id, ...voidedPaymentData } });
+      }
+    });
   }
 
 
@@ -1398,7 +1435,8 @@ export class PaymentsService {
         // Chốt trạng thái bằng chính câu UPDATE có điều kiện CREATED + payment PENDING. IPN và
         // bank webhook ghi vào hai `provider` khác nhau nên unique index
         // (provider, transactionId) không chặn được chúng; nếu chỉ dựa vào lần đọc
-        // ở trên thì cả hai đều thấy PENDING và trừ tồn kho hai lần cho một đơn.
+        // ở trên thì cả hai đều thấy PENDING và đơn bị xử lý hai lần (trừ tiền,
+        // tạo payment, kích hoạt gói).
         const claim = await tx.order.updateMany({
           where: { id: order.id, status: OrderStatus.CREATED, paymentStatus: PaymentStatus.PENDING },
           data: {
@@ -1425,17 +1463,29 @@ export class PaymentsService {
             },
           });
         } else {
-          await tx.payment.create({
-            data: {
+          // Tái sử dụng payment PENDING của đơn (placeholder hoặc cùng provider)
+          // thay vì tạo row thứ hai, tránh payment cũ treo PENDING vĩnh viễn.
+          const reusable = await tx.payment.findFirst({
+            where: {
               orderId: order.id,
-              provider,
-              transactionId: String(paymentData?.transId ?? paymentData?.reference ?? Date.now()),
-              paymentData,
-              status: PaymentStatus.PAID,
-              paidAt: new Date(),
-              amountVnd: BigInt(Number(order.amount)),
+              status: PaymentStatus.PENDING,
+              OR: [{ provider }, { providerPaymentId: null, transactionId: null }],
             },
+            orderBy: { createdAt: 'asc' },
           });
+          const paidPaymentData = {
+            provider,
+            transactionId: String(paymentData?.transId ?? paymentData?.reference ?? Date.now()),
+            paymentData,
+            status: PaymentStatus.PAID,
+            paidAt: new Date(),
+            amountVnd: BigInt(Number(order.amount)),
+          };
+          if (reusable) {
+            await tx.payment.update({ where: { id: reusable.id }, data: paidPaymentData });
+          } else {
+            await tx.payment.create({ data: { orderId: order.id, ...paidPaymentData } });
+          }
         }
 
         await tx.orderEvent.create({
@@ -1736,8 +1786,40 @@ export class PaymentsService {
     }
   }
 
+  /**
+   * Chốt kết quả một khoản hoàn tiền đang chờ, dùng cho cả reconcile tự động và
+   * admin xác nhận tay khi cổng không hỗ trợ query refund (ví dụ MoMo).
+   */
+  async finalizeRefundManually(refundId: string, outcome: 'COMPLETED' | 'FAILED', adminId: string, note?: string) {
+    const refund = await this.prisma.refund.findUnique({
+      where: { id: refundId },
+      include: { payment: true },
+    });
+    if (!refund) {
+      throw new NotFoundException('Không tìm thấy khoản hoàn tiền');
+    }
+    if (!refund.paymentId || !refund.payment) {
+      throw new BadRequestException('Chỉ chốt được khoản hoàn tiền gắn với payment cổng thanh toán.');
+    }
+    if (refund.status !== RefundStatus.PROCESSING && refund.status !== RefundStatus.PENDING) {
+      throw new BadRequestException(`Chỉ chốt được khoản hoàn tiền đang xử lý (hiện tại: ${refund.status}).`);
+    }
+
+    const result = await this.finalizeGatewayRefund(
+      refund.id,
+      outcome,
+      { manuallyFinalizedBy: adminId, note, finalizedAt: new Date().toISOString() },
+      outcome === 'FAILED' ? note ?? 'Admin xác nhận hoàn tiền thất bại' : undefined,
+    );
+    if (!result) {
+      throw new NotFoundException('Không tìm thấy khoản hoàn tiền');
+    }
+    const updated = await this.prisma.refund.findUniqueOrThrow({ where: { id: refundId } });
+    return this.toRefundResponse(updated);
+  }
+
   private async finalizeGatewayRefund(refundId: string, outcome: 'COMPLETED' | 'FAILED', providerResponse: Record<string, unknown>, message?: string) {
-    return this.prisma.$transaction(async (tx) => {
+    const result = await this.prisma.$transaction(async (tx) => {
       const refund = await tx.refund.findUnique({ where: { id: refundId }, include: { payment: { include: { order: true } } } });
       if (!refund || !refund.payment) return null;
       const claim = await tx.refund.updateMany({
@@ -1749,22 +1831,28 @@ export class PaymentsService {
           metadata: { ...((refund.metadata as Record<string, unknown> | null) ?? {}), providerResponse } as Prisma.InputJsonValue,
         },
       });
-      if (claim.count === 0) return refund;
+      if (claim.count === 0) return { refund, claimed: false };
 
       const paymentData = (refund.payment.paymentData as Record<string, unknown> | null) ?? {};
       const isPaymentOnly = paymentData.refundScope === 'PAYMENT_ONLY';
       const paidAmount = refund.payment.amountVnd ?? refund.payment.order.amountPaidVnd ?? BigInt(Math.round(Number(refund.payment.order.amount)));
+      const orderCollectedVnd = Number(refund.payment.order.amountPaidVnd) > 0
+        ? Number(refund.payment.order.amountPaidVnd)
+        : Math.round(Number(refund.payment.order.amount));
+
       if (outcome === 'COMPLETED') {
-        const totalCompleted = await tx.refund.aggregate({ where: { paymentId: refund.paymentId, status: RefundStatus.COMPLETED }, _sum: { amountVnd: true } });
-        const refundedTotal = totalCompleted._sum.amountVnd ?? BigInt(0);
-        const fullyRefunded = refundedTotal >= paidAmount;
+        const paymentCompleted = await tx.refund.aggregate({ where: { paymentId: refund.paymentId, status: RefundStatus.COMPLETED }, _sum: { amountVnd: true } });
+        const fullyRefunded = (paymentCompleted._sum.amountVnd ?? BigInt(0)) >= paidAmount;
         if (!isPaymentOnly) {
+          // Tổng đã hoàn của cả đơn, không chỉ payment hiện tại.
+          const orderCompleted = await tx.refund.aggregate({ where: { orderId: refund.orderId, status: RefundStatus.COMPLETED }, _sum: { amountVnd: true } });
+          const orderRefundedTotal = orderCompleted._sum.amountVnd ?? BigInt(0);
           await tx.order.update({
             where: { id: refund.orderId },
             data: {
-              amountRefundedVnd: refundedTotal,
+              amountRefundedVnd: orderRefundedTotal,
               refundStatus: RefundStatus.COMPLETED,
-              paymentStatus: fullyRefunded ? PaymentStatus.REFUNDED : PaymentStatus.PARTIALLY_REFUNDED,
+              paymentStatus: resolveRefundPaymentStatus(orderCollectedVnd, Number(orderRefundedTotal)),
             },
           });
         }
@@ -1775,17 +1863,42 @@ export class PaymentsService {
       } else if (isPaymentOnly) {
         await tx.payment.update({ where: { id: refund.paymentId! }, data: { status: PaymentStatus.REFUND_REQUIRED } });
       } else {
-        const totalCompleted = await tx.refund.aggregate({ where: { paymentId: refund.paymentId, status: RefundStatus.COMPLETED }, _sum: { amountVnd: true } });
+        const orderCompleted = await tx.refund.aggregate({ where: { orderId: refund.orderId, status: RefundStatus.COMPLETED }, _sum: { amountVnd: true } });
+        const orderRefundedTotal = orderCompleted._sum.amountVnd ?? BigInt(0);
         await tx.order.update({
           where: { id: refund.orderId },
           data: {
             refundStatus: RefundStatus.FAILED,
-            paymentStatus: (totalCompleted._sum.amountVnd ?? BigInt(0)) > BigInt(0) ? PaymentStatus.PARTIALLY_REFUNDED : PaymentStatus.PAID,
+            paymentStatus: resolveRefundPaymentStatus(orderCollectedVnd, Number(orderRefundedTotal)),
           },
         });
       }
-      return refund;
+      return { refund, claimed: true };
     });
+
+    if (result?.claimed && result.refund.payment) {
+      this.notifyRefundUpdate(
+        result.refund.payment.order.userId,
+        result.refund.payment.order.orderCode,
+        outcome,
+        Number(result.refund.amountVnd),
+      );
+    }
+    return result;
+  }
+
+  private notifyRefundUpdate(userId: string, orderCode: number, status: 'COMPLETED' | 'FAILED', amountVnd: number) {
+    this.notificationService
+      .create({
+        userId,
+        type: NotificationType.PAYMENT,
+        title: `Hoàn tiền đơn #${orderCode}`,
+        message: status === 'COMPLETED'
+          ? `Shop đã hoàn ${amountVnd.toLocaleString('vi-VN')}đ cho đơn hàng của bạn.`
+          : 'Lần hoàn tiền chưa thành công, shop sẽ kiểm tra và xử lý lại.',
+        data: { orderCode, refundAmountVnd: amountVnd, refundStatus: status },
+      })
+      .catch(() => undefined);
   }
 
   async mockSuccess(orderCode: number) {

@@ -12,6 +12,8 @@ import { MailQueueService } from '../mail/mail-queue.service';
 import { NotificationService } from '../notification/notification.service';
 import { createWithUniqueOrderCode } from '../../common/utils/order-code.util';
 import { resolveGarmentUrlForColor } from '../../common/utils/garment-image.util';
+import { resolveManualRefundAmount, resolveRefundPaymentStatus } from '../../common/utils/refund.util';
+import { COLLECTED_PAYMENT_STATUSES } from '../../common/constants/order.constants';
 import { isAllowedProductColor } from '../../common/utils/product-color.util';
 import { CreateOrderDto } from './dto/create-order.dto';
 import {
@@ -455,6 +457,11 @@ export class OrdersService {
         },
       });
       if (result.count > 0) {
+        // Payment placeholder tạo lúc đặt đơn không được để treo PENDING sau khi hủy.
+        await tx.payment.updateMany({
+          where: { orderId: order.id, status: PaymentStatus.PENDING, transactionId: null },
+          data: { status: PaymentStatus.EXPIRED },
+        });
         await this.createOrderEvent(tx, {
           orderId: order.id,
           type: 'ORDER_CANCELLED',
@@ -600,9 +607,14 @@ export class OrdersService {
       if (isNewFlow && status === OrderStatus.MEASUREMENT_CONFIRMED && order.status === OrderStatus.MEASUREMENT_REVIEW) {
         await this.resolveSubmittedMeasurementReviews(tx, order.id);
       }
+      const needsRefundObligation =
+        (status === OrderStatus.CANCELLED || status === OrderStatus.RETURNED) &&
+        order.paymentStatus !== null &&
+        COLLECTED_PAYMENT_STATUSES.includes(order.paymentStatus) &&
+        order.refundStatus === RefundStatus.NONE;
       await tx.order.update({
         where: { id: order.id },
-        data: { status, ...(status === OrderStatus.CANCELLED && order.paymentStatus === PaymentStatus.PAID ? { refundStatus: RefundStatus.REQUIRED } : {}) },
+        data: { status, ...(needsRefundObligation ? { refundStatus: RefundStatus.REQUIRED } : {}) },
       });
       await this.createOrderEvent(tx, { orderId: order.id, type: 'STATUS_CHANGED', source: 'ADMIN', actorId, fromStatus: order.status, toStatus: status, publicMessage: dto.publicMessage ?? ORDER_STATUS_MESSAGE[status], internalNote: dto.internalNote });
     });
@@ -695,46 +707,105 @@ export class OrdersService {
         && paymentData?.refundScope !== 'PAYMENT_ONLY'
         && refundablePaymentStatuses.includes(payment.status);
     });
-    if (hasOnlineOrderPayment && dto.refundStatus === RefundStatus.COMPLETED) {
+    const movesMoney = dto.refundStatus === RefundStatus.COMPLETED || dto.refundStatus === RefundStatus.PROCESSING;
+    if (hasOnlineOrderPayment && movesMoney) {
       throw new BadRequestException('Không được xác nhận hoàn tiền online thủ công. Vui lòng dùng endpoint hoàn tiền trong Payments.');
     }
 
-    const paymentStatus = dto.refundStatus === RefundStatus.COMPLETED ? PaymentStatus.REFUNDED : order.paymentStatus;
-    const refundStatusForOrder = dto.refundStatus === RefundStatus.COMPLETED
-      ? RefundStatus.COMPLETED
-      : dto.refundStatus === RefundStatus.PROCESSING
-        ? RefundStatus.PENDING
-        : dto.refundStatus;
+    // Đơn chưa thu được tiền thì không có gì để hoàn; số đã thu lấy từ amountPaidVnd,
+    // fallback order.amount cho dữ liệu cũ chưa ghi amountPaidVnd.
+    const collectedVnd = Number(order.amountPaidVnd) > 0
+      ? Number(order.amountPaidVnd)
+      : Math.round(Number(order.amount));
+    if (movesMoney && collectedVnd <= 0) {
+      throw new BadRequestException('Đơn hàng chưa ghi nhận tiền thanh toán, không thể hoàn tiền.');
+    }
 
     await this.prisma.$transaction(async (tx) => {
-      // Create Refund record for tracking
-      if (dto.refundStatus === RefundStatus.REQUIRED || dto.refundStatus === RefundStatus.PROCESSING || dto.refundStatus === RefundStatus.COMPLETED) {
-        const existingRefund = await tx.refund.findFirst({
-          where: { orderId: order.id, provider: 'MANUAL', status: { notIn: ['CANCELLED'] } },
-        });
+      const completedBefore = await tx.refund.aggregate({
+        where: { orderId: order.id, provider: 'MANUAL', status: RefundStatus.COMPLETED },
+        _sum: { amountVnd: true },
+      });
+      const alreadyCompletedVnd = Number(completedBefore._sum.amountVnd ?? 0);
 
-        if (!existingRefund) {
+      // Chỉ ghi đè lên khoản hoàn tiền đang mở; các khoản đã COMPLETED phải giữ
+      // nguyên để hoàn một phần nhiều lần vẫn cộng dồn đúng.
+      const openRefund = await tx.refund.findFirst({
+        where: {
+          orderId: order.id,
+          provider: 'MANUAL',
+          status: { in: [RefundStatus.REQUIRED, RefundStatus.PENDING, RefundStatus.PROCESSING] },
+        },
+        orderBy: { requestedAt: 'desc' },
+      });
+
+      if (dto.refundStatus === RefundStatus.REQUIRED || movesMoney) {
+        const { amountVnd, remainingVnd } = resolveManualRefundAmount({
+          requestedVnd: dto.amountVnd,
+          openAmountVnd: Number(openRefund?.amountVnd ?? 0),
+          collectedVnd,
+          completedVnd: alreadyCompletedVnd,
+        });
+        if (amountVnd <= 0) {
+          throw new BadRequestException('Không còn số tiền nào để hoàn cho đơn hàng này.');
+        }
+        if (dto.refundStatus === RefundStatus.COMPLETED && amountVnd > remainingVnd) {
+          throw new BadRequestException(`Số tiền hoàn vượt quá phần còn lại của đơn (${remainingVnd} VND).`);
+        }
+
+        const refundRowStatus = dto.refundStatus === RefundStatus.PROCESSING
+          ? RefundStatus.PROCESSING
+          : dto.refundStatus;
+
+        if (!openRefund) {
           await tx.refund.create({
             data: {
               orderId: order.id,
               provider: 'MANUAL',
-              amountVnd: BigInt(Math.round(Number(order.amount))),
+              amountVnd: BigInt(amountVnd),
               reason: dto.internalNote ?? 'Refund requested',
-              status: refundStatusForOrder,
+              status: refundRowStatus,
               idempotencyKey: `refund:${order.id}:${Date.now()}`,
+              ...(dto.refundStatus === RefundStatus.COMPLETED ? { processedAt: new Date() } : {}),
             },
           });
-        } else if (dto.refundStatus === RefundStatus.COMPLETED) {
+        } else {
           await tx.refund.update({
-            where: { id: existingRefund.id },
-            data: { status: RefundStatus.COMPLETED, processedAt: new Date() },
-          });
-          // Update amountRefundedVnd on order
-          await tx.order.update({
-            where: { id: order.id },
-            data: { amountRefundedVnd: BigInt(Math.round(Number(order.amount))) },
+            where: { id: openRefund.id },
+            data: {
+              amountVnd: BigInt(amountVnd),
+              status: refundRowStatus,
+              reason: dto.internalNote ?? openRefund.reason,
+              ...(dto.refundStatus === RefundStatus.COMPLETED ? { processedAt: new Date() } : {}),
+            },
           });
         }
+      } else if (openRefund) {
+        // FAILED/CANCELLED: đóng bản ghi refund đang mở để không treo ở REQUIRED/PROCESSING.
+        await tx.refund.update({
+          where: { id: openRefund.id },
+          data: {
+            status: dto.refundStatus,
+            failedReason: dto.refundStatus === RefundStatus.FAILED
+              ? dto.internalNote ?? openRefund.failedReason
+              : openRefund.failedReason,
+          },
+        });
+      }
+
+      const completedAfter = await tx.refund.aggregate({
+        where: { orderId: order.id, provider: 'MANUAL', status: RefundStatus.COMPLETED },
+        _sum: { amountVnd: true },
+      });
+      const refundedVnd = Number(completedAfter._sum.amountVnd ?? 0);
+
+      let paymentStatus = order.paymentStatus;
+      if (dto.refundStatus === RefundStatus.PROCESSING) {
+        paymentStatus = PaymentStatus.REFUND_PENDING;
+      } else if (dto.refundStatus === RefundStatus.COMPLETED || dto.refundStatus === RefundStatus.FAILED || dto.refundStatus === RefundStatus.CANCELLED) {
+        paymentStatus = collectedVnd > 0
+          ? resolveRefundPaymentStatus(collectedVnd, refundedVnd)
+          : order.paymentStatus;
       }
 
       await tx.order.update({
@@ -743,12 +814,75 @@ export class OrdersService {
           refundStatus: dto.refundStatus,
           refundEvidence: dto.evidence as Prisma.InputJsonValue | undefined,
           paymentStatus,
+          ...(dto.refundStatus === RefundStatus.COMPLETED || dto.refundStatus === RefundStatus.FAILED
+            ? { amountRefundedVnd: BigInt(refundedVnd) }
+            : {}),
         },
       });
-      await this.createOrderEvent(tx, { orderId: order.id, type: 'REFUND_UPDATED', source: 'ADMIN', actorId, publicMessage: dto.refundStatus === RefundStatus.COMPLETED ? 'Khoản hoàn tiền đã được ghi nhận.' : 'Trạng thái hoàn tiền đã được cập nhật.', internalNote: dto.internalNote });
+
+      if (paymentStatus && collectedVnd > 0) {
+        await tx.payment.updateMany({
+          where: {
+            orderId: order.id,
+            status: {
+              in: [
+                PaymentStatus.PAID,
+                PaymentStatus.PARTIALLY_REFUNDED,
+                PaymentStatus.REFUNDED,
+                PaymentStatus.REFUND_PENDING,
+                PaymentStatus.REFUND_REQUIRED,
+              ],
+            },
+          },
+          data: {
+            status: paymentStatus,
+            ...(dto.refundStatus === RefundStatus.COMPLETED ? { refundedAt: new Date() } : {}),
+          },
+        });
+      }
+
+      await this.createOrderEvent(tx, {
+        orderId: order.id,
+        type: 'REFUND_UPDATED',
+        source: 'ADMIN',
+        actorId,
+        publicMessage: dto.refundStatus === RefundStatus.COMPLETED
+          ? 'Khoản hoàn tiền đã được ghi nhận.'
+          : 'Trạng thái hoàn tiền đã được cập nhật.',
+        internalNote: dto.internalNote,
+      });
     });
 
+    this.notificationService
+      .create({
+        userId: order.userId,
+        type: NotificationType.PAYMENT,
+        title: `Cập nhật hoàn tiền đơn #${order.orderCode}`,
+        message: this.buildRefundNotificationMessage(dto),
+        data: { orderId: order.id, orderCode: order.orderCode, refundStatus: dto.refundStatus },
+      })
+      .catch(() => undefined);
+
     return this.findOne(order.userId, order.id);
+  }
+
+  private buildRefundNotificationMessage(dto: RefundOrderDto) {
+    switch (dto.refundStatus) {
+      case RefundStatus.REQUIRED:
+        return 'Shop đã ghi nhận yêu cầu hoàn tiền cho đơn hàng của bạn.';
+      case RefundStatus.PROCESSING:
+        return 'Yêu cầu hoàn tiền cho đơn hàng của bạn đang được xử lý.';
+      case RefundStatus.COMPLETED:
+        return dto.amountVnd
+          ? `Shop đã hoàn ${dto.amountVnd.toLocaleString('vi-VN')}đ cho đơn hàng của bạn.`
+          : 'Shop đã hoàn tiền cho đơn hàng của bạn.';
+      case RefundStatus.FAILED:
+        return 'Lần hoàn tiền trước chưa thành công, shop sẽ kiểm tra và xử lý lại.';
+      case RefundStatus.CANCELLED:
+        return 'Yêu cầu hoàn tiền cho đơn hàng của bạn đã được hủy.';
+      default:
+        return 'Trạng thái hoàn tiền của đơn hàng đã được cập nhật.';
+    }
   }
 
   async createShipment(id: string, dto: CreateShipmentDto, actorId: string) {
