@@ -63,12 +63,13 @@ describe('AdminStatsService', () => {
               PaymentStatus.PARTIALLY_REFUNDED,
               PaymentStatus.REFUNDED,
               PaymentStatus.COD_COLLECTED,
+              PaymentStatus.REFUND_PENDING,
+              PaymentStatus.REFUND_REQUIRED,
             ],
           },
           status: {
             notIn: [
               OrderStatus.CANCELLED,
-              OrderStatus.RETURNED,
               OrderStatus.EXPIRED,
               OrderStatus.FAILED,
             ],
