@@ -28,6 +28,7 @@ import { AdminSettingsService } from '../admin/admin-settings.service';
 import { AuthenticatedUser } from '../auth/interfaces/authenticated-user.interface';
 import { CreateLiveSessionDto, LiveSessionItemDto } from './dto/create-live-session.dto';
 import { DecartRealtimeService } from './decart-realtime.service';
+import { nextQuotaReset, quotaDateKey } from '../../common/utils/quota-date.util';
 import { buildCleanGarmentImageUrl } from './utils/garment-image.util';
 import { assertValidLayerCombination } from './utils/garment-combo.util';
 import { buildLiveComboPrompt, pickPrimaryIndex } from './utils/live-combo.util';
@@ -40,12 +41,10 @@ interface LiveTryOnPolicy {
   tokenTtlSeconds: number;
   graceSeconds: number;
   userDailySeconds: number;
-  globalDailyCredits: number;
+  globalDailySeconds: number;
   maxConcurrentSessions: number;
   rateCreditsPerSecond: number;
   policyVersion: string;
-  betaUserIds: Set<string>;
-  betaProductIds: Set<string>;
   allowedCategories: Set<GarmentCategory>;
   pauseTimeoutSeconds: number;
   tier: UserTier;
@@ -111,7 +110,7 @@ export class LiveTryOnService {
   async getQuota(user: AuthenticatedUser) {
     const policy = await this.getPolicy(user.tier);
     const eligibility = this.getEligibility(user, policy);
-    const quotaDate = utcDateKey(new Date());
+    const quotaDate = quotaDateKey(new Date());
     const budget = await this.prisma.liveTryOnBudget.findUnique({
       where: { scopeKey_date: { scopeKey: `user:${user.id}`, date: quotaDate } },
     });
@@ -136,7 +135,7 @@ export class LiveTryOnService {
       reserved,
       allocated,
       remaining: Math.max(0, limit - reserved - allocated),
-      resetAt: nextUtcReset().toISOString(),
+      resetAt: nextQuotaReset().toISOString(),
       maxDurationSeconds: policy.maxDurationSeconds,
       activeSession: activeSession
         ? {
@@ -212,7 +211,7 @@ export class LiveTryOnService {
     const combo = await this.resolveLiveCombo(requested, policy);
     const primary = combo.items[combo.primaryIndex];
     const now = new Date();
-    const quotaDate = utcDateKey(now);
+    const quotaDate = quotaDateKey(now);
     const blockedUntil = new Date(now.getTime() + (policy.tokenTtlSeconds + policy.maxDurationSeconds + policy.graceSeconds + policy.pauseTimeoutSeconds) * 1000);
 
     const session = await this.reserveSession(user.id, primary.product.id, idempotencyKey, bodyHash, quotaDate, blockedUntil, policy, primary.color, combo);
@@ -564,7 +563,7 @@ export class LiveTryOnService {
       }
 
       const globalScopeKey = 'global';
-      const globalLimitSeconds = Math.floor(policy.globalDailyCredits / policy.rateCreditsPerSecond);
+      const globalLimitSeconds = policy.globalDailySeconds;
       const globalBudget = await tx.liveTryOnBudget.upsert({
         where: { scopeKey_date: { scopeKey: globalScopeKey, date: quotaDate } },
         create: { scopeKey: globalScopeKey, date: quotaDate, limitSeconds: globalLimitSeconds },
@@ -686,9 +685,6 @@ export class LiveTryOnService {
     }
     if (!policy.allowedCategories.has(product.category)) {
       throw new BadRequestException({ code: 'LIVE_GARMENT_CATEGORY_UNSUPPORTED', message: 'Product category is not enabled for Live Try-On' });
-    }
-    if (policy.betaProductIds.size > 0 && !policy.betaProductIds.has(product.id)) {
-      throw new ForbiddenException({ code: 'LIVE_PRODUCT_NOT_ALLOWED', message: 'Product is not allowlisted for Live Try-On beta' });
     }
     return product;
   }
@@ -861,9 +857,7 @@ export class LiveTryOnService {
 
   private getEligibility(user: AuthenticatedUser, policy: LiveTryOnPolicy) {
     if (!policy.enabled) return { eligible: false, disabledReason: policy.disabledReason ?? 'feature_disabled' };
-    if (user.tier === UserTier.FREE) return { eligible: false, disabledReason: 'free_not_allowed' };
     if (user.tierExpiresAt && user.tierExpiresAt.getTime() < Date.now()) return { eligible: false, disabledReason: 'subscription_expired' };
-    if (policy.betaUserIds.size > 0 && !policy.betaUserIds.has(user.id)) return { eligible: false, disabledReason: 'not_in_beta' };
     return { eligible: true };
   }
 
@@ -879,12 +873,10 @@ export class LiveTryOnService {
       tokenTtlSeconds: this.decart.getTokenTtlSeconds(),
       graceSeconds: Number(this.config.get<string>('DECART_LIVE_GRACE_SECONDS') ?? '30'),
       userDailySeconds: tierPolicy.dailySeconds,
-      globalDailyCredits: settings.globalDailyCredits,
+      globalDailySeconds: settings.globalDailySeconds,
       maxConcurrentSessions: settings.maxConcurrentSessions,
       rateCreditsPerSecond: Number(this.config.get<string>('DECART_LIVE_RATE_CREDITS_PER_SECOND') ?? '2'),
       policyVersion: `live-v${settings.version}`,
-      betaUserIds: new Set(settings.betaUserIds),
-      betaProductIds: new Set(settings.betaProductIds),
       allowedCategories: new Set(settings.allowedCategories),
       pauseTimeoutSeconds: settings.pauseTimeoutSeconds,
       tier,
@@ -973,15 +965,6 @@ function readGarmentMetadata(value: Prisma.JsonValue | null | undefined): { imag
 
 function hashJson(value: unknown) {
   return crypto.createHash('sha256').update(JSON.stringify(value)).digest('hex');
-}
-
-function utcDateKey(date: Date) {
-  return date.toISOString().slice(0, 10);
-}
-
-function nextUtcReset() {
-  const now = new Date();
-  return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1));
 }
 
 function isUuid(value: string) {

@@ -17,6 +17,7 @@ import {
   AI_ACTION_NAMES,
   isAiActionName,
 } from '../../common/constants/ai-quota.constants';
+import { nextQuotaReset, quotaDateKey } from '../../common/utils/quota-date.util';
 
 const USER_SELECT = {
   id: true,
@@ -196,7 +197,7 @@ export class UsersService {
     const isExpired = user.tierExpiresAt && new Date() > user.tierExpiresAt;
     const effectiveTier = isExpired ? UserTier.FREE : user.tier;
 
-    const today = new Date().toISOString().split('T')[0];
+    const today = quotaDateKey();
     const limits = AI_ACTION_LIMITS[selectedAction];
     const limit = limits[effectiveTier] ?? limits[UserTier.FREE];
 
@@ -230,17 +231,11 @@ export class UsersService {
       unlimited: limit === Infinity,
       used,
       remaining,
-      resetAt: this.getNextMidnight(),
+      resetAt: nextQuotaReset().toISOString(),
       tierExpiresAt: user.tierExpiresAt?.toISOString() ?? null,
       requiresSubscription: limit === 0,
       limits: allActions,
     };
   }
 
-  private getNextMidnight() {
-    const resetAt = new Date();
-    resetAt.setDate(resetAt.getDate() + 1);
-    resetAt.setHours(0, 0, 0, 0);
-    return resetAt.toISOString();
-  }
 }

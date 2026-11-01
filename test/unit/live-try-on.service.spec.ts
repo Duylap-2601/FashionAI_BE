@@ -117,8 +117,7 @@ describe('LiveTryOnService', () => {
           DECART_LIVE_TRYON_ENABLED: 'true',
           DECART_LIVE_MAX_DURATION_SECONDS: '60',
           DECART_LIVE_GRACE_SECONDS: '30',
-          DECART_LIVE_USER_DAILY_SECONDS: '300',
-          DECART_LIVE_GLOBAL_DAILY_CREDITS: '12000',
+          DECART_LIVE_GLOBAL_DAILY_SECONDS: '6000',
           DECART_LIVE_MAX_CONCURRENT_SESSIONS: '2',
           DECART_LIVE_RATE_CREDITS_PER_SECOND: '2',
           DECART_LIVE_POLICY_VERSION: 'test-v1',
@@ -141,12 +140,10 @@ describe('LiveTryOnService', () => {
     adminSettings = {
       getLiveTryOnSettings: jest.fn().mockResolvedValue({
         enabled: true,
-        globalDailyCredits: 12000,
+        globalDailySeconds: 6000,
         maxConcurrentSessions: 2,
         pauseTimeoutSeconds: 300,
         allowedCategories: [GarmentCategory.UPPER],
-        betaUserIds: [],
-        betaProductIds: [],
         version: 1,
         tiers: {
           FREE: { liveEnabled: true, dailySeconds: 120, maxSessionSeconds: 30 },
@@ -196,12 +193,10 @@ describe('LiveTryOnService', () => {
   it('returns disabled quota without using image quota semantics', async () => {
     adminSettings.getLiveTryOnSettings.mockResolvedValueOnce({
       enabled: false,
-      globalDailyCredits: 12000,
+      globalDailySeconds: 6000,
       maxConcurrentSessions: 2,
       pauseTimeoutSeconds: 300,
       allowedCategories: [GarmentCategory.UPPER],
-      betaUserIds: [],
-      betaProductIds: [],
       version: 1,
       tiers: {
         FREE: { liveEnabled: true, dailySeconds: 120, maxSessionSeconds: 30 },
@@ -213,6 +208,17 @@ describe('LiveTryOnService', () => {
     expect(quota.enabled).toBe(false);
     expect(quota.unit).toBe('seconds');
     expect(quota.remaining).toBe(0);
+  });
+
+  it('honours the FREE tier policy instead of hard-blocking free users', async () => {
+    prisma.liveTryOnBudget.findUnique.mockResolvedValue(null);
+    prisma.liveTryOnLease.findUnique.mockResolvedValue(null);
+
+    const quota = await service.getQuota({ ...user, tier: UserTier.FREE });
+
+    expect(quota.enabled).toBe(true);
+    expect(quota.eligible).toBe(true);
+    expect(quota.limit).toBe(120);
   });
 
   it('creates a direct session once and reserves user/global budgets plus a lease', async () => {

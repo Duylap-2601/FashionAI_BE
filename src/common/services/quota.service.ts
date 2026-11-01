@@ -7,6 +7,11 @@ import {
   AI_ACTION_LABELS,
   AI_ACTION_LIMITS,
 } from '../constants/ai-quota.constants';
+import {
+  nextQuotaReset,
+  quotaDateKey,
+  secondsUntilQuotaReset,
+} from '../utils/quota-date.util';
 
 @Injectable()
 export class QuotaService {
@@ -60,7 +65,7 @@ export class QuotaService {
 
     if (effectiveLimit === Infinity) return;
 
-    const today = new Date().toISOString().split('T')[0];
+    const today = quotaDateKey();
     const redisKey = `quota:${action.toLowerCase()}:${userId}:${today}`;
 
     let used = 0;
@@ -77,13 +82,12 @@ export class QuotaService {
       await this.redisService.set(
         redisKey,
         used.toString(),
-        this.secondsUntilNextMidnight(),
+        secondsUntilQuotaReset(),
       );
     }
 
     if (used + count > effectiveLimit) {
-      const midnight = new Date();
-      midnight.setHours(23, 59, 59, 999);
+      const resetAt = nextQuotaReset();
       const remaining = Math.max(0, effectiveLimit - used);
       const needMore =
         count > 1
@@ -100,7 +104,7 @@ export class QuotaService {
             limit: effectiveLimit,
             requested: count,
             remaining,
-            resetAt: midnight.toISOString(),
+            resetAt: resetAt.toISOString(),
             tier: effectiveTier,
           },
         },
@@ -114,14 +118,14 @@ export class QuotaService {
     action: AiActionName,
     count = 1,
   ): Promise<number> {
-    const today = new Date().toISOString().split('T')[0];
+    const today = quotaDateKey();
     const redisKey = `quota:${action.toLowerCase()}:${userId}:${today}`;
 
     // Increment in Redis
     const used = await this.redisService.incrBy(
       redisKey,
       count,
-      this.secondsUntilNextMidnight(),
+      secondsUntilQuotaReset(),
     );
 
     // Sync to DB for persistence
@@ -145,13 +149,5 @@ export class QuotaService {
     });
 
     return used;
-  }
-
-  private secondsUntilNextMidnight() {
-    const now = new Date();
-    const nextMidnight = new Date(now);
-    nextMidnight.setDate(now.getDate() + 1);
-    nextMidnight.setHours(0, 0, 0, 0);
-    return Math.max(1, Math.ceil((nextMidnight.getTime() - now.getTime()) / 1000));
   }
 }
