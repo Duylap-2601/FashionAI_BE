@@ -7,6 +7,7 @@ import { NotificationService } from '../../src/modules/notification/notification
 import { ShippingService } from '../../src/modules/shipping/shipping.service';
 import { UserAddressesService } from '../../src/modules/users/user-addresses.service';
 import { SalePricingService } from '../../src/modules/sale-campaigns/sale-pricing.service';
+import { StorageService } from '../../src/modules/storage/storage.service';
 import { JwtAuthGuard } from '../../src/modules/auth/guards/jwt-auth.guard';
 import { MEASUREMENT_LABELS } from '../../src/common/constants/measurement.constants';
 import { createPrismaMock, createTestApp, PrismaMock } from './helpers/test-app';
@@ -99,6 +100,12 @@ describe('POST /orders comboType (e2e)', () => {
                 ghnWardV3Id: 2,
                 note: '',
               }),
+            },
+          },
+          {
+            provide: StorageService,
+            useValue: {
+              uploadImage: jest.fn().mockResolvedValue('https://cdn.test/refund-receipts/x.png'),
             },
           },
         ],

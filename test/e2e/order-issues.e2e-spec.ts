@@ -189,15 +189,40 @@ describe("OrderIssues (e2e)", () => {
 
       const res = await request(app.getHttpServer())
         .patch("/api/order-issues/issue-1/review")
-        .send({ decision: "APPROVE", approvedResolution: "REFUND" })
+        .field("decision", "APPROVE")
+        .field("approvedResolution", "REFUND")
+        .attach("receiptImages", Buffer.from("receipt"), {
+          filename: "receipt.png",
+          contentType: "image/png",
+        })
         .expect(200);
 
       expect(res.body.data.status).toBe("RESOLVED");
+      expect(storageService.uploadImage).toHaveBeenCalled();
       expect(ordersService.updateRefund).toHaveBeenCalledWith(
         ORDER_ID,
         expect.objectContaining({ refundStatus: "REQUIRED" }),
         ADMIN_ID,
+        ["https://cdn.test/order-issues/x.png"],
       );
+    });
+
+    it("trả 400 khi approve mà không có ảnh chứng từ chuyển khoản", async () => {
+      prisma.orderIssue.findUnique.mockResolvedValue({
+        id: "issue-1",
+        status: OrderIssueStatus.PENDING,
+        orderId: ORDER_ID,
+        orderItemId: ITEM_ID,
+        order: { id: ORDER_ID, orderCode: 100001 },
+      });
+
+      const res = await request(app.getHttpServer())
+        .patch("/api/order-issues/issue-1/review")
+        .send({ decision: "APPROVE", approvedResolution: "REFUND" })
+        .expect(400);
+
+      expect(res.body.message).toContain("ảnh chứng từ");
+      expect(ordersService.updateRefund).not.toHaveBeenCalled();
     });
 
     it("trả 400 khi approve EXCHANGE (chỉ hỗ trợ REFUND)", async () => {
@@ -225,7 +250,11 @@ describe("OrderIssues (e2e)", () => {
 
       const res = await request(app.getHttpServer())
         .patch("/api/order-issues/issue-1/review")
-        .send({ decision: "APPROVE" })
+        .field("decision", "APPROVE")
+        .attach("receiptImages", Buffer.from("receipt"), {
+          filename: "receipt.png",
+          contentType: "image/png",
+        })
         .expect(200);
 
       expect(res.body.data.status).toBe("RESOLVED");
@@ -233,6 +262,7 @@ describe("OrderIssues (e2e)", () => {
         ORDER_ID,
         expect.objectContaining({ refundStatus: "REQUIRED" }),
         ADMIN_ID,
+        ["https://cdn.test/order-issues/x.png"],
       );
     });
 
