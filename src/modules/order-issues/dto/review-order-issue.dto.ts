@@ -1,22 +1,22 @@
-import { ApiProperty } from "@nestjs/swagger";
+import { ApiProperty, ApiPropertyOptional } from "@nestjs/swagger";
 import { OrderIssueResolution } from "@prisma/client";
-import { IsEnum, IsIn, IsOptional, IsString, MaxLength } from "class-validator";
+import { IsIn, IsOptional, IsString, MaxLength } from "class-validator";
 
 export class ReviewOrderIssueDto {
   @ApiProperty({
     enum: ["APPROVE", "REJECT"],
-    description: "APPROVE: đồng ý xử lý; REJECT: từ chối yêu cầu",
+    description: "APPROVE: đồng ý hoàn tiền; REJECT: từ chối yêu cầu",
   })
   @IsIn(["APPROVE", "REJECT"])
   decision!: "APPROVE" | "REJECT";
 
-  @ApiProperty({
-    enum: OrderIssueResolution,
-    required: false,
-    description:
-      "Hướng xử lý cuối cùng (bắt buộc khi APPROVE; admin có thể đổi khác ý khách)",
+  @ApiPropertyOptional({
+    enum: [OrderIssueResolution.REFUND],
+    description: "Hướng xử lý duy nhất hiện hỗ trợ là hoàn tiền (REFUND)",
   })
-  @IsEnum(OrderIssueResolution)
+  @IsIn([OrderIssueResolution.REFUND], {
+    message: "Chỉ hỗ trợ duyệt hướng hoàn tiền (REFUND)",
+  })
   @IsOptional()
   approvedResolution?: OrderIssueResolution;
 

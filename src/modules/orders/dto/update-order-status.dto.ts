@@ -1,20 +1,22 @@
 import { ApiProperty } from '@nestjs/swagger';
 import { OrderStatus } from '@prisma/client';
-import { IsIn, IsNotEmpty, IsOptional, IsString } from 'class-validator';
-import { CANONICAL_ORDER_STATUSES } from '../constants/order-flow.constants';
+import { IsEnum, IsIn, IsNotEmpty, IsOptional, IsString } from 'class-validator';
+
+export const ORDER_STATUS_SOURCES = ['USER', 'ADMIN', 'SYSTEM'] as const;
+export type OrderStatusSource = (typeof ORDER_STATUS_SOURCES)[number];
 
 export class UpdateOrderStatusDto {
   @ApiProperty({
-    enum: CANONICAL_ORDER_STATUSES,
+    enum: OrderStatus,
     description: 'Trạng thái đơn hàng mới',
     example: OrderStatus.MEASUREMENT_REVIEW,
   })
-  @IsIn(CANONICAL_ORDER_STATUSES)
+  @IsEnum(OrderStatus)
   @IsNotEmpty()
   status!: OrderStatus;
 
-  @ApiProperty({ enum: CANONICAL_ORDER_STATUSES, required: false, description: 'Trạng thái hiện tại client đang thấy để chống ghi đè cạnh tranh' })
-  @IsIn(CANONICAL_ORDER_STATUSES)
+  @ApiProperty({ enum: OrderStatus, required: false, description: 'Trạng thái hiện tại client đang thấy để chống ghi đè cạnh tranh' })
+  @IsEnum(OrderStatus)
   @IsOptional()
   expectedStatus?: OrderStatus;
 
@@ -27,4 +29,13 @@ export class UpdateOrderStatusDto {
   @IsString()
   @IsOptional()
   internalNote?: string;
+
+  @ApiProperty({
+    enum: ORDER_STATUS_SOURCES,
+    required: false,
+    description: 'Nguồn phát sinh thay đổi trạng thái (mặc định ADMIN)',
+  })
+  @IsIn(ORDER_STATUS_SOURCES)
+  @IsOptional()
+  source?: OrderStatusSource;
 }

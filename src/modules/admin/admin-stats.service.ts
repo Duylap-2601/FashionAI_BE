@@ -1,12 +1,13 @@
 import { Injectable } from '@nestjs/common';
 import { AiActionType, OrderStatus, Prisma, ProductStatus } from '@prisma/client';
 import { PrismaService } from '../../database/prisma.service';
-import { COLLECTED_PAYMENT_STATUSES } from '../../common/constants/order.constants';
+import { REVENUE_PAYMENT_STATUSES } from '../../common/constants/order.constants';
 
-// Đơn đã huỷ/trả hàng không còn là doanh thu bán hàng, kể cả khi tiền đã về.
+// Đơn đã huỷ/hết hạn/lỗi không còn là doanh thu. Đơn RETURNED vẫn tính phần
+// tiền thực giữ lại; khoản đã hoàn trừ qua amountRefundedVnd nên không loại
+// theo trạng thái (tránh việc xác nhận hoàn tiền không làm giảm doanh thu).
 const NON_REVENUE_ORDER_STATUSES: OrderStatus[] = [
   OrderStatus.CANCELLED,
-  OrderStatus.RETURNED,
   OrderStatus.EXPIRED,
   OrderStatus.FAILED,
 ];
@@ -18,7 +19,7 @@ export class AdminStatsService {
   async getStats() {
     const today = new Date().toISOString().split('T')[0];
     const revenueWhere: Prisma.OrderWhereInput = {
-      paymentStatus: { in: COLLECTED_PAYMENT_STATUSES },
+      paymentStatus: { in: REVENUE_PAYMENT_STATUSES },
       status: { notIn: NON_REVENUE_ORDER_STATUSES },
     };
 

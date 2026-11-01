@@ -19,7 +19,6 @@ import { OrdersService } from "../orders/orders.service";
 import { StorageService } from "../storage/storage.service";
 import { CreateOrderIssueDto } from "./dto/create-order-issue.dto";
 import { QueryOrderIssueDto } from "./dto/query-order-issue.dto";
-import { ResolveOrderIssueDto } from "./dto/resolve-order-issue.dto";
 import { ReviewOrderIssueDto } from "./dto/review-order-issue.dto";
 
 const UUID_REGEX =
@@ -60,9 +59,17 @@ export class OrderIssuesService {
   ) {
     const order = await this.findOrderForOwner(userId, orderId);
 
-    if (order.status !== OrderStatus.COMPLETED) {
+    // Đơn đã hoàn tất, hoặc đang trong luồng trả hàng (để nhiều item cùng báo lỗi
+    // / bổ sung yêu cầu trả một phần) đều được tạo yêu cầu.
+    const reportableStatuses: OrderStatus[] = [
+      OrderStatus.COMPLETED,
+      OrderStatus.RETURN_REQUESTED,
+      OrderStatus.RETURN_APPROVED,
+      OrderStatus.RETURNING,
+    ];
+    if (!reportableStatuses.includes(order.status)) {
       throw new BadRequestException(
-        "Chỉ có thể báo lỗi khi đơn hàng đã hoàn tất (COMPLETED)",
+        "Chỉ có thể báo lỗi khi đơn hàng đã hoàn tất (COMPLETED) hoặc đang trong luồng hoàn trả",
       );
     }
 
@@ -95,19 +102,55 @@ export class OrderIssuesService {
       );
     }
 
-    const issue = await this.prisma.orderIssue.create({
-      data: {
-        orderId: order.id,
-        orderItemId: item.id,
-        userId,
-        reason: dto.reason,
-        description: dto.description,
-        desiredResolution: dto.desiredResolution,
-        evidenceImages:
-          evidenceImages.length > 0 ? evidenceImages : Prisma.DbNull,
-      },
-      include: issueInclude,
+    const issue = await this.prisma.$transaction(async (tx) => {
+      const created = await tx.orderIssue.create({
+        data: {
+          orderId: order.id,
+          orderItemId: item.id,
+          userId,
+          reason: dto.reason,
+          description: dto.description,
+          desiredResolution: OrderIssueResolution.REFUND,
+          bankName: dto.bankName ?? null,
+          accountNumber: dto.accountNumber ?? null,
+          accountHolder: dto.accountHolder ?? null,
+          evidenceImages:
+            evidenceImages.length > 0 ? evidenceImages : Prisma.DbNull,
+        },
+        include: issueInclude,
+      });
+
+      // Snapshot STK nhận hoàn lên đơn để admin thấy khi xác nhận hoàn tiền và
+      // khách xem lại được trong chi tiết đơn.
+      await tx.order.update({
+        where: { id: order.id },
+        data: {
+          refundBankName: dto.bankName ?? null,
+          refundAccountNumber: dto.accountNumber ?? null,
+          refundAccountHolder: dto.accountHolder ?? null,
+        },
+      });
+
+      return created;
     });
+
+    // Đưa đơn sang bước chờ hoàn trả để admin biết cần nhận lại hàng trước khi
+    // hoàn tiền. Lỗi chuyển trạng thái không được làm hỏng việc tạo yêu cầu.
+    if (order.status === OrderStatus.COMPLETED) {
+      await this.ordersService
+        .updateStatus(
+          order.id,
+          {
+            status: OrderStatus.RETURN_REQUESTED,
+            source: "USER",
+            publicMessage:
+              "Đã ghi nhận yêu cầu hoàn trả. Vui lòng gửi hàng về cửa hàng để được kiểm tra và hoàn tiền.",
+            internalNote: `Yêu cầu hoàn trả từ issue ${issue.id}`,
+          },
+          userId,
+        )
+        .catch(() => undefined);
+    }
 
     this.notifyAdminsNewIssue(issue.id, order.orderCode).catch(() => undefined);
 
@@ -232,123 +275,73 @@ export class OrderIssuesService {
       return rejected;
     }
 
-    if (!dto.approvedResolution) {
-      throw new BadRequestException(
-        "Duyệt yêu cầu cần chọn hướng xử lý (approvedResolution)",
-      );
-    }
-
-    if (dto.approvedResolution === OrderIssueResolution.REFUND) {
-      // Chuyển issue sang RESOLVED trước, rồi mới gọi sang luồng refund có sẵn
-      // (ordersService.updateRefund tự mở transaction riêng, không thể lồng chung
-      // transaction với orderIssue.update). Nếu updateRefund thất bại (validation
-      // hoặc lỗi tạm thời), rollback issue về PENDING để tránh lệch trạng thái
-      // (Order đã REQUIRED refund nhưng issue vẫn kẹt PENDING).
-      const resolved = await this.prisma.orderIssue.update({
-        where: { id: issue.id },
-        data: {
-          status: OrderIssueStatus.RESOLVED,
-          approvedResolution: OrderIssueResolution.REFUND,
-          adminNote: dto.adminNote,
-          adminId,
-        },
-        include: issueInclude,
-      });
-
-      try {
-        // Tái dùng luồng refund có sẵn: tạo Refund MANUAL + chuyển Order.refundStatus
-        // sang REQUIRED, không tự ghi đè Payment/Order.amountRefundedVnd.
-        await this.ordersService.updateRefund(
-          issue.orderId,
-          {
-            refundStatus: RefundStatus.REQUIRED,
-            internalNote: `Duyệt hoàn tiền cho issue ${issue.id} (item ${issue.orderItemId})${dto.adminNote ? `: ${dto.adminNote}` : ""}`,
-          },
-          adminId,
-        );
-      } catch (err) {
-        await this.prisma.orderIssue.update({
-          where: { id: issue.id },
-          data: {
-            status: OrderIssueStatus.PENDING,
-            approvedResolution: null,
-            adminNote: issue.adminNote,
-            adminId: issue.adminId,
-          },
-        });
-        throw err;
-      }
-
-      await this.logIssueEvent(
-        issue.orderId,
-        issue.id,
-        "ORDER_ISSUE_REFUND_APPROVED",
-        adminId,
-        "Yêu cầu xử lý lỗi đơn hàng đã được duyệt hoàn tiền.",
-        "review",
-      );
-      await this.notifyUserReviewed(resolved.userId, resolved.id, true).catch(
-        () => undefined,
-      );
-      return resolved;
-    }
-
-    // Hướng EXCHANGE: sprint này chỉ track trạng thái, admin ship thủ công rồi
-    // đánh dấu hoàn tất qua endpoint resolve.
-    const approved = await this.prisma.orderIssue.update({
+    // Chỉ còn hướng hoàn tiền: duyệt yêu cầu sẽ đưa đơn vào luồng hoàn trả và
+    // tạo khoản hoàn tiền chờ xử lý.
+    // Chuyển issue sang RESOLVED trước, rồi mới gọi sang luồng refund có sẵn
+    // (ordersService.updateRefund tự mở transaction riêng, không thể lồng chung
+    // transaction với orderIssue.update). Nếu updateRefund thất bại (validation
+    // hoặc lỗi tạm thời), rollback issue về PENDING để tránh lệch trạng thái
+    // (Order đã REQUIRED refund nhưng issue vẫn kẹt PENDING).
+    const resolved = await this.prisma.orderIssue.update({
       where: { id: issue.id },
       data: {
-        status: OrderIssueStatus.APPROVED,
-        approvedResolution: OrderIssueResolution.EXCHANGE,
+        status: OrderIssueStatus.RESOLVED,
+        approvedResolution: OrderIssueResolution.REFUND,
         adminNote: dto.adminNote,
         adminId,
       },
       include: issueInclude,
     });
+
+    try {
+      // Tái dùng luồng refund có sẵn: tạo Refund MANUAL + chuyển Order.refundStatus
+      // sang REQUIRED, không tự ghi đè Payment/Order.amountRefundedVnd.
+      await this.ordersService.updateRefund(
+        issue.orderId,
+        {
+          refundStatus: RefundStatus.REQUIRED,
+          internalNote: `Duyệt hoàn tiền cho issue ${issue.id} (item ${issue.orderItemId})${dto.adminNote ? `: ${dto.adminNote}` : ""}`,
+        },
+        adminId,
+      );
+    } catch (err) {
+      await this.prisma.orderIssue.update({
+        where: { id: issue.id },
+        data: {
+          status: OrderIssueStatus.PENDING,
+          approvedResolution: null,
+          adminNote: issue.adminNote,
+          adminId: issue.adminId,
+        },
+      });
+      throw err;
+    }
+
+    // Đơn chuyển sang "đã duyệt hoàn trả" để admin/theo dõi biết khách được
+    // gửi hàng về. Không chặn luồng duyệt nếu trạng thái hiện tại không hợp lệ.
+    await this.ordersService
+      .updateStatus(
+        issue.orderId,
+        {
+          status: OrderStatus.RETURN_APPROVED,
+          source: "ADMIN",
+          publicMessage:
+            "Yêu cầu hoàn trả đã được duyệt. Vui lòng gửi hàng về cửa hàng để được kiểm tra và hoàn tiền.",
+          internalNote: `Duyệt hoàn tiền cho issue ${issue.id}`,
+        },
+        adminId,
+      )
+      .catch(() => undefined);
+
     await this.logIssueEvent(
       issue.orderId,
       issue.id,
-      "ORDER_ISSUE_EXCHANGE_APPROVED",
+      "ORDER_ISSUE_REFUND_APPROVED",
       adminId,
-      "Yêu cầu xử lý lỗi đơn hàng đã được duyệt đổi hàng 1-1.",
+      "Yêu cầu xử lý lỗi đơn hàng đã được duyệt hoàn tiền.",
       "review",
     );
-    await this.notifyUserReviewed(approved.userId, approved.id, true).catch(
-      () => undefined,
-    );
-    return approved;
-  }
-
-  async resolve(issueId: string, dto: ResolveOrderIssueDto) {
-    const issue = await this.prisma.orderIssue.findUnique({
-      where: { id: issueId },
-    });
-    if (!issue) {
-      throw new NotFoundException("Không tìm thấy yêu cầu xử lý");
-    }
-    if (issue.status !== OrderIssueStatus.APPROVED) {
-      throw new BadRequestException(
-        "Chỉ có thể hoàn tất yêu cầu đổi hàng đang chờ xử lý",
-      );
-    }
-
-    const resolved = await this.prisma.orderIssue.update({
-      where: { id: issue.id },
-      data: {
-        status: OrderIssueStatus.RESOLVED,
-        ...(dto.note ? { adminNote: dto.note } : {}),
-      },
-      include: issueInclude,
-    });
-    await this.logIssueEvent(
-      issue.orderId,
-      issue.id,
-      "ORDER_ISSUE_EXCHANGE_RESOLVED",
-      undefined,
-      "Yêu cầu đổi hàng đã được xử lý xong.",
-      "resolve",
-    );
-    await this.notifyUserResolved(resolved.userId, resolved.id).catch(
+    await this.notifyUserReviewed(resolved.userId, resolved.id, true).catch(
       () => undefined,
     );
     return resolved;
@@ -471,16 +464,6 @@ export class OrderIssuesService {
         ? "Yêu cầu báo lỗi của bạn đã được duyệt, shop sẽ liên hệ để xử lý tiếp"
         : "Yêu cầu báo lỗi của bạn chưa được chấp nhận, vui lòng xem ghi chú từ shop",
       data: { issueId, type: "ORDER_ISSUE_REVIEWED" },
-    });
-  }
-
-  private async notifyUserResolved(userId: string, issueId: string) {
-    await this.notificationService.create({
-      userId,
-      type: NotificationType.ORDER_ISSUE,
-      title: "Xử lý đổi hàng hoàn tất",
-      message: "Yêu cầu đổi hàng của bạn đã được xử lý xong",
-      data: { issueId, type: "ORDER_ISSUE_RESOLVED" },
     });
   }
 }

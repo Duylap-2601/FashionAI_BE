@@ -18,7 +18,6 @@ import { JwtAuthGuard } from "../auth/guards/jwt-auth.guard";
 import { AuthenticatedUser } from "../auth/interfaces/authenticated-user.interface";
 import { buildApiResponse } from "../../common/utils/api-response.util";
 import { QueryOrderIssueDto } from "./dto/query-order-issue.dto";
-import { ResolveOrderIssueDto } from "./dto/resolve-order-issue.dto";
 import { ReviewOrderIssueDto } from "./dto/review-order-issue.dto";
 import { OrderIssuesService } from "./order-issues.service";
 
@@ -81,26 +80,6 @@ export class AdminOrderIssuesController {
       req,
       "ORDER_ISSUE_REVIEWED",
       "Xét duyệt yêu cầu thành công",
-      data,
-    );
-  }
-
-  @Patch(":issueId/resolve")
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles(Role.ADMIN)
-  @ApiOperation({
-    summary: "Admin đánh dấu đổi hàng hoàn tất (sau khi ship thủ công)",
-  })
-  async resolve(
-    @Req() req: Request,
-    @Param("issueId") issueId: string,
-    @Body() dto: ResolveOrderIssueDto,
-  ) {
-    const data = await this.orderIssuesService.resolve(issueId, dto);
-    return buildApiResponse(
-      req,
-      "ORDER_ISSUE_RESOLVED",
-      "Hoàn tất xử lý yêu cầu thành công",
       data,
     );
   }

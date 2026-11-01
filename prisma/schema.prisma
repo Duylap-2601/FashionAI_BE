@@ -194,7 +194,6 @@ enum OrderIssueReason {
 
 enum OrderIssueResolution {
   REFUND
-  EXCHANGE
 }
 
 enum OrderIssueStatus {
@@ -805,6 +804,9 @@ model Order {
   paymentStatus           PaymentStatus? @map("payment_status")
   refundStatus            RefundStatus   @default(NONE) @map("refund_status")
   refundEvidence          Json?          @map("refund_evidence")
+  refundBankName          String?        @map("refund_bank_name")
+  refundAccountNumber     String?        @map("refund_account_number")
+  refundAccountHolder     String?        @map("refund_account_holder")
   gaClientId              String?        @map("ga_client_id")
   gaSessionId             String?        @map("ga_session_id")
   createdAt               DateTime       @default(now()) @map("created_at")
@@ -940,6 +942,9 @@ model OrderIssue {
   desiredResolution  OrderIssueResolution @map("desired_resolution")
   approvedResolution OrderIssueResolution? @map("approved_resolution")
   evidenceImages     Json?                @map("evidence_images")
+  bankName           String?              @map("bank_name")
+  accountNumber      String?              @map("account_number")
+  accountHolder      String?              @map("account_holder")
   status             OrderIssueStatus     @default(PENDING)
   adminNote          String?              @map("admin_note") @db.Text
   adminId            String?              @map("admin_id") @db.Uuid

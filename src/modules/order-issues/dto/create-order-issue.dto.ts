@@ -1,6 +1,15 @@
-import { ApiProperty } from "@nestjs/swagger";
+import { ApiProperty, ApiPropertyOptional } from "@nestjs/swagger";
 import { OrderIssueReason, OrderIssueResolution } from "@prisma/client";
-import { IsEnum, IsString, Length } from "class-validator";
+import {
+  IsEnum,
+  IsIn,
+  IsNotEmpty,
+  IsOptional,
+  IsString,
+  Length,
+  Matches,
+  MaxLength,
+} from "class-validator";
 
 export class CreateOrderIssueDto {
   @ApiProperty({
@@ -18,10 +27,39 @@ export class CreateOrderIssueDto {
   @Length(10, 2000, { message: "Mô tả phải từ 10 đến 2000 ký tự" })
   description!: string;
 
-  @ApiProperty({
-    enum: OrderIssueResolution,
-    description: "Mong muốn xử lý: hoàn tiền hoặc đổi 1-1",
+  @ApiPropertyOptional({
+    enum: [OrderIssueResolution.REFUND],
+    description:
+      "Hướng xử lý. Hệ thống chỉ hỗ trợ hoàn tiền, admin không còn duyệt đổi hàng.",
   })
-  @IsEnum(OrderIssueResolution)
-  desiredResolution!: OrderIssueResolution;
+  @IsIn([OrderIssueResolution.REFUND], {
+    message: "Chỉ hỗ trợ hướng xử lý hoàn tiền (REFUND)",
+  })
+  @IsOptional()
+  desiredResolution?: OrderIssueResolution;
+
+  @ApiProperty({
+    example: "Vietcombank",
+    description: "Tên ngân hàng nhận hoàn tiền",
+  })
+  @IsString()
+  @IsNotEmpty({ message: "Vui lòng nhập tên ngân hàng nhận hoàn tiền" })
+  @MaxLength(120)
+  bankName!: string;
+
+  @ApiProperty({
+    example: "0123456789",
+    description: "Số tài khoản nhận hoàn tiền",
+  })
+  @Matches(/^[0-9]{6,20}$/, { message: "Số tài khoản phải gồm 6-20 chữ số" })
+  accountNumber!: string;
+
+  @ApiProperty({
+    example: "NGUYEN VAN A",
+    description: "Tên chủ tài khoản",
+  })
+  @IsString()
+  @IsNotEmpty({ message: "Vui lòng nhập tên chủ tài khoản" })
+  @MaxLength(120)
+  accountHolder!: string;
 }

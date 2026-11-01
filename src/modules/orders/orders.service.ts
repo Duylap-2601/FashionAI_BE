@@ -555,7 +555,7 @@ export class OrdersService {
     };
   }
 
-  async updateStatus(id: string, dtoOrStatus: OrderStatus | { status: OrderStatus; expectedStatus?: OrderStatus; publicMessage?: string; internalNote?: string }, actorId?: string) {
+  async updateStatus(id: string, dtoOrStatus: OrderStatus | { status: OrderStatus; expectedStatus?: OrderStatus; publicMessage?: string; internalNote?: string; source?: 'USER' | 'ADMIN' | 'SYSTEM' }, actorId?: string) {
     const dto = typeof dtoOrStatus === 'string' ? { status: dtoOrStatus } : dtoOrStatus;
     const status = dto.status;
     const where = this.resolveOrderWhere(id);
@@ -616,7 +616,7 @@ export class OrdersService {
         where: { id: order.id },
         data: { status, ...(needsRefundObligation ? { refundStatus: RefundStatus.REQUIRED } : {}) },
       });
-      await this.createOrderEvent(tx, { orderId: order.id, type: 'STATUS_CHANGED', source: 'ADMIN', actorId, fromStatus: order.status, toStatus: status, publicMessage: dto.publicMessage ?? ORDER_STATUS_MESSAGE[status], internalNote: dto.internalNote });
+      await this.createOrderEvent(tx, { orderId: order.id, type: 'STATUS_CHANGED', source: dto.source ?? 'ADMIN', actorId, fromStatus: order.status, toStatus: status, publicMessage: dto.publicMessage ?? ORDER_STATUS_MESSAGE[status], internalNote: dto.internalNote });
     });
 
     // Gửi email thông báo cho user; lỗi email không được làm hỏng luồng cập nhật.
@@ -699,6 +699,20 @@ export class OrdersService {
   async updateRefund(id: string, dto: RefundOrderDto, actorId: string) {
     const order = await this.findOrderByIdentifier(id);
     if (!order) throw new NotFoundException(`Không tìm thấy đơn hàng có ID ${id}`);
+
+    // Luồng trả hàng: chỉ được xác nhận hoàn tiền sau khi shop đã nhận lại hàng
+    // (RETURNED) và kiểm tra xong. Các trạng thái đang trên đường hoàn trả chưa
+    // cho chốt tiền để tránh hoàn trước khi nhận hàng.
+    const returnInTransit: OrderStatus[] = [
+      OrderStatus.RETURN_REQUESTED,
+      OrderStatus.RETURN_APPROVED,
+      OrderStatus.RETURNING,
+    ];
+    if (returnInTransit.includes(order.status) && dto.refundStatus === RefundStatus.COMPLETED) {
+      throw new BadRequestException(
+        'Cần xác nhận đã nhận lại hàng hoàn (trạng thái RETURNED) trước khi hoàn tiền.',
+      );
+    }
 
     const refundablePaymentStatuses: PaymentStatus[] = [PaymentStatus.PAID, PaymentStatus.PARTIALLY_REFUNDED, PaymentStatus.REFUNDED];
     const hasOnlineOrderPayment = order.payments?.some((payment) => {
@@ -1523,6 +1537,9 @@ export class OrdersService {
       shippingAddressSnapshot: order.shippingAddressSnapshot,
       shippingQuoteSnapshot: order.shippingQuoteSnapshot,
       refundEvidence: order.refundEvidence,
+      refundBankName: order.refundBankName,
+      refundAccountNumber: order.refundAccountNumber,
+      refundAccountHolder: order.refundAccountHolder,
       checkoutUrl: order.checkoutUrl,
       checkoutExpiresAt: order.checkoutExpiresAt,
       createdAt: order.createdAt,

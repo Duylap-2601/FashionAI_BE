@@ -47,7 +47,7 @@ export class OrderIssuesController {
   @ApiBody({
     schema: {
       type: "object",
-      required: ["reason", "description", "desiredResolution"],
+      required: ["reason", "description", "bankName", "accountNumber", "accountHolder"],
       properties: {
         reason: {
           type: "string",
@@ -57,7 +57,10 @@ export class OrderIssuesController {
           type: "string",
           example: "Áo bị lệch vai trái khoảng 4cm so với số đo đã đặt",
         },
-        desiredResolution: { type: "string", enum: ["REFUND", "EXCHANGE"] },
+        desiredResolution: { type: "string", enum: ["REFUND"] },
+        bankName: { type: "string", example: "Vietcombank" },
+        accountNumber: { type: "string", example: "0123456789" },
+        accountHolder: { type: "string", example: "NGUYEN VAN A" },
         evidenceImages: {
           type: "array",
           items: { type: "string", format: "binary" },
