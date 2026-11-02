@@ -26,7 +26,7 @@ export class GlobalExceptionFilter implements ExceptionFilter {
         ? exception.getStatus()
         : HttpStatus.INTERNAL_SERVER_ERROR;
 
-    let message = 'Lỗi hệ thống không xác định';
+    let message = 'Hệ thống đang bận, vui lòng thử lại sau ít phút.';
     let code = 'INTERNAL_SERVER_ERROR';
     let details: any = null;
 
@@ -36,7 +36,15 @@ export class GlobalExceptionFilter implements ExceptionFilter {
         message = res;
       } else if (typeof res === 'object' && res !== null) {
         message = res.message || exception.message;
-        code = typeof res.code === 'string' && res.code ? res.code : res.error ? res.error.toUpperCase().replace(/\s+/g, '_') : `HTTP_${status}`;
+        // `error` không phải lúc nào cũng là chuỗi: health check (Terminus) trả object
+        // các dependency hỏng. Gọi toUpperCase lên object sẽ throw ngay trong filter và
+        // làm sập cả process.
+        code =
+          typeof res.code === 'string' && res.code
+            ? res.code
+            : typeof res.error === 'string' && res.error
+              ? res.error.toUpperCase().replace(/\s+/g, '_')
+              : `HTTP_${status}`;
         if (res.details && typeof res.details === 'object') {
           details = res.details;
         }
@@ -46,9 +54,9 @@ export class GlobalExceptionFilter implements ExceptionFilter {
           code = 'VALIDATION_ERROR';
         }
       }
-    } else if (exception instanceof Error) {
-      message = exception.message;
     }
+    // Lỗi không phải HttpException (Prisma, provider, bug...) chỉ ghi log: message gốc có thể
+    // lộ đường dẫn file, câu SQL hay tên nhà cung cấp, nên khách chỉ thấy câu chung chung.
 
     if (status >= HttpStatus.INTERNAL_SERVER_ERROR) {
       response.locals.logError = exception;

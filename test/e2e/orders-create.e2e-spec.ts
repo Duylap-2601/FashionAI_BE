@@ -45,19 +45,25 @@ describe('POST /orders comboType (e2e)', () => {
     });
     prisma.product.findMany.mockResolvedValue([product]);
     prisma.measurement.findUnique.mockResolvedValue(fullMeasurement);
-    prisma.order.create.mockImplementation(async ({ data }: { data: any }) => ({
-      ...data,
-      id: 'order-1',
-      userId: USER_ID,
-      amountPaidVnd: BigInt(0),
-      amountRefundedVnd: BigInt(0),
-      createdAt: new Date(),
-      updatedAt: new Date(),
-      items: data.items.create.map((item: any, index: number) => ({ id: `item-${index}`, ...item })),
-      payments: [],
-      refunds: [],
-      shipments: [],
-    }));
+    let createdOrder: Record<string, unknown> | null = null;
+    prisma.order.create.mockImplementation(async ({ data }: { data: any }) => {
+      createdOrder = {
+        ...data,
+        id: 'order-1',
+        userId: USER_ID,
+        amountPaidVnd: BigInt(0),
+        amountRefundedVnd: BigInt(0),
+        createdAt: new Date(),
+        updatedAt: new Date(),
+        items: data.items.create.map((item: any, index: number) => ({ id: `item-${index}`, ...item })),
+        payments: [],
+        refunds: [],
+        shipments: [],
+      };
+      return createdOrder;
+    });
+    // Transaction chỉ lấy id; đơn đầy đủ được đọc lại sau khi commit.
+    prisma.order.findUniqueOrThrow.mockImplementation(async () => createdOrder);
 
     const created = await createTestApp({
       prisma,

@@ -34,3 +34,35 @@ export function resolveManualRefundAmount(input: {
     remainingVnd,
   };
 }
+
+/**
+ * Ghép chứng từ hoàn tiền mới vào chứng từ đã lưu trên đơn. Ảnh chứng từ được cộng
+ * dồn qua các lần (duyệt yêu cầu, chốt hoàn tiền, hoàn lại khi khách báo chưa nhận
+ * được tiền) để khách và shop xem đủ các bill. Không có gì mới thì trả về
+ * `evidence` admin gửi (undefined = giữ nguyên chứng từ cũ).
+ */
+export function mergeRefundEvidence(
+  current: unknown,
+  update: { evidence?: Record<string, unknown>; reference?: string; receiptImageUrls: string[] },
+): Record<string, unknown> | undefined {
+  const reference = update.reference?.trim();
+  if (!reference && update.receiptImageUrls.length === 0) {
+    return update.evidence;
+  }
+
+  const currentEvidence =
+    current && typeof current === 'object' && !Array.isArray(current)
+      ? (current as Record<string, unknown>)
+      : {};
+  const previousImages = Array.isArray(currentEvidence.receiptImages)
+    ? currentEvidence.receiptImages.filter((url): url is string => typeof url === 'string')
+    : [];
+  const receiptImages = [...new Set([...previousImages, ...update.receiptImageUrls])];
+
+  return {
+    ...currentEvidence,
+    ...(update.evidence ?? {}),
+    ...(reference ? { reference } : {}),
+    ...(receiptImages.length > 0 ? { receiptImages } : {}),
+  };
+}
