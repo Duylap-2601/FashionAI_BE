@@ -10,6 +10,12 @@ import { GeneratedToken } from './interfaces/token.interface';
 import { AccessTokenPayload, RefreshTokenPayload } from './types/jwt-payload.type';
 import { requireConfig } from '../../common/utils/require-config.util';
 
+// Refresh token dùng một lần, nhưng response refresh có thể mất (chuyển trang giữa
+// chừng, hai tab cùng refresh, proxy timeout khi DB chậm): BE đã xoá token cũ còn
+// trình duyệt chưa lưu cookie mới, phiên chết hẳn. Token vừa xoay được dùng lại
+// trong khoảng ngắn này để lần refresh sau vẫn qua.
+export const REFRESH_REUSE_GRACE_SECONDS = 60;
+
 @Injectable()
 export class TokenService {
   private readonly accessSecret: string;
@@ -93,18 +99,7 @@ export class TokenService {
   }
 
   async verifyRefreshToken(token: string): Promise<RefreshTokenPayload> {
-    let payload: RefreshTokenPayload;
-    try {
-      payload = await this.jwt.verifyAsync<RefreshTokenPayload>(token, {
-        secret: this.refreshSecret,
-      });
-    } catch {
-      throw new UnauthorizedException('Refresh token không hợp lệ hoặc đã hết hạn');
-    }
-
-    if (payload.type !== TOKEN_TYPES.refresh || !payload.jti || !payload.sub) {
-      throw new UnauthorizedException('Refresh token không hợp lệ');
-    }
+    const payload = await this.verifyRefreshJwt(token);
 
     const tokenHash = this.hashToken(token);
     const stored = await this.prisma.refreshToken.findUnique({
@@ -118,9 +113,24 @@ export class TokenService {
   }
 
   async consumeRefreshToken(token: string) {
-    const payload = await this.verifyRefreshToken(token);
+    const payload = await this.verifyRefreshJwt(token);
+    const tokenHash = this.hashToken(token);
+    const stored = await this.prisma.refreshToken.findUnique({
+      where: { tokenHash },
+    });
+
+    if (!stored) {
+      if (await this.isInReuseGrace(tokenHash, payload.sub)) return payload;
+      throw new UnauthorizedException('Refresh token không hợp lệ hoặc đã hết hạn');
+    }
+    if (stored.userId !== payload.sub || stored.expiresAt <= new Date()) {
+      throw new UnauthorizedException('Refresh token không hợp lệ hoặc đã hết hạn');
+    }
+
+    // Ghi grace trước khi xoá để request song song tới sau lần xoá vẫn thấy.
+    await this.redisService.set(this.refreshGraceKey(tokenHash), payload.sub, REFRESH_REUSE_GRACE_SECONDS);
     await this.prisma.refreshToken.deleteMany({
-      where: { tokenHash: this.hashToken(token) },
+      where: { tokenHash },
     });
     return payload;
   }
@@ -132,6 +142,8 @@ export class TokenService {
   }
 
   async revokeAllUserRefreshTokens(userId: string) {
+    // Đăng xuất mọi nơi / đổi mật khẩu: token vừa xoay cũng không được dùng lại nữa.
+    await this.redisService.set(this.refreshGraceBlockKey(userId), '1', REFRESH_REUSE_GRACE_SECONDS);
     const result = await this.prisma.refreshToken.deleteMany({
       where: { userId },
     });
@@ -149,6 +161,35 @@ export class TokenService {
 
   private accessBlacklistKey(jti: string) {
     return `blacklist:access:${jti}`;
+  }
+
+  private async verifyRefreshJwt(token: string): Promise<RefreshTokenPayload> {
+    let payload: RefreshTokenPayload;
+    try {
+      payload = await this.jwt.verifyAsync<RefreshTokenPayload>(token, {
+        secret: this.refreshSecret,
+      });
+    } catch {
+      throw new UnauthorizedException('Refresh token không hợp lệ hoặc đã hết hạn');
+    }
+
+    if (payload.type !== TOKEN_TYPES.refresh || !payload.jti || !payload.sub) {
+      throw new UnauthorizedException('Refresh token không hợp lệ');
+    }
+    return payload;
+  }
+
+  private async isInReuseGrace(tokenHash: string, userId: string) {
+    if ((await this.redisService.get(this.refreshGraceKey(tokenHash))) !== userId) return false;
+    return (await this.redisService.get(this.refreshGraceBlockKey(userId))) === null;
+  }
+
+  private refreshGraceKey(tokenHash: string) {
+    return `refresh:grace:${tokenHash}`;
+  }
+
+  private refreshGraceBlockKey(userId: string) {
+    return `refresh:grace-block:${userId}`;
   }
 
   private hashToken(token: string) {
