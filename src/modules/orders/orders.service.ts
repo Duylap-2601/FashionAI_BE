@@ -14,6 +14,7 @@ import { createWithUniqueOrderCode } from '../../common/utils/order-code.util';
 import { resolveGarmentUrlForColor } from '../../common/utils/garment-image.util';
 import { mergeRefundEvidence, resolveManualRefundAmount, resolveRefundPaymentStatus } from '../../common/utils/refund.util';
 import { COLLECTED_PAYMENT_STATUSES } from '../../common/constants/order.constants';
+import { releaseOrderCouponRedemption } from '../../common/utils/coupon-redemption.util';
 import { isAllowedProductColor } from '../../common/utils/product-color.util';
 import { CreateOrderDto } from './dto/create-order.dto';
 import {
@@ -25,6 +26,8 @@ import {
   ORDER_STATUS_TRANSITIONS,
   RETURN_FLOW_STATUSES,
   STATUS_NOTIFY_EMAIL,
+  UNPAID_ORDER_EXPIRY_BATCH,
+  UNPAID_ORDER_TTL_MS,
   UUID_REGEX,
 } from './constants/order-flow.constants';
 import { CreateMeasurementReviewDto, UpdateItemMeasurementDto } from './dto/measurement-review.dto';
@@ -479,6 +482,7 @@ export class OrdersService {
           publicMessage: 'Khách hàng đã hủy đơn trước khi thanh toán.',
           deduplicationKey: `order:${order.id}:cancel:user`,
         });
+        await releaseOrderCouponRedemption(tx, order.id);
       }
       return result;
     });
@@ -498,6 +502,71 @@ export class OrdersService {
     ).catch(() => undefined);
 
     return this.findOne(userId, order.id);
+  }
+
+  /**
+   * Hủy các đơn quá hạn thanh toán: ghi lịch sử, trả lượt mã giảm giá, báo khách.
+   * Chạy từ cron; điều kiện CREATED + PENDING nằm trong updateMany nên đơn vừa được
+   * webhook ghi PAID không bị hủy nhầm.
+   */
+  async expireUnpaidOrders(now = new Date()) {
+    const candidates = await this.prisma.order.findMany({
+      where: {
+        status: OrderStatus.CREATED,
+        paymentStatus: PaymentStatus.PENDING,
+        createdAt: { lt: new Date(now.getTime() - UNPAID_ORDER_TTL_MS) },
+      },
+      select: { id: true, userId: true, orderCode: true, targetTier: true },
+      orderBy: { createdAt: 'asc' },
+      take: UNPAID_ORDER_EXPIRY_BATCH,
+    });
+
+    let expired = 0;
+    for (const order of candidates) {
+      const count = await this.prisma.$transaction(async (tx) => {
+        const result = await tx.order.updateMany({
+          where: { id: order.id, status: OrderStatus.CREATED, paymentStatus: PaymentStatus.PENDING },
+          data: {
+            status: OrderStatus.CANCELLED,
+            paymentStatus: PaymentStatus.EXPIRED,
+            checkoutUrl: null,
+            checkoutExpiresAt: null,
+          },
+        });
+        if (result.count === 0) return 0;
+        await tx.payment.updateMany({
+          where: { orderId: order.id, status: PaymentStatus.PENDING, transactionId: null },
+          data: { status: PaymentStatus.EXPIRED },
+        });
+        await releaseOrderCouponRedemption(tx, order.id);
+        await this.createOrderEvent(tx, {
+          orderId: order.id,
+          type: 'ORDER_PAYMENT_EXPIRED',
+          source: 'SYSTEM',
+          fromStatus: OrderStatus.CREATED,
+          toStatus: OrderStatus.CANCELLED,
+          publicMessage: 'Đơn đã tự hủy vì quá hạn thanh toán.',
+          deduplicationKey: `order:${order.id}:payment-expired`,
+        });
+        return result.count;
+      });
+      if (count === 0) continue;
+      expired += 1;
+
+      // Đơn nâng cấp gói không hiện trong danh sách đơn hàng: không báo.
+      if (!order.targetTier) {
+        this.notificationService
+          .create({
+            userId: order.userId,
+            type: NotificationType.ORDER_STATUS,
+            title: `Đơn #${order.orderCode} đã tự hủy`,
+            message: 'Đơn quá hạn thanh toán nên đã tự hủy. Bạn có thể đặt lại từ giỏ hàng.',
+            data: { orderId: order.id, orderCode: order.orderCode, type: 'ORDER_PAYMENT_EXPIRED' },
+          })
+          .catch(() => undefined);
+      }
+    }
+    return { expired, remaining: candidates.length === UNPAID_ORDER_EXPIRY_BATCH };
   }
 
   async findAllAdmin(query: QueryAdminOrdersDto) {
@@ -623,6 +692,16 @@ export class OrdersService {
         where: { id: order.id },
         data: { status, ...(needsRefundObligation ? { refundStatus: RefundStatus.REQUIRED } : {}) },
       });
+      const isUnpaidCancel =
+        status === OrderStatus.CANCELLED &&
+        (order.paymentStatus === null || !COLLECTED_PAYMENT_STATUSES.includes(order.paymentStatus));
+      if (isUnpaidCancel) {
+        await tx.payment.updateMany({
+          where: { orderId: order.id, status: PaymentStatus.PENDING, transactionId: null },
+          data: { status: PaymentStatus.EXPIRED },
+        });
+        await releaseOrderCouponRedemption(tx, order.id);
+      }
       await this.createOrderEvent(tx, { orderId: order.id, type: 'STATUS_CHANGED', source: dto.source ?? 'ADMIN', actorId, fromStatus: order.status, toStatus: status, publicMessage: dto.publicMessage ?? ORDER_STATUS_MESSAGE[status], internalNote: dto.internalNote });
     });
 
@@ -1618,6 +1697,11 @@ export class OrdersService {
       status: order.status,
       displayStatus,
       paymentStatus: order.paymentStatus,
+      // Hạn thanh toán: quá hạn thì cron tự hủy đơn.
+      paymentDueAt:
+        order.status === OrderStatus.CREATED && order.paymentStatus === PaymentStatus.PENDING
+          ? new Date(order.createdAt.getTime() + UNPAID_ORDER_TTL_MS).toISOString()
+          : null,
       refundStatus: order.refundStatus,
       fulfillmentFlowVersion: order.fulfillmentFlowVersion,
       shippingInfo: order.shippingInfo,

@@ -5,12 +5,11 @@ import { PrismaService } from '../../database/prisma.service';
 import { AuthService } from '../auth/auth.service';
 import { SubscriptionService } from '../payments/subscription.service';
 import { PaymentsService } from '../payments/payments.service';
-import { OrderStatus, PaymentStatus } from '@prisma/client';
+import { OrdersService } from '../orders/orders.service';
 
 /**
  * Dọn dẹp định kỳ những bảng chỉ phình ra theo thời gian: token đã hết hạn,
- * cache kết quả thử đồ quá TTL, subscription hết hạn, và đơn hàng PENDING
- * chưa thanh toán quá 24h.
+ * cache kết quả thử đồ quá TTL, subscription hết hạn; và hủy đơn quá hạn thanh toán.
  */
 @Injectable()
 export class MaintenanceService {
@@ -23,6 +22,7 @@ export class MaintenanceService {
     private readonly authService: AuthService,
     private readonly subscriptionService: SubscriptionService,
     private readonly paymentsService: PaymentsService,
+    private readonly ordersService: OrdersService,
   ) {
     this.enabled = this.config.get<string>('MAINTENANCE_CRON_ENABLED') !== 'false';
     if (!this.enabled) {
@@ -42,29 +42,12 @@ export class MaintenanceService {
 
       const subscriptionResult = await this.subscriptionService.expireSubscriptions();
 
-      // Expire CREATED orders that haven't been paid after 24h. Bao gồm cả
-      // đơn subscription/renewal (có targetTier) để không tồn đọng nhiều đơn
-      // PENDING khi user bỏ qua email nhắc gia hạn.
-      const expiredOrders = await this.prisma.order.updateMany({
-        where: {
-          status: OrderStatus.CREATED,
-          paymentStatus: PaymentStatus.PENDING,
-          createdAt: { lt: new Date(Date.now() - 24 * 60 * 60 * 1000) },
-        },
-        data: {
-          status: OrderStatus.CANCELLED,
-          paymentStatus: PaymentStatus.EXPIRED,
-          checkoutUrl: null,
-          checkoutExpiresAt: null,
-        },
-      });
-
       this.logger.log(
         `Dọn dẹp định kỳ hoàn tất | refreshTokens=${tokens.deletedRefreshTokens} ` +
           `resetTokens=${tokens.deletedResetTokens} verifyTokens=${tokens.deletedVerifyTokens} ` +
           `tryOnCache=${tryOnCache.count} activatedSubscriptions=${subscriptionResult.activatedSubscriptions} ` +
           `cancelledSubscriptions=${subscriptionResult.cancelledSubscriptions} expiredSubscriptions=${subscriptionResult.expiredSubscriptions} ` +
-          `downgradedUsers=${subscriptionResult.downgradedUsers} expiredOrders=${expiredOrders.count}`,
+          `downgradedUsers=${subscriptionResult.downgradedUsers}`,
       );
     } catch (err) {
       const message = err instanceof Error ? err.message : 'unknown';
@@ -84,6 +67,23 @@ export class MaintenanceService {
     } catch (err) {
       const message = err instanceof Error ? err.message : 'unknown';
       this.logger.error(`Gửi nhắc gia hạn thất bại: ${message}`);
+    }
+  }
+
+  // Đơn (kể cả đơn nâng cấp / gia hạn gói) chưa thanh toán quá hạn: hủy sớm để hạn
+  // khách thấy trên trang đơn là thật, không phải chờ tới lượt dọn dẹp ban đêm.
+  @Cron(CronExpression.EVERY_10_MINUTES, { name: 'expire-unpaid-orders' })
+  async expireUnpaidOrders() {
+    if (!this.enabled) return;
+
+    try {
+      const result = await this.ordersService.expireUnpaidOrders();
+      if (result.expired > 0) {
+        this.logger.log(`Đã hủy ${result.expired} đơn quá hạn thanh toán${result.remaining ? ' (còn đơn chờ lần sau)' : ''}`);
+      }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'unknown';
+      this.logger.error(`Hủy đơn quá hạn thanh toán thất bại: ${message}`);
     }
   }
 

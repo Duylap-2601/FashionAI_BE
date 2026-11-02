@@ -34,6 +34,7 @@ import {
   isUpgrade,
   type UpgradeProration,
 } from '../../common/constants/subscription-plans.constants';
+import { releaseOrderCouponRedemption } from '../../common/utils/coupon-redemption.util';
 
 /** Link thanh toán coi như hết hiệu lực sau 24h; tạo lại link mới khi user quay lại. */
 const CHECKOUT_TTL_MS = 24 * 60 * 60 * 1000;
@@ -235,13 +236,17 @@ export class PaymentsService {
    * tham số nào của riêng đơn hàng, nên FE không biết đơn nào vừa thanh toán.
    * Nhúng sẵn orderCode + status vào URL trước khi ký để FE tra được đúng đơn.
    */
+  // Trang kết quả trên FE cần orderId để đưa khách về đúng đơn (thanh toán lại ở đó),
+  // không quay về /checkout tạo thêm đơn mới.
   private appendOrderCodeParam(
     baseUrl: string,
-    orderCode: number,
+    order: Pick<Order, 'id' | 'orderCode' | 'targetTier'>,
     status: 'success' | 'error' | 'cancel',
   ) {
     const url = new URL(baseUrl);
-    url.searchParams.set('orderCode', String(orderCode));
+    url.searchParams.set('orderCode', String(order.orderCode));
+    url.searchParams.set('orderId', order.id);
+    if (order.targetTier) url.searchParams.set('kind', 'subscription');
     url.searchParams.set('status', status);
     return url.toString();
   }
@@ -267,18 +272,18 @@ export class PaymentsService {
       'https://pay-sandbox.sepay.vn/v1/checkout/init',
     );
     const successUrl = this.appendOrderCodeParam(
-      this.configService.get<string>('SEPAY_SUCCESS_URL', 'http://localhost:3000/orders/success'),
-      orderCode,
+      this.configService.get<string>('SEPAY_SUCCESS_URL', 'http://localhost:3000/payment/success'),
+      order,
       'success',
     );
     const errorUrl = this.appendOrderCodeParam(
-      this.configService.get<string>('SEPAY_ERROR_URL', 'http://localhost:3000/checkout/error'),
-      orderCode,
+      this.configService.get<string>('SEPAY_ERROR_URL', 'http://localhost:3000/payment/error'),
+      order,
       'error',
     );
     const cancelUrl = this.appendOrderCodeParam(
-      this.configService.get<string>('SEPAY_CANCEL_URL', 'http://localhost:3000/checkout'),
-      orderCode,
+      this.configService.get<string>('SEPAY_CANCEL_URL', 'http://localhost:3000/payment/cancel'),
+      order,
       'cancel',
     );
 
@@ -1351,6 +1356,7 @@ export class PaymentsService {
       } else {
         await tx.payment.create({ data: { orderId: order.id, ...voidedPaymentData } });
       }
+      await releaseOrderCouponRedemption(tx, order.id);
     });
   }
 

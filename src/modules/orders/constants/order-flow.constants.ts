@@ -28,6 +28,11 @@ export const UUID_REGEX =
 
 export const MAX_INT4 = 2_147_483_647;
 
+// Đơn chưa thanh toán tự hủy sau khoảng này (khách thấy hạn trên trang đơn).
+export const UNPAID_ORDER_TTL_MS = 24 * 60 * 60 * 1000;
+// Số đơn quá hạn xử lý mỗi lần chạy cron; phần còn lại để lần sau.
+export const UNPAID_ORDER_EXPIRY_BATCH = 100;
+
 export const ORDER_STATUS_TRANSITIONS: Record<OrderStatus, OrderStatus[]> = {
   [OrderStatus.CREATED]: [
     OrderStatus.MEASUREMENT_REVIEW,
