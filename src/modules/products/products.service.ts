@@ -44,6 +44,7 @@ export class ProductsService {
       category: dto.category,
       garmentType: dto.garmentType,
       layerRole: dto.layerRole,
+      gender: dto.gender,
       color: dto.color,
       price: dto.price,
       brand: dto.brand ?? 'StAie. SIGNATURE',
@@ -105,6 +106,7 @@ export class ProductsService {
       material,
       garmentType,
       layerRole,
+      gender,
       minPrice,
       maxPrice,
       status = ProductStatus.ACTIVE,
@@ -156,6 +158,7 @@ export class ProductsService {
       ...(category ? { category } : {}),
       ...(garmentType ? { garmentType } : {}),
       ...(layerRole ? { layerRole } : {}),
+      ...(gender ? { gender } : {}),
       ...(material ? { material: { contains: material, mode: Prisma.QueryMode.insensitive } } : {}),
       ...(andFilters.length > 0 ? { AND: andFilters } : {}),
     };

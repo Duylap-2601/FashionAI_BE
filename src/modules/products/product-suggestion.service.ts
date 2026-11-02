@@ -1,11 +1,13 @@
 import { Injectable } from '@nestjs/common';
-import { ConfigService } from '@nestjs/config';
-import { GarmentCategory, GarmentType, LayerRole, ProductStatus } from '@prisma/client';
+import { GarmentCategory, GarmentType, LayerRole, ProductGender, ProductStatus } from '@prisma/client';
 import * as crypto from 'crypto';
 import { PrismaService } from '../../database/prisma.service';
 import { resolveLayerRole } from './utils/layer-role.util';
 
 export type OutfitRole = 'outer' | 'top' | 'dress' | 'bottom';
+
+/** Giới tính dùng để lọc catalog; UNISEX không phải đối tượng lọc mà luôn đi kèm cả hai. */
+export type CatalogAudience = Exclude<ProductGender, typeof ProductGender.UNISEX>;
 
 /** Một sản phẩm trong catalog rút gọn đưa vào prompt AI, tham chiếu bằng mã ngắn P1, P2... */
 export interface StylingCatalogEntry {
@@ -15,17 +17,20 @@ export interface StylingCatalogEntry {
   category: GarmentCategory;
   garmentType: GarmentType | null;
   layerRole: LayerRole;
+  gender: ProductGender;
   colors: string[];
   material: string | null;
   price: number;
 }
 
+type CatalogProduct = Omit<StylingCatalogEntry, 'code'>;
+
 export interface StylingCatalog {
   entries: StylingCatalogEntry[];
   byCode: Map<string, StylingCatalogEntry>;
-  /** Đối tượng khách của catalog (VD "thời trang nữ"): Product chưa có field giới tính nên AI không tự biết. */
+  /** Lưu ý về giới tính cho AI, sinh từ `Product.gender` (VD cửa hàng chưa bán đồ nam). */
   audienceNote: string;
-  /** Đổi khi sản phẩm được thêm/bớt khỏi catalog, dùng làm một phần cache key. */
+  /** Đổi khi sản phẩm được thêm/bớt khỏi catalog hoặc đổi giới tính, dùng làm một phần cache key. */
   fingerprint: string;
 }
 
@@ -70,7 +75,6 @@ export interface ResolveOutfitsOptions {
 }
 
 // Catalog hiện ~30 món nên đưa nguyên vào prompt; vượt ngưỡng này cần lọc trước khi gửi AI.
-const DEFAULT_AUDIENCE_NOTE = 'Toàn bộ sản phẩm hiện là thời trang NỮ (công sở, dự tiệc); cửa hàng chưa bán đồ nam.';
 const CATALOG_LIMIT = 150;
 const CATALOG_CACHE_TTL_MS = 60 * 1000;
 const MAX_OUTFITS = 4;
@@ -102,22 +106,53 @@ const LAYER_ROLE_LABELS: Record<LayerRole, string> = {
   FULL_BODY: 'Toàn thân',
 };
 
+const GENDER_LABELS: Record<ProductGender, string> = {
+  FEMALE: 'Nữ',
+  MALE: 'Nam',
+  UNISEX: 'Unisex',
+};
+
+const AUDIENCE_LABELS: Record<CatalogAudience, string> = {
+  FEMALE: 'nữ',
+  MALE: 'nam',
+};
+
 /**
  * Catalog cho AI Stylist/Chat: đưa danh sách sản phẩm đang bán vào prompt bằng mã ngắn,
  * rồi đổi mã AI trả về thành sản phẩm thật. Mã AI tự bịa (không có trong catalog) bị bỏ.
  */
 @Injectable()
 export class ProductSuggestionService {
-  private cachedCatalog: { value: StylingCatalog; expiresAt: number } | null = null;
+  private cachedProducts: { value: CatalogProduct[]; expiresAt: number } | null = null;
 
-  constructor(
-    private readonly prisma: PrismaService,
-    private readonly config: ConfigService,
-  ) {}
+  constructor(private readonly prisma: PrismaService) {}
 
-  async getCatalog(): Promise<StylingCatalog> {
-    if (this.cachedCatalog && this.cachedCatalog.expiresAt > Date.now()) {
-      return this.cachedCatalog.value;
+  /**
+   * Catalog đang bán. Có `audience` thì chỉ giữ đồ của giới tính đó và đồ UNISEX,
+   * mã P1..Pn đánh theo danh sách đã lọc.
+   */
+  async getCatalog(audience: CatalogAudience | null = null): Promise<StylingCatalog> {
+    const products = await this.loadCatalogProducts();
+    const matching = audience
+      ? products.filter((product) => product.gender === audience || product.gender === ProductGender.UNISEX)
+      : products;
+    const entries = matching.map((product, index) => ({ code: `P${index + 1}`, ...product }));
+
+    return {
+      entries,
+      byCode: new Map(entries.map((entry) => [entry.code, entry])),
+      audienceNote: buildAudienceNote(products, audience),
+      fingerprint: crypto
+        .createHash('sha256')
+        .update(entries.map((entry) => `${entry.id}:${entry.gender}`).sort().join('|'))
+        .digest('hex')
+        .slice(0, 16),
+    };
+  }
+
+  private async loadCatalogProducts(): Promise<CatalogProduct[]> {
+    if (this.cachedProducts && this.cachedProducts.expiresAt > Date.now()) {
+      return this.cachedProducts.value;
     }
 
     const products = await this.prisma.product.findMany({
@@ -130,6 +165,7 @@ export class ProductSuggestionService {
         category: true,
         garmentType: true,
         layerRole: true,
+        gender: true,
         color: true,
         colors: true,
         material: true,
@@ -137,32 +173,21 @@ export class ProductSuggestionService {
       },
     });
 
-    const entries = products.map((product, index) => {
+    const value = products.map((product) => {
       const colorNames = toColorNames(product.colors);
       return {
-        code: `P${index + 1}`,
         id: product.id,
         name: product.name.trim(),
         category: product.category,
         garmentType: product.garmentType,
         layerRole: resolveLayerRole(product),
+        gender: product.gender,
         colors: colorNames.length ? colorNames : product.color?.trim() ? [product.color.trim()] : [],
         material: product.material?.trim() || null,
         price: Number(product.price),
       };
     });
-
-    const value: StylingCatalog = {
-      entries,
-      byCode: new Map(entries.map((entry) => [entry.code, entry])),
-      audienceNote: this.config.get<string>('AI_CATALOG_AUDIENCE_NOTE')?.trim() || DEFAULT_AUDIENCE_NOTE,
-      fingerprint: crypto
-        .createHash('sha256')
-        .update(entries.map((entry) => entry.id).sort().join('|'))
-        .digest('hex')
-        .slice(0, 16),
-    };
-    this.cachedCatalog = { value, expiresAt: Date.now() + CATALOG_CACHE_TTL_MS };
+    this.cachedProducts = { value, expiresAt: Date.now() + CATALOG_CACHE_TTL_MS };
     return value;
   }
 
@@ -174,6 +199,7 @@ export class ProductSuggestionService {
           entry.name,
           entry.garmentType ? GARMENT_TYPE_LABELS[entry.garmentType] : CATEGORY_LABELS[entry.category],
           `lớp: ${LAYER_ROLE_LABELS[entry.layerRole]}`,
+          `giới tính: ${GENDER_LABELS[entry.gender]}`,
           entry.colors.length ? `màu: ${entry.colors.join(', ')}` : null,
           entry.material ? `chất liệu: ${entry.material}` : null,
           `${entry.price.toLocaleString('vi-VN')}đ`,
@@ -333,6 +359,35 @@ export class ProductSuggestionService {
 
 export function collectProductIds(outfits: StoredOutfit[]): string[] {
   return outfits.flatMap((outfit) => outfit.items.map((item) => item.productId));
+}
+
+/** Giới tính người dùng chọn ở AI Stylist ('male' | 'female' | 'other') sang giới tính lọc catalog; 'other'/trống thì không lọc. */
+export function toCatalogAudience(genderPreference: string | null | undefined): CatalogAudience | null {
+  switch (genderPreference?.trim().toLowerCase()) {
+    case 'male':
+      return ProductGender.MALE;
+    case 'female':
+      return ProductGender.FEMALE;
+    default:
+      return null;
+  }
+}
+
+/** `products` là toàn bộ catalog (chưa lọc) để biết cửa hàng có bán đồ của từng giới tính hay không. */
+function buildAudienceNote(products: CatalogProduct[], audience: CatalogAudience | null): string {
+  const notes = [
+    'Mục "giới tính" cho biết món dành cho ai, Unisex mặc được cho cả nam và nữ. Chỉ gợi ý món hợp với giới tính của người dùng.',
+  ];
+  if (audience) {
+    notes.push(`Danh mục đã lọc theo giới tính người dùng: chỉ gồm đồ ${AUDIENCE_LABELS[audience]} và đồ unisex.`);
+  }
+  const genders: CatalogAudience[] = audience ? [audience] : [ProductGender.FEMALE, ProductGender.MALE];
+  for (const gender of genders) {
+    if (!products.some((product) => product.gender === gender)) {
+      notes.push(`Cửa hàng hiện chưa bán đồ ${AUDIENCE_LABELS[gender]}.`);
+    }
+  }
+  return notes.join(' ');
 }
 
 function toOutfitRole(product: Pick<SuggestedProduct, 'layerRole'>): OutfitRole {

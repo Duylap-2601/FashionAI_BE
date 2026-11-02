@@ -83,6 +83,7 @@ export class ProductsController {
         name: { type: 'string', example: 'Áo sơ mi trắng premium' },
         description: { type: 'string' },
         category: { type: 'string', enum: ['UPPER', 'LOWER', 'FULL_BODY'] },
+        gender: { type: 'string', enum: ['FEMALE', 'MALE', 'UNISEX'], description: 'Mặc định FEMALE' },
         color: { type: 'string', example: 'Trắng' },
         material: { type: 'string', example: 'Cotton 100%', description: 'Chất liệu vải' },
         price: { type: 'number', example: 350000 },

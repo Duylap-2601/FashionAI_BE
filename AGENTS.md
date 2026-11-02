@@ -86,6 +86,8 @@ Existing ownership boundaries:
   `Product.layerRole` (OUTER/INNER/BOTTOM/FULL_BODY) is the source of truth for
   garment layering; nullable for legacy rows, with `resolveLayerRole` fallback in
   `products/utils/layer-role.util.ts` used by try-on and AI suggestions.
+  `Product.gender` (FEMALE/MALE/UNISEX, default FEMALE) says who an item is for;
+  `GET /products?gender=` matches it exactly.
 - `sale-campaigns`: admin-managed percentage campaigns (`SaleCampaign` +
   `SaleCampaignItem`) scoped to a product list with optional `startsAt`/`endsAt`.
   The effective sale price is derived at read/checkout time by
@@ -127,8 +129,10 @@ Existing ownership boundaries:
   via `products/ProductSuggestionService` (short codes P1..Pn in the prompt,
   hallucinated codes dropped, only product ids stored, hydrated on read). The
   stylist user photo is optional, needs `imageConsent`, and is never stored
-  (only its hash, for cache lookup). `Product` has no gender field, so
-  `AI_CATALOG_AUDIENCE_NOTE` tells the AI who the catalog is for.
+  (only its hash, for cache lookup). The stylist filters the catalog by
+  `genderPreference` (male/female keep that gender plus UNISEX; other/none keep
+  all). Chat has no gender input, so it gets the whole catalog with each item's
+  gender. `audienceNote` is derived from the data (e.g. "no menswear yet").
 - `outbox`: transactional outbox pattern (`OutboxEvent` + BullMQ). Business
   modules write an outbox event inside the same DB transaction as their state
   change via `OutboxService.createEvent`, or enqueue post-commit via

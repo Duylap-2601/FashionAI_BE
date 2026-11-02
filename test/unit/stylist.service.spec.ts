@@ -22,9 +22,9 @@ describe('StylistService', () => {
 
   // Catalog đang bán (getCatalog) và sản phẩm load lại khi ghép outfit (loadProducts).
   const catalogRows = [
-    { id: 'shirt-1', name: 'Áo Sơ Mi Trắng', category: 'UPPER', garmentType: 'SHIRT', color: 'Trắng', colors: [{ name: 'Trắng' }], material: 'kate', price: '550000' },
-    { id: 'pants-1', name: 'Quần Tây Be', category: 'LOWER', garmentType: 'PANTS', color: 'Be', colors: [], material: null, price: '550000' },
-    { id: 'blazer-1', name: 'Blazer Đen', category: 'UPPER', garmentType: 'JACKET', color: 'Đen', colors: [{ name: 'Đen' }], material: 'kaki', price: '750000' },
+    { id: 'shirt-1', name: 'Áo Sơ Mi Trắng', category: 'UPPER', garmentType: 'SHIRT', gender: 'FEMALE', color: 'Trắng', colors: [{ name: 'Trắng' }], material: 'kate', price: '550000' },
+    { id: 'pants-1', name: 'Quần Tây Be', category: 'LOWER', garmentType: 'PANTS', gender: 'FEMALE', color: 'Be', colors: [], material: null, price: '550000' },
+    { id: 'blazer-1', name: 'Blazer Đen', category: 'UPPER', garmentType: 'JACKET', gender: 'FEMALE', color: 'Đen', colors: [{ name: 'Đen' }], material: 'kaki', price: '750000' },
   ];
   const productRows = catalogRows.map((row) => ({
     ...row,
@@ -92,7 +92,7 @@ describe('StylistService', () => {
         delete: jest.fn(),
       },
     };
-    productSuggestions = new ProductSuggestionService(prisma as PrismaService, { get: () => undefined } as any);
+    productSuggestions = new ProductSuggestionService(prisma as PrismaService);
     quota = { consumeQuota: jest.fn().mockResolvedValue(1) };
 
     const config = {
@@ -233,6 +233,31 @@ describe('StylistService', () => {
     // DB chỉ lưu productId, không lưu thông tin sản phẩm.
     const saved = prisma.stylistResult.create.mock.calls[0][0].data.analysisResult;
     expect(saved.outfits[0].items[0]).toEqual({ productId: 'pants-1', note: 'Ống suông' });
+  });
+
+  it('should only show items for the chosen gender plus unisex items to Gemini', async () => {
+    const mixedRows = [
+      ...catalogRows,
+      { id: 'men-shirt-1', name: 'Áo Sơ Mi Nam', category: 'UPPER', garmentType: 'SHIRT', gender: 'MALE', color: 'Xanh', colors: [], material: null, price: '600000' },
+      { id: 'tee-1', name: 'Áo Thun Unisex', category: 'UPPER', garmentType: 'SHIRT', gender: 'UNISEX', color: 'Trắng', colors: [], material: null, price: '300000' },
+    ];
+    prisma.product.findMany = jest.fn((args: any) => Promise.resolve(args?.where?.id?.in ? [] : mixedRows));
+    const dto = new StylistRequestDto();
+    dto.occasion = 'Phỏng vấn';
+    dto.genderPreference = 'male';
+    const emptyJson = JSON.stringify({ ...JSON.parse(outfitJson), outfits: [], skinTone: null, personalColor: null, bodyType: null });
+    (service as any).ai.models.generateContent.mockResolvedValue({ text: emptyJson });
+    prisma.stylistResult.create.mockImplementation(({ data }: any) =>
+      Promise.resolve({ ...data, id: 'result-men', product: null, createdAt: new Date() }),
+    );
+
+    await service.analyzeAndAdvise('user-1', undefined, dto);
+
+    const prompt = (service as any).ai.models.generateContent.mock.calls[0][0].contents[0].parts[0].text;
+    expect(prompt).toContain('P1 | Áo Sơ Mi Nam');
+    expect(prompt).toContain('P2 | Áo Thun Unisex | Áo sơ mi/áo kiểu | lớp: Mặc trong | giới tính: Unisex');
+    expect(prompt).not.toContain('Áo Sơ Mi Trắng');
+    expect(prompt).toContain('chỉ gồm đồ nam và đồ unisex');
   });
 
   it('should keep only outfits containing the chosen product', async () => {

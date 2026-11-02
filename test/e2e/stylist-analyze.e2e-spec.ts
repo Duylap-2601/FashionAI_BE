@@ -23,8 +23,8 @@ const PNG_1X1 = Buffer.from(
 );
 
 const catalogRows = [
-  { id: '11111111-1111-4111-8111-111111111111', name: 'Áo Sơ Mi Trắng', category: 'UPPER', garmentType: 'SHIRT', color: 'Trắng', colors: [{ name: 'Trắng' }], material: 'kate', price: '550000' },
-  { id: '22222222-2222-4222-8222-222222222222', name: 'Chân Váy Be', category: 'LOWER', garmentType: 'SKIRT', color: 'Be', colors: [{ name: 'Be' }], material: null, price: '550000' },
+  { id: '11111111-1111-4111-8111-111111111111', name: 'Áo Sơ Mi Trắng', category: 'UPPER', garmentType: 'SHIRT', gender: 'FEMALE', color: 'Trắng', colors: [{ name: 'Trắng' }], material: 'kate', price: '550000' },
+  { id: '22222222-2222-4222-8222-222222222222', name: 'Chân Váy Be', category: 'LOWER', garmentType: 'SKIRT', gender: 'FEMALE', color: 'Be', colors: [{ name: 'Be' }], material: null, price: '550000' },
 ];
 
 const geminiResult = {
