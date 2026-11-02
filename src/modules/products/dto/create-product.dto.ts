@@ -1,5 +1,5 @@
 import { ApiProperty } from '@nestjs/swagger';
-import { GarmentCategory, LayerRole, ProductStatus } from '@prisma/client';
+import { GarmentCategory, LayerRole, ProductGender, ProductStatus } from '@prisma/client';
 import { Transform, Type } from 'class-transformer';
 import {
   IsArray,
@@ -65,6 +65,16 @@ export class CreateProductDto {
   @IsEnum(LayerRole)
   @IsOptional()
   layerRole?: LayerRole;
+
+  @ApiProperty({
+    enum: ProductGender,
+    description: 'Giới tính: FEMALE (đồ nữ), MALE (đồ nam), UNISEX. AI Stylist lọc catalog theo field này.',
+    default: ProductGender.FEMALE,
+    required: false,
+  })
+  @IsEnum(ProductGender)
+  @IsOptional()
+  gender?: ProductGender;
 
   @ApiProperty({ description: 'Màu sắc', example: 'Trắng', required: false })
   @IsString()

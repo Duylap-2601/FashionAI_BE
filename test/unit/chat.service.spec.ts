@@ -15,9 +15,9 @@ describe('ChatService', () => {
   let quota: any;
 
   const catalogRows = [
-    { id: 'shirt-1', name: 'Áo Sơ Mi Trắng', category: 'UPPER', garmentType: 'SHIRT', color: 'Trắng', colors: [{ name: 'Trắng' }], material: null, price: '550000' },
-    { id: 'skirt-1', name: 'Chân Váy Be', category: 'LOWER', garmentType: 'SKIRT', color: 'Be', colors: [{ name: 'Be' }], material: null, price: '550000' },
-    { id: 'dress-1', name: 'Đầm Đen', category: 'FULL_BODY', garmentType: 'DRESS', color: 'Đen', colors: [], material: null, price: '750000' },
+    { id: 'shirt-1', name: 'Áo Sơ Mi Trắng', category: 'UPPER', garmentType: 'SHIRT', gender: 'FEMALE', color: 'Trắng', colors: [{ name: 'Trắng' }], material: null, price: '550000' },
+    { id: 'skirt-1', name: 'Chân Váy Be', category: 'LOWER', garmentType: 'SKIRT', gender: 'FEMALE', color: 'Be', colors: [{ name: 'Be' }], material: null, price: '550000' },
+    { id: 'dress-1', name: 'Đầm Đen', category: 'FULL_BODY', garmentType: 'DRESS', gender: 'FEMALE', color: 'Đen', colors: [], material: null, price: '750000' },
   ];
   const productRows = catalogRows.map((row) => ({ ...row, garmentUrl: `https://cdn/${row.id}.png`, images: [], status: 'ACTIVE' }));
 
@@ -57,7 +57,7 @@ describe('ChatService', () => {
       config,
       prisma as PrismaService,
       quota as QuotaService,
-      new ProductSuggestionService(prisma as PrismaService, { get: () => undefined } as any),
+      new ProductSuggestionService(prisma as PrismaService),
     );
   });
 

@@ -17,12 +17,13 @@ import {
   StoredOutfit,
   StylingCatalog,
   collectProductIds,
+  toCatalogAudience,
 } from '../products/product-suggestion.service';
 import { StylistRequestDto } from './dto/stylist-request.dto';
 import * as crypto from 'crypto';
 
 // Tăng khi đổi prompt/cấu trúc kết quả để cache cũ (khác cấu trúc) không bị trả lại.
-const STYLIST_PROMPT_VERSION = 'v4-color-hex';
+const STYLIST_PROMPT_VERSION = 'v5-product-gender';
 
 interface ProductContext {
   id: string;
@@ -171,7 +172,8 @@ export class StylistService {
 
     // Ảnh chỉ dùng để phân tích rồi bỏ; giữ hash (không khôi phục được ảnh) để tra cache.
     const humanImageHash = humanImage ? this.computeHash(humanImage.buffer) : null;
-    const catalog = await this.productSuggestions.getCatalog();
+    // Chọn Nam/Nữ thì AI chỉ thấy đồ của giới tính đó và đồ unisex.
+    const catalog = await this.productSuggestions.getCatalog(toCatalogAudience(dto.genderPreference));
     const cacheKey = this.buildCacheKey(userId, humanImageHash, catalog.fingerprint, dto);
 
     const cachedResult = await this.prisma.stylistResult.findFirst({
@@ -411,7 +413,7 @@ export class StylistService {
 
     parts.push(
       '',
-      `DANH MỤC SẢN PHẨM ĐANG BÁN (mã | tên | loại | màu | chất liệu | giá). Lưu ý: ${catalog.audienceNote}`,
+      `DANH MỤC SẢN PHẨM ĐANG BÁN (mã | tên | loại | lớp | giới tính | màu | chất liệu | giá). Lưu ý: ${catalog.audienceNote}`,
       catalog.entries.length ? this.productSuggestions.formatCatalogForPrompt(catalog) : '(Hiện chưa có sản phẩm nào đang bán)',
       '',
       'QUY TẮC GỢI Ý BỘ PHỐI ("outfits"):',

@@ -1,5 +1,5 @@
 import { ApiProperty } from '@nestjs/swagger';
-import { GarmentCategory, LayerRole, ProductStatus } from '@prisma/client';
+import { GarmentCategory, LayerRole, ProductGender, ProductStatus } from '@prisma/client';
 import { IsEnum, IsIn, IsNumber, IsOptional, IsString, Min } from 'class-validator';
 import { GarmentType } from '../../../common/constants/measurement.constants';
 import { Type } from 'class-transformer';
@@ -24,6 +24,11 @@ export class QueryProductDto {
   @IsEnum(LayerRole)
   @IsOptional()
   layerRole?: LayerRole;
+
+  @ApiProperty({ enum: ProductGender, required: false, description: 'Lọc đúng giới tính (UNISEX không được tính vào MALE/FEMALE)' })
+  @IsEnum(ProductGender)
+  @IsOptional()
+  gender?: ProductGender;
 
   @ApiProperty({ required: false })
   @IsString()

@@ -51,6 +51,12 @@ enum LayerRole {
   FULL_BODY
 }
 
+enum ProductGender {
+  FEMALE
+  MALE
+  UNISEX
+}
+
 enum ProductStatus {
   DRAFT
   ACTIVE
@@ -491,6 +497,7 @@ model Product {
   category      GarmentCategory @default(UPPER)
   garmentType   GarmentType?    @map("garment_type")
   layerRole     LayerRole?      @map("layer_role")
+  gender        ProductGender   @default(FEMALE)
   color         String?
   price         Decimal         @db.Decimal(10, 2)
   brand         String?         @default("StAie. SIGNATURE")

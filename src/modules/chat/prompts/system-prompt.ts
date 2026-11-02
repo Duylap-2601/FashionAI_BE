@@ -36,7 +36,7 @@ export function buildCatalogPrompt(
   viewingProduct: string | null,
 ): string {
   return `
-DANH MỤC SẢN PHẨM ĐANG BÁN (mã | tên | loại | màu | chất liệu | giá). Lưu ý: ${audienceNote}
+DANH MỤC SẢN PHẨM ĐANG BÁN (mã | tên | loại | lớp | giới tính | màu | chất liệu | giá). Lưu ý: ${audienceNote}
 ${catalogText || '(Hiện chưa có sản phẩm nào đang bán)'}
 ${viewingProduct ? `\nSẢN PHẨM NGƯỜI DÙNG ĐANG XEM: ${viewingProduct}\n` : ''}
 GỢI Ý SẢN PHẨM & BỘ PHỐI:

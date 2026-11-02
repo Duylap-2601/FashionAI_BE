@@ -1,4 +1,4 @@
-import { ProductSuggestionService } from '../../src/modules/products/product-suggestion.service';
+import { ProductSuggestionService, toCatalogAudience } from '../../src/modules/products/product-suggestion.service';
 import { PrismaService } from '../../src/database/prisma.service';
 
 describe('ProductSuggestionService', () => {
@@ -6,22 +6,24 @@ describe('ProductSuggestionService', () => {
   let prisma: any;
 
   const catalogRows = [
-    { id: 'shirt-1', name: 'Áo Sơ Mi Basic ', category: 'UPPER', garmentType: 'SHIRT', color: 'trắng', colors: [{ name: 'Trắng', hex: '#fff' }], material: 'kate', price: '550000' },
-    { id: 'pants-1', name: 'Quần Tây Ống Suông', category: 'LOWER', garmentType: 'PANTS', color: 'be', colors: [], material: null, price: '550000' },
-    { id: 'blazer-1', name: 'Áo Blazer Đen', category: 'UPPER', garmentType: 'JACKET', color: 'đen', colors: null, material: 'kaki', price: '750000' },
-    { id: 'dress-1', name: 'Đầm Trên Gối', category: 'FULL_BODY', garmentType: 'DRESS', color: 'đen', colors: [{ name: 'Đen' }], material: null, price: '750000' },
+    { id: 'shirt-1', name: 'Áo Sơ Mi Basic ', category: 'UPPER', garmentType: 'SHIRT', gender: 'FEMALE', color: 'trắng', colors: [{ name: 'Trắng', hex: '#fff' }], material: 'kate', price: '550000' },
+    { id: 'pants-1', name: 'Quần Tây Ống Suông', category: 'LOWER', garmentType: 'PANTS', gender: 'FEMALE', color: 'be', colors: [], material: null, price: '550000' },
+    { id: 'blazer-1', name: 'Áo Blazer Đen', category: 'UPPER', garmentType: 'JACKET', gender: 'FEMALE', color: 'đen', colors: null, material: 'kaki', price: '750000' },
+    { id: 'dress-1', name: 'Đầm Trên Gối', category: 'FULL_BODY', garmentType: 'DRESS', gender: 'FEMALE', color: 'đen', colors: [{ name: 'Đen' }], material: null, price: '750000' },
   ];
 
   beforeEach(() => {
     prisma = { product: { findMany: jest.fn().mockResolvedValue(catalogRows) } };
-    service = new ProductSuggestionService(prisma as PrismaService, { get: () => undefined } as any);
+    service = new ProductSuggestionService(prisma as PrismaService);
   });
 
   it('getCatalog gán mã ngắn theo thứ tự, chỉ lấy sản phẩm ACTIVE và cache trong thời gian ngắn', async () => {
     const catalog = await service.getCatalog();
 
     expect(catalog.entries.map((e) => e.code)).toEqual(['P1', 'P2', 'P3', 'P4']);
-    expect(catalog.audienceNote).toContain('thời trang NỮ');
+    // Catalog chỉ có đồ nữ thì AI phải biết cửa hàng chưa bán đồ nam.
+    expect(catalog.audienceNote).toContain('Cửa hàng hiện chưa bán đồ nam.');
+    expect(catalog.audienceNote).not.toContain('chưa bán đồ nữ');
     expect(catalog.entries[0]).toMatchObject({ name: 'Áo Sơ Mi Basic', colors: ['Trắng'], price: 550000 });
     // Không khai báo colors thì dùng field color làm màu hiển thị cho AI.
     expect(catalog.entries[1].colors).toEqual(['be']);
@@ -33,9 +35,64 @@ describe('ProductSuggestionService', () => {
     expect(prisma.product.findMany).toHaveBeenCalledTimes(1);
   });
 
-  it('formatCatalogForPrompt ghi mã, tên, loại, lớp, màu, chất liệu và giá', async () => {
+  it('formatCatalogForPrompt ghi mã, tên, loại, lớp, giới tính, màu, chất liệu và giá', async () => {
     const text = service.formatCatalogForPrompt(await service.getCatalog());
-    expect(text.split('\n')[0]).toBe('P1 | Áo Sơ Mi Basic | Áo sơ mi/áo kiểu | lớp: Mặc trong | màu: Trắng | chất liệu: kate | 550.000đ');
+    expect(text.split('\n')[0]).toBe(
+      'P1 | Áo Sơ Mi Basic | Áo sơ mi/áo kiểu | lớp: Mặc trong | giới tính: Nữ | màu: Trắng | chất liệu: kate | 550.000đ',
+    );
+  });
+
+  describe('lọc theo giới tính', () => {
+    const mixedRows = [
+      ...catalogRows,
+      { id: 'men-shirt-1', name: 'Áo Sơ Mi Nam', category: 'UPPER', garmentType: 'SHIRT', gender: 'MALE', color: 'xanh', colors: [], material: null, price: '600000' },
+      { id: 'tee-1', name: 'Áo Thun Unisex', category: 'UPPER', garmentType: 'SHIRT', gender: 'UNISEX', color: 'trắng', colors: [], material: null, price: '300000' },
+    ];
+
+    it('getCatalog(MALE) chỉ giữ đồ nam và unisex, đánh lại mã từ P1 và dùng chung một lần đọc DB', async () => {
+      prisma.product.findMany.mockResolvedValue(mixedRows);
+
+      const all = await service.getCatalog();
+      const men = await service.getCatalog('MALE');
+      const women = await service.getCatalog('FEMALE');
+
+      expect(all.entries).toHaveLength(6);
+      expect(all.audienceNote).not.toContain('chưa bán');
+      expect(men.entries.map((e) => [e.code, e.id])).toEqual([
+        ['P1', 'men-shirt-1'],
+        ['P2', 'tee-1'],
+      ]);
+      expect(men.byCode.get('P1')?.id).toBe('men-shirt-1');
+      expect(men.audienceNote).toContain('chỉ gồm đồ nam và đồ unisex');
+      expect(men.audienceNote).not.toContain('chưa bán');
+      expect(women.entries.map((e) => e.id)).toEqual(['shirt-1', 'pants-1', 'blazer-1', 'dress-1', 'tee-1']);
+      expect(new Set([all.fingerprint, men.fingerprint, women.fingerprint]).size).toBe(3);
+      expect(prisma.product.findMany).toHaveBeenCalledTimes(1);
+    });
+
+    it('getCatalog(MALE) khi chưa có đồ nam: danh mục rỗng và nói rõ cửa hàng chưa bán đồ nam', async () => {
+      const men = await service.getCatalog('MALE');
+
+      expect(men.entries).toEqual([]);
+      expect(men.audienceNote).toContain('Cửa hàng hiện chưa bán đồ nam.');
+    });
+
+    it('fingerprint đổi khi admin đổi giới tính của một sản phẩm', async () => {
+      const before = await service.getCatalog();
+      (service as any).cachedProducts = null;
+      prisma.product.findMany.mockResolvedValue(catalogRows.map((row, i) => (i === 0 ? { ...row, gender: 'UNISEX' } : row)));
+      const after = await service.getCatalog();
+
+      expect(after.fingerprint).not.toBe(before.fingerprint);
+    });
+
+    it('toCatalogAudience đổi lựa chọn giới tính của Stylist sang giới tính lọc catalog', () => {
+      expect(toCatalogAudience('male')).toBe('MALE');
+      expect(toCatalogAudience(' Female ')).toBe('FEMALE');
+      expect(toCatalogAudience('other')).toBeNull();
+      expect(toCatalogAudience('')).toBeNull();
+      expect(toCatalogAudience(undefined)).toBeNull();
+    });
   });
 
   it('resolveOutfits bỏ mã bịa, bỏ trùng, chuẩn hóa mã và loại bộ chỉ có một món không phải đầm', async () => {
