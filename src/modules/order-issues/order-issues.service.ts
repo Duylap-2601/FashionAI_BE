@@ -6,6 +6,7 @@ import {
 } from "@nestjs/common";
 import {
   NotificationType,
+  OrderIssueReason,
   OrderIssueResolution,
   OrderIssueStatus,
   OrderStatus,
@@ -58,19 +59,25 @@ export class OrderIssuesService {
     files: Express.Multer.File[] = [],
   ) {
     const order = await this.findOrderForOwner(userId, orderId);
+    const isRefundNotReceived =
+      dto.reason === OrderIssueReason.REFUND_NOT_RECEIVED;
 
-    // Đơn đã hoàn tất, hoặc đang trong luồng trả hàng (để nhiều item cùng báo lỗi
-    // / bổ sung yêu cầu trả một phần) đều được tạo yêu cầu.
-    const reportableStatuses: OrderStatus[] = [
-      OrderStatus.COMPLETED,
-      OrderStatus.RETURN_REQUESTED,
-      OrderStatus.RETURN_APPROVED,
-      OrderStatus.RETURNING,
-    ];
-    if (!reportableStatuses.includes(order.status)) {
-      throw new BadRequestException(
-        "Chỉ có thể báo lỗi khi đơn hàng đã hoàn tất (COMPLETED) hoặc đang trong luồng hoàn trả",
-      );
+    if (isRefundNotReceived) {
+      await this.assertRefundNotReceivedEligible(order.id, order.refundStatus);
+    } else {
+      // Đơn đã hoàn tất, hoặc đang trong luồng trả hàng (để nhiều item cùng báo lỗi
+      // / bổ sung yêu cầu trả một phần) đều được tạo yêu cầu.
+      const reportableStatuses: OrderStatus[] = [
+        OrderStatus.COMPLETED,
+        OrderStatus.RETURN_REQUESTED,
+        OrderStatus.RETURN_APPROVED,
+        OrderStatus.RETURNING,
+      ];
+      if (!reportableStatuses.includes(order.status)) {
+        throw new BadRequestException(
+          "Chỉ có thể báo lỗi khi đơn hàng đã hoàn tất (COMPLETED) hoặc đang trong luồng hoàn trả",
+        );
+      }
     }
 
     const item = await this.prisma.orderItem.findFirst({
@@ -80,7 +87,9 @@ export class OrderIssuesService {
       throw new NotFoundException("Không tìm thấy sản phẩm thuộc đơn hàng");
     }
 
-    await this.assertWithinIssueWindow(order.id, order.updatedAt);
+    if (!isRefundNotReceived) {
+      await this.assertWithinIssueWindow(order.id, order.updatedAt);
+    }
 
     const activeIssue = await this.prisma.orderIssue.findFirst({
       where: {
@@ -152,7 +161,9 @@ export class OrderIssuesService {
         .catch(() => undefined);
     }
 
-    this.notifyAdminsNewIssue(issue.id, order.orderCode).catch(() => undefined);
+    this.notifyAdminsNewIssue(issue.id, order.orderCode, dto.reason).catch(
+      () => undefined,
+    );
 
     return issue;
   }
@@ -232,7 +243,12 @@ export class OrderIssuesService {
     return issue;
   }
 
-  async review(issueId: string, adminId: string, dto: ReviewOrderIssueDto) {
+  async review(
+    issueId: string,
+    adminId: string,
+    dto: ReviewOrderIssueDto,
+    receiptImageUrls: string[] = [],
+  ) {
     const issue = await this.prisma.orderIssue.findUnique({
       where: { id: issueId },
       include: { order: { select: { id: true, orderCode: true } } },
@@ -293,16 +309,39 @@ export class OrderIssuesService {
       include: issueInclude,
     });
 
+    const isRefundNotReceived =
+      issue.reason === OrderIssueReason.REFUND_NOT_RECEIVED;
+
+    // Duyệt yêu cầu luôn là duyệt hoàn tiền nên bắt buộc có ảnh chứng từ
+    // chuyển khoản để khách đối chiếu và shop lưu vết.
+    if (receiptImageUrls.length === 0) {
+      throw new BadRequestException(
+        "Vui lòng đính kèm ảnh chứng từ chuyển khoản hoàn tiền cho khách.",
+      );
+    }
+
     try {
+      // Báo chưa nhận được tiền: khoản hoàn cũ đã bị đánh dấu "đã hoàn" nên phải
+      // mở lại trước, nếu không updateRefund sẽ báo không còn tiền để hoàn.
+      if (isRefundNotReceived) {
+        await this.ordersService.reopenRefundNotReceived(
+          issue.orderId,
+          issue.id,
+          adminId,
+        );
+      }
       // Tái dùng luồng refund có sẵn: tạo Refund MANUAL + chuyển Order.refundStatus
       // sang REQUIRED, không tự ghi đè Payment/Order.amountRefundedVnd.
       await this.ordersService.updateRefund(
         issue.orderId,
         {
           refundStatus: RefundStatus.REQUIRED,
-          internalNote: `Duyệt hoàn tiền cho issue ${issue.id} (item ${issue.orderItemId})${dto.adminNote ? `: ${dto.adminNote}` : ""}`,
+          internalNote: isRefundNotReceived
+            ? `Mở lại hoàn tiền cho issue ${issue.id}${dto.adminNote ? `: ${dto.adminNote}` : ""}`
+            : `Duyệt hoàn tiền cho issue ${issue.id} (item ${issue.orderItemId})${dto.adminNote ? `: ${dto.adminNote}` : ""}`,
         },
         adminId,
+        receiptImageUrls,
       );
     } catch (err) {
       await this.prisma.orderIssue.update({
@@ -318,32 +357,40 @@ export class OrderIssuesService {
     }
 
     // Đơn chuyển sang "đã duyệt hoàn trả" để admin/theo dõi biết khách được
-    // gửi hàng về. Không chặn luồng duyệt nếu trạng thái hiện tại không hợp lệ.
-    await this.ordersService
-      .updateStatus(
-        issue.orderId,
-        {
-          status: OrderStatus.RETURN_APPROVED,
-          source: "ADMIN",
-          publicMessage:
-            "Yêu cầu hoàn trả đã được duyệt. Vui lòng gửi hàng về cửa hàng để được kiểm tra và hoàn tiền.",
-          internalNote: `Duyệt hoàn tiền cho issue ${issue.id}`,
-        },
-        adminId,
-      )
-      .catch(() => undefined);
+    // gửi hàng về. Báo chưa nhận được tiền thì hàng đã về kho rồi (RETURNED),
+    // không đổi trạng thái đơn nữa.
+    if (!isRefundNotReceived) {
+      await this.ordersService
+        .updateStatus(
+          issue.orderId,
+          {
+            status: OrderStatus.RETURN_APPROVED,
+            source: "ADMIN",
+            publicMessage:
+              "Yêu cầu hoàn trả đã được duyệt. Vui lòng gửi hàng về cửa hàng để được kiểm tra và hoàn tiền.",
+            internalNote: `Duyệt hoàn tiền cho issue ${issue.id}`,
+          },
+          adminId,
+        )
+        .catch(() => undefined);
+    }
 
     await this.logIssueEvent(
       issue.orderId,
       issue.id,
       "ORDER_ISSUE_REFUND_APPROVED",
       adminId,
-      "Yêu cầu xử lý lỗi đơn hàng đã được duyệt hoàn tiền.",
+      isRefundNotReceived
+        ? "Shop đã ghi nhận báo cáo chưa nhận được tiền hoàn và đang kiểm tra lại."
+        : "Yêu cầu xử lý lỗi đơn hàng đã được duyệt hoàn tiền.",
       "review",
     );
-    await this.notifyUserReviewed(resolved.userId, resolved.id, true).catch(
-      () => undefined,
-    );
+    await this.notifyUserReviewed(
+      resolved.userId,
+      resolved.id,
+      true,
+      isRefundNotReceived,
+    ).catch(() => undefined);
     return resolved;
   }
 
@@ -381,6 +428,48 @@ export class OrderIssuesService {
       });
   }
 
+  // Chỉ cho báo "chưa nhận được tiền" khi shop đã chốt hoàn tiền và còn trong
+  // cửa sổ 7 ngày tính từ lần hoàn tiền gần nhất (đồng bộ với cửa sổ báo lỗi).
+  private async assertRefundNotReceivedEligible(
+    orderId: string,
+    refundStatus: RefundStatus | null,
+  ) {
+    if (refundStatus !== RefundStatus.COMPLETED) {
+      throw new BadRequestException(
+        "Chỉ báo được khi cửa hàng đã ghi nhận hoàn tiền cho đơn này.",
+      );
+    }
+
+    const completedRefund = await this.prisma.refund.findFirst({
+      where: { orderId, status: RefundStatus.COMPLETED },
+      orderBy: [
+        { processedAt: { sort: "desc", nulls: "last" } },
+        { requestedAt: "desc" },
+      ],
+      select: { processedAt: true, requestedAt: true },
+    });
+    const refundedAt = completedRefund?.processedAt ?? completedRefund?.requestedAt;
+    if (!refundedAt || Date.now() - refundedAt.getTime() > ISSUE_WINDOW_MS) {
+      throw new BadRequestException(
+        "Đã quá 7 ngày kể từ khi hoàn tiền, không thể báo chưa nhận được tiền.",
+      );
+    }
+
+    const pending = await this.prisma.orderIssue.findFirst({
+      where: {
+        orderId,
+        reason: OrderIssueReason.REFUND_NOT_RECEIVED,
+        status: OrderIssueStatus.PENDING,
+      },
+      select: { id: true },
+    });
+    if (pending) {
+      throw new BadRequestException(
+        "Bạn đã gửi báo cáo chưa nhận được tiền cho đơn này, vui lòng chờ shop xử lý.",
+      );
+    }
+  }
+
   private async assertWithinIssueWindow(orderId: string, fallback: Date) {
     const completedEvent = await this.prisma.orderEvent.findFirst({
       where: { orderId, toStatus: OrderStatus.COMPLETED },
@@ -404,7 +493,13 @@ export class OrderIssuesService {
     }
     const order = await this.prisma.order.findFirst({
       where: { ...where, userId },
-      select: { id: true, orderCode: true, status: true, updatedAt: true },
+      select: {
+        id: true,
+        orderCode: true,
+        status: true,
+        refundStatus: true,
+        updatedAt: true,
+      },
     });
     if (!order) {
       throw new NotFoundException(
@@ -435,7 +530,12 @@ export class OrderIssuesService {
     return null;
   }
 
-  private async notifyAdminsNewIssue(issueId: string, orderCode: number) {
+  private async notifyAdminsNewIssue(
+    issueId: string,
+    orderCode: number,
+    reason: OrderIssueReason,
+  ) {
+    const isRefundNotReceived = reason === OrderIssueReason.REFUND_NOT_RECEIVED;
     const admins = await this.prisma.user.findMany({
       where: { role: Role.ADMIN },
       select: { id: true },
@@ -444,9 +544,13 @@ export class OrderIssuesService {
       await this.notificationService.create({
         userId: admin.id,
         type: NotificationType.ORDER_ISSUE,
-        title: "Báo lỗi đơn hàng mới",
-        message: `Đơn #${orderCode} vừa có yêu cầu xử lý lỗi mới`,
-        data: { issueId, orderCode, type: "NEW_ORDER_ISSUE" },
+        title: isRefundNotReceived
+          ? "Khách báo chưa nhận được tiền hoàn"
+          : "Báo lỗi đơn hàng mới",
+        message: isRefundNotReceived
+          ? `Đơn #${orderCode} vừa có báo cáo chưa nhận được tiền hoàn`
+          : `Đơn #${orderCode} vừa có yêu cầu xử lý lỗi mới`,
+        data: { issueId, orderCode, type: "NEW_ORDER_ISSUE", reason },
       });
     }
   }
@@ -455,15 +559,18 @@ export class OrderIssuesService {
     userId: string,
     issueId: string,
     approved: boolean,
+    refundNotReceived = false,
   ) {
     await this.notificationService.create({
       userId,
       type: NotificationType.ORDER_ISSUE,
       title: approved ? "Yêu cầu xử lý được duyệt" : "Yêu cầu xử lý bị từ chối",
       message: approved
-        ? "Yêu cầu báo lỗi của bạn đã được duyệt, shop sẽ liên hệ để xử lý tiếp"
+        ? refundNotReceived
+          ? "Shop đã ghi nhận báo cáo chưa nhận được tiền hoàn và đang kiểm tra lại khoản chuyển cho bạn."
+          : "Yêu cầu báo lỗi của bạn đã được duyệt, shop sẽ liên hệ để xử lý tiếp"
         : "Yêu cầu báo lỗi của bạn chưa được chấp nhận, vui lòng xem ghi chú từ shop",
-      data: { issueId, type: "ORDER_ISSUE_REVIEWED" },
+      data: { issueId, type: "ORDER_ISSUE_REVIEWED", reason: refundNotReceived ? "REFUND_NOT_RECEIVED" : undefined },
     });
   }
 }

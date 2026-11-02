@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   Body,
   Controller,
   Get,
@@ -9,16 +10,21 @@ import {
   Post,
   Query,
   Req,
+  UploadedFiles,
   UseGuards,
+  UseInterceptors,
 } from '@nestjs/common';
-import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
+import { ApiBearerAuth, ApiConsumes, ApiOperation, ApiTags } from '@nestjs/swagger';
+import { AnyFilesInterceptor } from '@nestjs/platform-express';
 import { Role } from '@prisma/client';
 import { Request } from 'express';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { Roles } from '../../common/decorators/roles.decorator';
 import { RolesGuard } from '../../common/guards/roles.guard';
+import { FileValidationPipe } from '../../common/pipes/file-validation.pipe';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { AuthenticatedUser } from '../auth/interfaces/authenticated-user.interface';
+import { StorageService } from '../storage/storage.service';
 import { buildApiResponse } from '../../common/utils/api-response.util';
 import { CreateOrderDto } from './dto/create-order.dto';
 import { CreateMeasurementReviewDto, UpdateItemMeasurementDto } from './dto/measurement-review.dto';
@@ -29,12 +35,17 @@ import { UpdateOrderStatusDto } from './dto/update-order-status.dto';
 import { ConfirmDeliveryDto } from './dto/confirm-delivery.dto';
 import { OrdersService } from './orders.service';
 
+const MAX_REFUND_RECEIPTS = 5;
+
 @ApiTags('Orders')
 @ApiBearerAuth('access-token')
 @UseGuards(JwtAuthGuard)
 @Controller('orders')
 export class OrdersController {
-  constructor(private readonly ordersService: OrdersService) {}
+  constructor(
+    private readonly ordersService: OrdersService,
+    private readonly storageService: StorageService,
+  ) {}
 
   @Post()
   @HttpCode(HttpStatus.CREATED)
@@ -173,14 +184,42 @@ export class OrdersController {
   @Patch(':id/refund')
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(Role.ADMIN)
-  @ApiOperation({ summary: 'Admin cập nhật xử lý hoàn tiền' })
+  @ApiOperation({ summary: 'Admin cập nhật xử lý hoàn tiền (kèm ảnh chứng từ chuyển khoản)' })
+  @ApiConsumes('application/json', 'multipart/form-data')
+  @UseInterceptors(AnyFilesInterceptor())
   async updateRefund(
     @Req() req: Request,
     @CurrentUser() user: AuthenticatedUser,
     @Param('id') id: string,
     @Body() dto: RefundOrderDto,
+    @UploadedFiles() files?: Express.Multer.File[],
   ) {
-    const data = await this.ordersService.updateRefund(id, dto, user.id);
+    const receipts = (files ?? []).filter((file) =>
+      ['receiptImages', 'receipts'].includes(file.fieldname),
+    );
+    if (receipts.length > MAX_REFUND_RECEIPTS) {
+      throw new BadRequestException(
+        `Chỉ được đính kèm tối đa ${MAX_REFUND_RECEIPTS} ảnh chứng từ chuyển khoản.`,
+      );
+    }
+
+    const receiptImageUrls: string[] = [];
+    if (receipts.length > 0) {
+      const filePipe = new FileValidationPipe({ maxSize: 10 * 1024 * 1024 });
+      for (const receipt of receipts) {
+        filePipe.transform(receipt);
+        receiptImageUrls.push(
+          await this.storageService.uploadImage(receipt.buffer, 'refund-receipts'),
+        );
+      }
+    }
+
+    const data = await this.ordersService.updateRefund(
+      id,
+      dto,
+      user.id,
+      receiptImageUrls,
+    );
     return buildApiResponse(req, 'ORDER_REFUND_UPDATED', 'Cập nhật hoàn tiền thành công', data);
   }
 

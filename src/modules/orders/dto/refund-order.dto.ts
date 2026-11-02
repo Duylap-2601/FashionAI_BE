@@ -1,6 +1,7 @@
-import { ApiProperty } from '@nestjs/swagger';
+import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { RefundStatus } from '@prisma/client';
-import { IsEnum, IsInt, IsObject, IsOptional, IsString, Min } from 'class-validator';
+import { Type } from 'class-transformer';
+import { IsEnum, IsInt, IsObject, IsOptional, IsString, MaxLength, Min } from 'class-validator';
 
 export class RefundOrderDto {
   @ApiProperty({ enum: RefundStatus })
@@ -11,6 +12,7 @@ export class RefundOrderDto {
     required: false,
     description: 'Số tiền hoàn (VND). Bỏ trống để hoàn phần còn lại của đơn.',
   })
+  @Type(() => Number)
   @IsInt()
   @Min(1)
   @IsOptional()
@@ -20,6 +22,15 @@ export class RefundOrderDto {
   @IsObject()
   @IsOptional()
   evidence?: Record<string, unknown>;
+
+  @ApiPropertyOptional({
+    description:
+      'Mã giao dịch / ghi chú chứng từ chuyển khoản (dùng khi gửi multipart kèm ảnh chứng từ)',
+  })
+  @IsString()
+  @IsOptional()
+  @MaxLength(500)
+  evidenceReference?: string;
 
   @ApiProperty({ required: false, description: 'Ghi chú nội bộ admin' })
   @IsString()
