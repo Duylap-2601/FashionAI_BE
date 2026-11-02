@@ -38,6 +38,12 @@ export class MailProcessor extends WorkerHost {
       case MAIL_JOB.ORDER_STATUS_UPDATE:
         await this.mailService.sendOrderStatusUpdateEmail(job.data.email, job.data.data);
         break;
+      case MAIL_JOB.REFUND_COMPLETED:
+        await this.mailService.sendRefundCompletedEmail(job.data.email, {
+          ...job.data.data,
+          processedAt: new Date(job.data.data.processedAt),
+        });
+        break;
       case MAIL_JOB.RENEWAL_REMINDER:
         await this.mailService.sendRenewalReminderEmail(job.data.email, {
           ...job.data.data,

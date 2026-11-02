@@ -48,6 +48,21 @@ export interface OrderStatusUpdateData {
   shippingInfo?: Omit<ShippingInfo, 'note'> | null;
 }
 
+export interface RefundCompletedData {
+  refundId: string;
+  orderId: string;
+  orderCode: number;
+  amountVnd: number;
+  totalRefundedVnd: number;
+  provider: string;
+  processedAt: Date;
+  bankName?: string | null;
+  accountNumber?: string | null;
+  accountHolder?: string | null;
+  receiptImages?: string[];
+  evidenceReference?: string | null;
+}
+
 export interface RenewalReminderData {
   name: string;
   tier: string;

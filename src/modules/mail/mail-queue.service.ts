@@ -5,6 +5,7 @@ import { Queue } from 'bullmq';
 import {
   OrderConfirmationData,
   OrderStatusUpdateData,
+  RefundCompletedData,
   RenewalReminderData,
 } from './mail.types';
 import { MAIL_JOB, MAIL_QUEUE } from './mail.constants';
@@ -51,6 +52,22 @@ export class MailQueueService {
     await this.enqueue(
       MAIL_JOB.ORDER_STATUS_UPDATE,
       { schemaVersion: 2, mailEventId: this.eventId(MAIL_JOB.ORDER_STATUS_UPDATE, { orderId: data.orderId, orderCode: data.orderCode, status: data.status }), kind: MAIL_JOB.ORDER_STATUS_UPDATE, email, data },
+    );
+  }
+
+  async sendRefundCompletedEmail(
+    email: string,
+    data: RefundCompletedData,
+  ): Promise<void> {
+    await this.enqueue(
+      MAIL_JOB.REFUND_COMPLETED,
+      {
+        schemaVersion: 2,
+        mailEventId: this.eventId(MAIL_JOB.REFUND_COMPLETED, { refundId: data.refundId, amountVnd: data.amountVnd }),
+        kind: MAIL_JOB.REFUND_COMPLETED,
+        email,
+        data: { ...data, processedAt: data.processedAt.toISOString() },
+      },
     );
   }
 

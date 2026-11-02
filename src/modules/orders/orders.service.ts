@@ -9,10 +9,11 @@ import { CouponDiscountType, GarmentType, NotificationType, OrderStatus, Payment
 import { createHash, createHmac, timingSafeEqual } from 'crypto';
 import { PrismaService } from '../../database/prisma.service';
 import { MailQueueService } from '../mail/mail-queue.service';
+import { RefundCompletedData } from '../mail/mail.types';
 import { NotificationService } from '../notification/notification.service';
 import { createWithUniqueOrderCode } from '../../common/utils/order-code.util';
 import { resolveGarmentUrlForColor } from '../../common/utils/garment-image.util';
-import { mergeRefundEvidence, resolveManualRefundAmount, resolveRefundPaymentStatus } from '../../common/utils/refund.util';
+import { getRefundEvidenceReference, getRefundReceiptImages, mergeRefundEvidence, resolveManualRefundAmount, resolveRefundPaymentStatus } from '../../common/utils/refund.util';
 import { COLLECTED_PAYMENT_STATUSES } from '../../common/constants/order.constants';
 import { releaseOrderCouponRedemption } from '../../common/utils/coupon-redemption.util';
 import { isAllowedProductColor } from '../../common/utils/product-color.util';
@@ -827,6 +828,21 @@ export class OrdersService {
     }
 
     const refundEvidence = this.buildRefundEvidence(dto, receiptImageUrls, order.refundEvidence);
+    const effectiveRefundEvidence = refundEvidence ?? order.refundEvidence;
+    const refundReceiptImages = getRefundReceiptImages(effectiveRefundEvidence);
+    const refundEvidenceReference = getRefundEvidenceReference(effectiveRefundEvidence);
+
+    // Chuyển khoản hoàn tiền phải có chứng từ để khách đối chiếu. Ảnh có thể đã
+    // được tải lên ở bước duyệt yêu cầu, nên chỉ cần tồn tại trong chứng từ đơn.
+    if (dto.refundStatus === RefundStatus.COMPLETED && refundReceiptImages.length === 0) {
+      throw new BadRequestException(
+        'Vui lòng đính kèm ảnh chứng từ chuyển khoản hoàn tiền trước khi xác nhận đã hoàn tiền.',
+      );
+    }
+
+    let completedRefundId: string | null = null;
+    let completedAmountVnd = 0;
+    let completedTotalVnd = 0;
 
     await this.prisma.$transaction(async (tx) => {
       const completedBefore = await tx.refund.aggregate({
@@ -865,7 +881,7 @@ export class OrdersService {
           : dto.refundStatus;
 
         if (!openRefund) {
-          await tx.refund.create({
+          const createdRefund = await tx.refund.create({
             data: {
               orderId: order.id,
               provider: 'MANUAL',
@@ -876,6 +892,10 @@ export class OrdersService {
               ...(dto.refundStatus === RefundStatus.COMPLETED ? { processedAt: new Date() } : {}),
             },
           });
+          if (dto.refundStatus === RefundStatus.COMPLETED) {
+            completedRefundId = createdRefund.id;
+            completedAmountVnd = amountVnd;
+          }
         } else {
           await tx.refund.update({
             where: { id: openRefund.id },
@@ -886,6 +906,10 @@ export class OrdersService {
               ...(dto.refundStatus === RefundStatus.COMPLETED ? { processedAt: new Date() } : {}),
             },
           });
+          if (dto.refundStatus === RefundStatus.COMPLETED) {
+            completedRefundId = openRefund.id;
+            completedAmountVnd = amountVnd;
+          }
         }
       } else if (openRefund) {
         // FAILED/CANCELLED: đóng bản ghi refund đang mở để không treo ở REQUIRED/PROCESSING.
@@ -905,6 +929,9 @@ export class OrdersService {
         _sum: { amountVnd: true },
       });
       const refundedVnd = Number(completedAfter._sum.amountVnd ?? 0);
+      if (dto.refundStatus === RefundStatus.COMPLETED) {
+        completedTotalVnd = refundedVnd;
+      }
 
       let paymentStatus = order.paymentStatus;
       if (dto.refundStatus === RefundStatus.PROCESSING) {
@@ -969,6 +996,23 @@ export class OrdersService {
         data: { orderId: order.id, orderCode: order.orderCode, refundStatus: dto.refundStatus },
       })
       .catch(() => undefined);
+
+    if (dto.refundStatus === RefundStatus.COMPLETED && completedRefundId) {
+      this.sendRefundCompletedEmail(order.userId, {
+        refundId: completedRefundId,
+        orderId: order.id,
+        orderCode: order.orderCode,
+        amountVnd: completedAmountVnd,
+        totalRefundedVnd: completedTotalVnd,
+        provider: 'MANUAL',
+        processedAt: new Date(),
+        bankName: order.refundBankName,
+        accountNumber: order.refundAccountNumber,
+        accountHolder: order.refundAccountHolder,
+        receiptImages: refundReceiptImages,
+        evidenceReference: refundEvidenceReference,
+      }).catch(() => undefined);
+    }
 
     return this.findOne(order.userId, order.id);
   }
@@ -1057,6 +1101,15 @@ export class OrdersService {
         metadata: { issueId, refundId: completedRefund.id },
       });
     });
+  }
+
+  private async sendRefundCompletedEmail(userId: string, data: RefundCompletedData) {
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { email: true },
+    });
+    if (!user?.email) return;
+    await this.mailQueueService.sendRefundCompletedEmail(user.email, data);
   }
 
   private buildRefundNotificationMessage(dto: RefundOrderDto) {
