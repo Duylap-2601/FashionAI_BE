@@ -75,7 +75,11 @@ subfolders only after a module has multiple concrete responsibilities.
 Existing ownership boundaries:
 
 - `auth`: login/register/OAuth/password flows, token issuing, auth guards,
-  strategies, and auth-only Redis helpers.
+  strategies, and auth-only Redis helpers. Refresh tokens are single-use, but a
+  just-rotated token stays accepted for `REFRESH_REUSE_GRACE_SECONDS` (Redis
+  key `refresh:grace:<hash>`) so a lost refresh response (page navigation, two
+  tabs, proxy timeout) does not end the session. `revokeAllUserRefreshTokens`
+  blocks that grace for the user.
 - `users`: profile and body measurements. User measurement input belongs here;
   order measurement snapshots belong to `orders`.
 - `products`: product catalog, product images, reviews, and review replies.
@@ -261,6 +265,21 @@ When schema changes are required:
 - ZaloPay uses `zalopay-sdk` for order creation, query, refund, query-refund,
   callback verification, and `app_trans_id` generation. Do not reimplement ZaloPay
   request MAC signing unless the SDK cannot express a required field.
+- Creating an order and paying for it are separate steps: `POST /orders` creates
+  a `CREATED` / `PENDING` order, `POST /payments/checkout { orderId }` starts (or
+  reuses) a payment for it, and the customer can retry from the order page.
+  SePay return URLs (`SEPAY_SUCCESS_URL`, `SEPAY_ERROR_URL`, `SEPAY_CANCEL_URL`)
+  point at the frontend `/payment/success|error|cancel` pages and carry
+  `orderCode`, `orderId`, `status` (plus `kind=subscription` for plan upgrades).
+  Never point them at `/checkout`: that page creates a new order.
+- Unpaid orders (`CREATED` + `PENDING`) expire `UNPAID_ORDER_TTL_MS` (24h) after
+  creation; the public order exposes that deadline as `paymentDueAt`.
+  `MaintenanceService` runs `OrdersService.expireUnpaidOrders` every 10 minutes:
+  cancel, expire pending payments, release the coupon, write an
+  `ORDER_PAYMENT_EXPIRED` event and notify the customer (not for plan upgrades).
+- Every path that cancels an order before payment (customer cancel, admin cancel,
+  SePay `TRANSACTION_VOID`, expiry) calls `releaseOrderCouponRedemption` in the
+  same transaction so the coupon use is returned.
 - ZaloPay `redirect_url` must include `paymentId` so `/payment/result` can poll
   `GET /payments/:paymentId`. Keep `ZALOPAY_REDIRECT_URL` pointed at the active
   frontend origin and port, for example `http://localhost:3001/payment/result`.

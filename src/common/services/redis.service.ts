@@ -4,12 +4,16 @@ import Redis from 'ioredis';
 import { normalizeRedisUrl } from '../redis/redis-url.util';
 
 const MAX_CONNECT_RETRIES = 3;
+// Redis có thể lên sau app (docker compose, Redis restart): vẫn thử lại thưa để tự
+// thoát chế độ in-memory thay vì kẹt tới khi restart app.
+const SLOW_RECONNECT_MS = 30_000;
 
 @Injectable()
 export class RedisService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(RedisService.name);
   private client: Redis | null = null;
   private isConnected = false;
+  private hasWarnedUnavailable = false;
   private inMemoryStore = new Map<string, { value: string; expiresAt?: number }>();
 
   constructor(private readonly configService: ConfigService) {}
@@ -25,10 +29,10 @@ export class RedisService implements OnModuleInit, OnModuleDestroy {
         lazyConnect: true,
         maxRetriesPerRequest: 1,
         enableOfflineQueue: false,
-        // Khi không có Redis, service đã có fallback in-memory. Không chặn lại thì
-        // ioredis reconnect vô hạn và log warning mỗi ~2s, chôn vùi log thật.
+        // Khi không có Redis, service đã có fallback in-memory. Thử nhanh vài lần rồi
+        // giãn ra SLOW_RECONNECT_MS; log chỉ in khi đổi trạng thái để không chôn log thật.
         retryStrategy: (times: number) =>
-          times > MAX_CONNECT_RETRIES ? null : Math.min(times * 200, 2000),
+          times > MAX_CONNECT_RETRIES ? SLOW_RECONNECT_MS : Math.min(times * 200, 2000),
       } as const;
 
       this.client = redisUrl
@@ -42,23 +46,36 @@ export class RedisService implements OnModuleInit, OnModuleDestroy {
 
       this.client.on('connect', () => {
         this.isConnected = true;
+        this.hasWarnedUnavailable = false;
         this.logger.log(
           redisUrl ? 'Connected to Redis via REDIS_URL' : `Connected to Redis at ${host}:${port}`,
         );
       });
 
+      this.client.on('close', () => {
+        this.isConnected = false;
+      });
+
       this.client.on('error', (err: any) => {
         this.isConnected = false;
-        this.logger.warn(`Redis connection error: ${err.message}. Falling back to in-memory store.`);
+        this.warnUnavailable(`Redis connection error: ${err.message}`);
       });
 
       this.client.connect().catch((err: any) => {
         this.isConnected = false;
-        this.logger.warn(`Redis unavailable: ${err.message}. Using fallback in-memory store.`);
+        this.warnUnavailable(`Redis unavailable: ${err.message}`);
       });
     } catch (err: any) {
       this.logger.warn(`Failed to initialize Redis client: ${err.message}`);
     }
+  }
+
+  private warnUnavailable(reason: string) {
+    if (this.hasWarnedUnavailable) return;
+    this.hasWarnedUnavailable = true;
+    this.logger.warn(
+      `${reason}. Using fallback in-memory store, retrying every ${SLOW_RECONNECT_MS / 1000}s.`,
+    );
   }
 
   async get(key: string): Promise<string | null> {

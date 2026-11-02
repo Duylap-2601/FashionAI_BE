@@ -57,6 +57,7 @@ export function createPrismaMock(overrides: PrismaMock = {}): PrismaMock {
     shipment: model(),
     subscription: model(),
     dailyUsage: model(),
+    couponRedemption: model(),
     // Prisma có hai dạng: $transaction([...promises]) và $transaction(async (tx) => ...).
     // Dạng callback phải được gọi thật với chính mock này làm `tx`, nếu không mọi
     // lệnh ghi bên trong transaction sẽ âm thầm không chạy và test vẫn xanh.
@@ -67,6 +68,7 @@ export function createPrismaMock(overrides: PrismaMock = {}): PrismaMock {
       return Array.isArray(arg) ? Promise.all(arg) : Promise.resolve(arg);
     }),
     $queryRaw: jest.fn().mockResolvedValue([{ 1: 1 }]),
+    $executeRaw: jest.fn().mockResolvedValue(0),
     $connect: jest.fn(),
     $disconnect: jest.fn(),
     enableShutdownHooks: jest.fn(),

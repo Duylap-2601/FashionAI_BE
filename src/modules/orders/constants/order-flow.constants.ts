@@ -28,6 +28,11 @@ export const UUID_REGEX =
 
 export const MAX_INT4 = 2_147_483_647;
 
+// Đơn chưa thanh toán tự hủy sau khoảng này (khách thấy hạn trên trang đơn).
+export const UNPAID_ORDER_TTL_MS = 24 * 60 * 60 * 1000;
+// Số đơn quá hạn xử lý mỗi lần chạy cron; phần còn lại để lần sau.
+export const UNPAID_ORDER_EXPIRY_BATCH = 100;
+
 export const ORDER_STATUS_TRANSITIONS: Record<OrderStatus, OrderStatus[]> = {
   [OrderStatus.CREATED]: [
     OrderStatus.MEASUREMENT_REVIEW,
@@ -151,3 +156,17 @@ export const CANONICAL_ORDER_STATUSES = [
   OrderStatus.EXPIRED,
   OrderStatus.FAILED,
 ] as const;
+
+// Đơn đã chốt (hoàn tất, huỷ, đã nhận lại hàng hoàn): hiển thị theo trạng thái đơn.
+export const ORDER_FINAL_DISPLAY_STATUSES: OrderStatus[] = [
+  OrderStatus.COMPLETED,
+  OrderStatus.CANCELLED,
+  OrderStatus.RETURNED,
+];
+
+// Đơn đang trong luồng trả hàng, shop chưa nhận lại hàng.
+export const RETURN_FLOW_STATUSES: OrderStatus[] = [
+  OrderStatus.RETURN_REQUESTED,
+  OrderStatus.RETURN_APPROVED,
+  OrderStatus.RETURNING,
+];

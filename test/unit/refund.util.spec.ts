@@ -1,5 +1,6 @@
 import { PaymentStatus } from '@prisma/client';
 import {
+  mergeRefundEvidence,
   resolveManualRefundAmount,
   resolveRefundPaymentStatus,
 } from '../../src/common/utils/refund.util';
@@ -60,5 +61,35 @@ describe('resolveManualRefundAmount', () => {
     expect(
       resolveManualRefundAmount({ collectedVnd: 1_000_000, completedVnd: 1_000_000 }),
     ).toEqual({ amountVnd: 0, remainingVnd: 0 });
+  });
+});
+
+describe('mergeRefundEvidence', () => {
+  it('cộng dồn ảnh chứng từ lúc duyệt và lúc chốt hoàn tiền', () => {
+    expect(
+      mergeRefundEvidence(
+        { receiptImages: ['https://cdn/approve.png'] },
+        { reference: 'VCB 123', receiptImageUrls: ['https://cdn/complete.png'] },
+      ),
+    ).toEqual({
+      reference: 'VCB 123',
+      receiptImages: ['https://cdn/approve.png', 'https://cdn/complete.png'],
+    });
+  });
+
+  it('không lặp ảnh đã lưu và giữ mã giao dịch cũ khi chỉ thêm ảnh', () => {
+    expect(
+      mergeRefundEvidence(
+        { reference: 'VCB 123', receiptImages: ['https://cdn/a.png'] },
+        { receiptImageUrls: ['https://cdn/a.png', 'https://cdn/b.png'] },
+      ),
+    ).toEqual({ reference: 'VCB 123', receiptImages: ['https://cdn/a.png', 'https://cdn/b.png'] });
+  });
+
+  it('trả về evidence admin gửi khi không có mã giao dịch hay ảnh mới', () => {
+    expect(mergeRefundEvidence({ receiptImages: ['x'] }, { receiptImageUrls: [] })).toBeUndefined();
+    expect(
+      mergeRefundEvidence(null, { evidence: { note: 'ok' }, receiptImageUrls: [] }),
+    ).toEqual({ note: 'ok' });
   });
 });

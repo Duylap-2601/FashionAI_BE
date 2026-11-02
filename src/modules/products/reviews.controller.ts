@@ -6,6 +6,7 @@ import {
   HttpCode,
   HttpStatus,
   Param,
+  ParseUUIDPipe,
   Patch,
   Post,
   Query,
@@ -49,12 +50,29 @@ export class ReviewsController {
     return buildApiResponse(req, 'REVIEW_CREATE_SUCCESS', 'Tạo đánh giá thành công', data);
   }
 
+  // Khai báo trước ':productId/reviews', nếu không "admin" bị bắt làm productId.
+  @Get('admin/reviews')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(Role.ADMIN)
+  @ApiBearerAuth('access-token')
+  @ApiOperation({ summary: 'Danh sách mọi đánh giá (Admin, lọc số sao, phân trang)' })
+  async findAllAdmin(@Req() req: Request, @Query() query: QueryReviewDto) {
+    const result = await this.reviewsService.findAllAdmin(query);
+    return buildApiResponse(
+      req,
+      'ADMIN_REVIEWS_FETCH_SUCCESS',
+      'Lấy danh sách đánh giá thành công',
+      result.items,
+      result.meta,
+    );
+  }
+
   @Public()
   @Get(':productId/reviews')
   @ApiOperation({ summary: 'Danh sách đánh giá sản phẩm (có lọc, phân trang)' })
   async findByProduct(
     @Req() req: Request,
-    @Param('productId') productId: string,
+    @Param('productId', ParseUUIDPipe) productId: string,
     @Query() query: QueryReviewDto,
     @CurrentUser('id') userId?: string,
   ) {

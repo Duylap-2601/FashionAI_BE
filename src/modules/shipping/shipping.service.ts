@@ -1,3 +1,4 @@
+import { createHash } from 'crypto';
 import { BadRequestException, ConflictException, Injectable, NotFoundException, UnauthorizedException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { GhnAddressModel, GhnLocationLevel, Prisma, ShipmentStatus } from '@prisma/client';
@@ -6,6 +7,8 @@ import { ShippingProviderType } from './constants/shipping-provider.enum';
 import { ShippingProviderFactory } from './shipping-provider.factory';
 import { GhnShippingProvider } from './providers/ghn/ghn.provider';
 import { AdminSettingsService } from '../admin/admin-settings.service';
+import { RedisService } from '../../common/services/redis.service';
+import type { ShippingFee } from './types/shipping.types';
 
 export interface AddressCatalogLocation {
   id: string;
@@ -13,6 +16,9 @@ export interface AddressCatalogLocation {
   aliases: string[];
   catalogRevision: string;
 }
+
+// Khớp thời hạn quote token (5 phút).
+const SHIPPING_FEE_CACHE_TTL_SECONDS = 5 * 60;
 
 @Injectable()
 export class ShippingService {
@@ -22,6 +28,7 @@ export class ShippingService {
     private readonly factory: ShippingProviderFactory,
     private readonly ghnProvider: GhnShippingProvider,
     private readonly adminSettingsService: AdminSettingsService,
+    private readonly redisService: RedisService,
   ) {}
 
   async cancelShipment(provider: ShippingProviderType, providerOrderCode: string) {
@@ -61,8 +68,7 @@ export class ShippingService {
     content?: string;
   }) {
     const sender = await this.resolvePickupAddress();
-
-    return this.ghnProvider.calculateFee({
+    const input = {
       sender,
       receiver: {
         name: params.receiver.name,
@@ -78,7 +84,20 @@ export class ShippingService {
       insuranceValue: params.insuranceValue,
       codAmount: params.codAmount,
       content: params.content,
-    });
+    };
+
+    // Checkout báo giá lại mỗi khi đổi mã giảm giá hay ghi chú, nhưng phí GHN chỉ phụ thuộc
+    // địa chỉ, cân nặng và giá trị hàng: cùng đầu vào thì dùng lại kết quả trong vài phút.
+    const cacheKey = `shipping:fee:ghn:${createHash('sha256').update(JSON.stringify(input)).digest('hex')}`;
+    const cached = await this.redisService.get(cacheKey);
+    if (cached) {
+      const fee = JSON.parse(cached) as ShippingFee;
+      return { ...fee, expectedDeliveryTime: fee.expectedDeliveryTime ? new Date(fee.expectedDeliveryTime) : undefined };
+    }
+
+    const fee = await this.ghnProvider.calculateFee(input);
+    await this.redisService.set(cacheKey, JSON.stringify(fee), SHIPPING_FEE_CACHE_TTL_SECONDS);
+    return fee;
   }
 
   private async resolvePickupAddress() {

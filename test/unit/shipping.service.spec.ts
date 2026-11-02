@@ -16,6 +16,7 @@ function createService() {
     {} as any,
     {} as any,
     {} as any,
+    {} as any,
   );
   return { service, prisma };
 }
@@ -53,6 +54,7 @@ function createShipmentService(pickupSettings: Record<string, string | null>) {
     factory as any,
     {} as any,
     adminSettingsService as any,
+    {} as any,
   );
   return { service, provider, factory };
 }
@@ -210,5 +212,76 @@ describe('ShippingService address catalog revision', () => {
     prisma.ghnCatalogPublication.findUnique.mockResolvedValue(null);
 
     await expect(service.getAddressCatalogProvinces('99')).rejects.toBeInstanceOf(ConflictException);
+  });
+});
+
+describe('ShippingService fee cache', () => {
+  function createFeeService() {
+    const store = new Map<string, string>();
+    const redis = {
+      get: jest.fn(async (key: string) => store.get(key) ?? null),
+      set: jest.fn(async (key: string, value: string) => {
+        store.set(key, value);
+      }),
+    };
+    const ghnProvider = {
+      calculateFee: jest.fn().mockResolvedValue({
+        provider: 'GHN',
+        totalFee: 31900,
+        expectedDeliveryTime: new Date('2026-11-03T16:59:59.000Z'),
+      }),
+    };
+    const config = { get: jest.fn(() => undefined) };
+    const adminSettingsService = {
+      getGhnPickupSettings: jest.fn().mockResolvedValue({
+        provinceV3Id: '1000001',
+        provinceName: 'Hồ Chí Minh',
+        wardV3Id: '1003575',
+        wardName: 'Phường Long Bình',
+        addressLine: 'Long Thạnh Mỹ',
+      }),
+    };
+    const service = new ShippingService(
+      config as any,
+      {} as any,
+      {} as any,
+      ghnProvider as any,
+      adminSettingsService as any,
+      redis as any,
+    );
+    return { service, ghnProvider };
+  }
+
+  const params = (weight: number) => ({
+    receiver: {
+      address: '12 Nguyễn Huệ',
+      provinceId: '1000001',
+      provinceName: 'Hồ Chí Minh',
+      wardId: '1000002',
+      wardName: 'Phường Sài Gòn',
+    },
+    weight,
+    insuranceValue: 1_300_000,
+  });
+
+  it('báo giá lại với cùng địa chỉ, cân nặng, giá trị hàng thì không gọi GHN lần nữa', async () => {
+    const { service, ghnProvider } = createFeeService();
+
+    const first = await service.calculateFee(params(1000));
+    const second = await service.calculateFee(params(1000));
+
+    expect(ghnProvider.calculateFee).toHaveBeenCalledTimes(1);
+    expect(second.totalFee).toBe(31900);
+    expect(second.expectedDeliveryTime).toEqual(first.expectedDeliveryTime);
+    expect(second.expectedDeliveryTime).toBeInstanceOf(Date);
+  });
+
+  it('đổi đầu vào ảnh hưởng tới phí (cân nặng) thì hỏi lại GHN', async () => {
+    const { service, ghnProvider } = createFeeService();
+
+    await service.calculateFee(params(1000));
+    await service.calculateFee(params(1500));
+
+    expect(ghnProvider.calculateFee).toHaveBeenCalledTimes(2);
   });
 });

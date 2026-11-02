@@ -436,6 +436,20 @@ describe('SePay IPN (e2e)', () => {
     expect(prisma.$transaction).toHaveBeenCalled();
   });
 
+  it('TRANSACTION_VOID trả lại lượt mã giảm giá của đơn', async () => {
+    prisma.order.findUnique.mockResolvedValue(pendingProductOrder);
+    prisma.couponRedemption.findUnique.mockResolvedValue({ id: 'redemption-1', couponId: 'coupon-1' });
+    prisma.couponRedemption.deleteMany.mockResolvedValue({ count: 1 });
+
+    await post({
+      ...orderPaidPayload(),
+      notification_type: 'TRANSACTION_VOID',
+    }).expect(200);
+
+    expect(prisma.couponRedemption.deleteMany).toHaveBeenCalledWith({ where: { id: 'redemption-1' } });
+    expect(prisma.$executeRaw).toHaveBeenCalledTimes(1);
+  });
+
   describe('mock-success (chỉ dùng ngoài production)', () => {
     it('đánh dấu đơn CREATED là PAID', async () => {
       prisma.order.findUnique.mockResolvedValue(pendingProductOrder);

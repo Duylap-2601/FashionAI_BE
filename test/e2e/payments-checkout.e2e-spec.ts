@@ -11,7 +11,9 @@ import { CartService } from '../../src/modules/cart/cart.service';
 import { OutboxService } from '../../src/modules/outbox/services/outbox.service';
 import { JwtAuthGuard } from '../../src/modules/auth/guards/jwt-auth.guard';
 import { RateLimitGuard } from '../../src/common/guards/rate-limit.guard';
+import { PaymentGatewayRegistry } from '../../src/modules/payments/gateways/payment-gateway.registry';
 import {
+  createPaymentGatewayRegistryMock,
   createPrismaMock,
   createTestApp,
   PrismaMock,
@@ -36,6 +38,7 @@ const allowAllAuthGuard = {
 describe('POST /api/payments/checkout (e2e)', () => {
   let app: INestApplication;
   let prisma: PrismaMock;
+  let zaloGateway: Record<string, any>;
 
   const SEPAY_ENV = {
     SEPAY_MERCHANT_ID: 'test-merchant',
@@ -44,6 +47,24 @@ describe('POST /api/payments/checkout (e2e)', () => {
 
   beforeEach(async () => {
     prisma = createPrismaMock();
+    zaloGateway = {
+      code: 'ZALOPAY',
+      checkoutTtlMs: 15 * 60 * 1000,
+      linkReuseMs: 14 * 60 * 1000,
+      buildProviderOrderId: jest.fn(() => '261102_12345678abcdef'),
+      createPayment: jest.fn().mockResolvedValue({
+        checkoutUrl: 'https://sb-qcgateway.zalopay.vn/openinapp?order=new',
+        payUrl: 'https://sb-qcgateway.zalopay.vn/openinapp?order=new',
+        raw: { return_code: 1 },
+      }),
+    };
+    const gatewayRegistry = {
+      ...createPaymentGatewayRegistryMock(),
+      resolve: jest.fn((code: string) => {
+        if (code === 'ZALOPAY') return zaloGateway;
+        throw new Error(`Unexpected payment gateway resolve in e2e test: ${code}`);
+      }),
+    };
 
     const created = await createTestApp({
       prisma,
@@ -70,7 +91,9 @@ describe('POST /api/payments/checkout (e2e)', () => {
           .overrideGuard(JwtAuthGuard)
           .useValue(allowAllAuthGuard)
           .overrideGuard(RateLimitGuard)
-          .useValue({ canActivate: () => true }),
+          .useValue({ canActivate: () => true })
+          .overrideProvider(PaymentGatewayRegistry)
+          .useValue(gatewayRegistry),
     });
 
     app = created.app;
@@ -92,7 +115,7 @@ describe('POST /api/payments/checkout (e2e)', () => {
         paymentStatus: PaymentStatus.PENDING,
         shippingAddressSnapshot: VALID_SHIPPING_SNAPSHOT,
         shippingInfo: null,
-        items: [{ id: 'item-1', productId: 'p1', quantity: 1 }],
+        _count: { items: 1 },
       };
       prisma.order.findFirst.mockResolvedValue(order);
       prisma.order.update.mockResolvedValue(order);
@@ -129,7 +152,7 @@ describe('POST /api/payments/checkout (e2e)', () => {
         amount: 350000,
         status: OrderStatus.PROCESSING,
         paymentStatus: PaymentStatus.PAID,
-        items: [{ id: 'item-1' }],
+        _count: { items: 1 },
       });
 
       const res = await request(app.getHttpServer())
@@ -158,7 +181,7 @@ describe('POST /api/payments/checkout (e2e)', () => {
         amount: 350000,
         status: OrderStatus.CANCELLED,
         paymentStatus: PaymentStatus.PENDING,
-        items: [{ id: 'item-1' }],
+        _count: { items: 1 },
       });
 
       await request(app.getHttpServer())
@@ -179,7 +202,7 @@ describe('POST /api/payments/checkout (e2e)', () => {
       paymentStatus: PaymentStatus.PENDING,
       shippingAddressSnapshot: VALID_SHIPPING_SNAPSHOT,
       shippingInfo: null,
-      items: [{ id: 'item-1', productId: 'p1', quantity: 1 }],
+      _count: { items: 1 },
     };
 
     it('lưu gaClientId và gaSessionId vào đơn để gửi purchase từ server', async () => {
@@ -195,9 +218,15 @@ describe('POST /api/payments/checkout (e2e)', () => {
         })
         .expect(200);
 
+      // Ghi chung với lần lưu link thanh toán, không tốn thêm một lần update riêng.
+      expect(prisma.order.update).toHaveBeenCalledTimes(1);
       expect(prisma.order.update).toHaveBeenCalledWith({
         where: { id: 'order-1' },
-        data: { gaClientId: '1234567890.1700000000', gaSessionId: '1700000000' },
+        data: expect.objectContaining({
+          gaClientId: '1234567890.1700000000',
+          gaSessionId: '1700000000',
+          paymentProvider: 'SEPAY',
+        }),
       });
     });
 
@@ -223,6 +252,133 @@ describe('POST /api/payments/checkout (e2e)', () => {
 
       expect(res.body.code).toBe('VALIDATION_ERROR');
       expect(prisma.order.findFirst).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('cổng thanh toán ZaloPay', () => {
+    const ORDER_ID = '3f0e5a54-1f6f-4c0e-9a52-2a1f8f2c9b11';
+    const minutesFromNow = (minutes: number) => new Date(Date.now() + minutes * 60_000);
+    const order = {
+      id: 'order-1',
+      orderCode: 12345678,
+      userId: AUTH_USER.id,
+      targetTier: null,
+      amount: 350000,
+      status: OrderStatus.CREATED,
+      paymentStatus: PaymentStatus.PENDING,
+      shippingAddressSnapshot: VALID_SHIPPING_SNAPSHOT,
+      shippingInfo: null,
+      _count: { items: 1 },
+    };
+    const placeholder = {
+      id: 'pay-placeholder',
+      orderId: 'order-1',
+      provider: 'SEPAY',
+      status: PaymentStatus.PENDING,
+      providerPaymentId: null,
+      transactionId: null,
+      idempotencyKey: null,
+      expiresAt: null,
+      createdAt: minutesFromNow(-30),
+      paymentData: null,
+    };
+    const zaloPending = (id: string, opts: { createdAt: Date; expiresAt: Date; checkoutUrl: string }) => ({
+      id,
+      orderId: 'order-1',
+      provider: 'ZALOPAY',
+      status: PaymentStatus.PENDING,
+      providerPaymentId: `261102_${id}`,
+      transactionId: null,
+      idempotencyKey: `req-${id}`,
+      expiresAt: opts.expiresAt,
+      createdAt: opts.createdAt,
+      paymentData: { checkoutUrl: opts.checkoutUrl },
+    });
+
+    beforeEach(() => {
+      prisma.order.findFirst.mockResolvedValue(order);
+      prisma.order.update.mockResolvedValue(order);
+      prisma.payment.update.mockImplementation(async ({ where, data }: any) => ({ ...placeholder, id: where.id, ...data }));
+    });
+
+    it('tạo link mới: đọc payment một lần, dùng lại placeholder, ghi GA4 cùng transaction', async () => {
+      prisma.payment.findMany.mockResolvedValue([placeholder]);
+
+      const res = await request(app.getHttpServer())
+        .post('/api/payments/checkout')
+        .send({ orderId: ORDER_ID, provider: 'ZALOPAY', gaClientId: '1234567890.1700000000' })
+        .expect(200);
+
+      expect(res.body.data).toMatchObject({
+        provider: 'ZALOPAY',
+        paymentId: 'pay-placeholder',
+        checkoutUrl: 'https://sb-qcgateway.zalopay.vn/openinapp?order=new',
+      });
+      expect(prisma.payment.findMany).toHaveBeenCalledTimes(1);
+      expect(prisma.payment.findFirst).not.toHaveBeenCalled();
+      expect(prisma.payment.create).not.toHaveBeenCalled();
+      expect(prisma.payment.update).toHaveBeenNthCalledWith(
+        1,
+        expect.objectContaining({
+          where: { id: 'pay-placeholder' },
+          data: expect.objectContaining({ provider: 'ZALOPAY', providerPaymentId: '261102_12345678abcdef' }),
+        }),
+      );
+      expect(zaloGateway.createPayment).toHaveBeenCalledTimes(1);
+      expect(prisma.$transaction).toHaveBeenCalledTimes(1);
+      expect(prisma.order.update).toHaveBeenCalledTimes(1);
+      expect(prisma.order.update).toHaveBeenCalledWith({
+        where: { id: 'order-1' },
+        data: expect.objectContaining({
+          gaClientId: '1234567890.1700000000',
+          gaSessionId: null,
+          paymentProvider: 'ZALOPAY',
+        }),
+      });
+    });
+
+    it('dùng lại link mới nhất còn hiệu lực, không gọi lại ZaloPay', async () => {
+      prisma.payment.findMany.mockResolvedValue([
+        zaloPending('pay-older', { createdAt: minutesFromNow(-10), expiresAt: minutesFromNow(5), checkoutUrl: 'https://zalo/older' }),
+        zaloPending('pay-newer', { createdAt: minutesFromNow(-5), expiresAt: minutesFromNow(10), checkoutUrl: 'https://zalo/newer' }),
+      ]);
+
+      const res = await request(app.getHttpServer())
+        .post('/api/payments/checkout')
+        .send({ orderId: ORDER_ID, provider: 'ZALOPAY', gaClientId: '1234567890.1700000000' })
+        .expect(200);
+
+      expect(res.body.data).toMatchObject({ paymentId: 'pay-newer', checkoutUrl: 'https://zalo/newer' });
+      expect(zaloGateway.createPayment).not.toHaveBeenCalled();
+      expect(prisma.payment.update).not.toHaveBeenCalled();
+      // Link dùng lại không có lần cập nhật đơn nào khác, nên GA4 vẫn được ghi riêng.
+      expect(prisma.order.update).toHaveBeenCalledWith({
+        where: { id: 'order-1' },
+        data: { gaClientId: '1234567890.1700000000', gaSessionId: null },
+      });
+    });
+
+    it('không dùng lại link sắp hết hạn hoặc của cổng khác', async () => {
+      prisma.payment.findMany.mockResolvedValue([
+        placeholder,
+        zaloPending('pay-expiring', { createdAt: minutesFromNow(-13), expiresAt: minutesFromNow(0.5), checkoutUrl: 'https://zalo/expiring' }),
+        {
+          ...zaloPending('pay-sepay', { createdAt: minutesFromNow(-1), expiresAt: minutesFromNow(10), checkoutUrl: 'https://sepay/link' }),
+          provider: 'SEPAY',
+        },
+      ]);
+
+      const res = await request(app.getHttpServer())
+        .post('/api/payments/checkout')
+        .send({ orderId: ORDER_ID, provider: 'ZALOPAY' })
+        .expect(200);
+
+      expect(res.body.data.checkoutUrl).toBe('https://sb-qcgateway.zalopay.vn/openinapp?order=new');
+      expect(zaloGateway.createPayment).toHaveBeenCalledTimes(1);
+      expect(prisma.payment.update).toHaveBeenNthCalledWith(1, expect.objectContaining({ where: { id: 'pay-placeholder' } }));
+      expect(prisma.order.update).not.toHaveBeenCalledWith(
+        expect.objectContaining({ data: expect.objectContaining({ gaClientId: expect.anything() }) }),
+      );
     });
   });
 
