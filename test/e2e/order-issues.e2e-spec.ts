@@ -111,6 +111,20 @@ describe("OrderIssues (e2e)", () => {
       accountHolder: "NGUYEN VAN A",
     };
 
+    const postIssueWithEvidence = () =>
+      request(app.getHttpServer())
+        .post(url)
+        .field("reason", validBody.reason)
+        .field("description", validBody.description)
+        .field("desiredResolution", validBody.desiredResolution)
+        .field("bankName", validBody.bankName)
+        .field("accountNumber", validBody.accountNumber)
+        .field("accountHolder", validBody.accountHolder)
+        .attach("evidenceImages", Buffer.from("evidence"), {
+          filename: "evidence.png",
+          contentType: "image/png",
+        });
+
     it("tạo issue khi đơn COMPLETED trong hạn 7 ngày", async () => {
       mockCompletedOrder();
       prisma.orderIssue.create.mockResolvedValue({
@@ -118,12 +132,10 @@ describe("OrderIssues (e2e)", () => {
         status: "PENDING",
       });
 
-      const res = await request(app.getHttpServer())
-        .post(url)
-        .send(validBody)
-        .expect(201);
+      const res = await postIssueWithEvidence().expect(201);
 
       expect(res.body.data.status).toBe("PENDING");
+      expect(storageService.uploadImage).toHaveBeenCalled();
       expect(prisma.orderIssue.create).toHaveBeenCalledWith(
         expect.objectContaining({
           data: expect.objectContaining({
@@ -132,6 +144,18 @@ describe("OrderIssues (e2e)", () => {
           }),
         }),
       );
+    });
+
+    it("trả 400 khi thiếu ảnh minh chứng", async () => {
+      mockCompletedOrder();
+
+      const res = await request(app.getHttpServer())
+        .post(url)
+        .send(validBody)
+        .expect(400);
+
+      expect(res.body.message).toContain("ảnh minh chứng");
+      expect(prisma.orderIssue.create).not.toHaveBeenCalled();
     });
 
     it("trả 400 khi đơn chưa COMPLETED", async () => {
@@ -156,9 +180,19 @@ describe("OrderIssues (e2e)", () => {
 
     it("trả 400 khi item đã có issue đang active", async () => {
       mockCompletedOrder();
-      prisma.orderIssue.findFirst.mockResolvedValue({ id: "issue-old" });
+      prisma.orderIssue.findFirst.mockResolvedValue({ id: "issue-old", status: OrderIssueStatus.PENDING });
 
       await request(app.getHttpServer()).post(url).send(validBody).expect(400);
+    });
+
+    it("trả 400 khi item đã xử lý hoàn tiền xong", async () => {
+      mockCompletedOrder();
+      prisma.orderIssue.findFirst.mockResolvedValue({ id: "issue-old", status: OrderIssueStatus.RESOLVED });
+
+      const res = await postIssueWithEvidence().expect(400);
+
+      expect(res.body.message).toContain("đã được xử lý hoàn tiền");
+      expect(prisma.orderIssue.create).not.toHaveBeenCalled();
     });
 
     it("trả 400 khi mô tả quá ngắn", async () => {
