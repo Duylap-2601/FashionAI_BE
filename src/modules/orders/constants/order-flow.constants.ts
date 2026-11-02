@@ -151,3 +151,17 @@ export const CANONICAL_ORDER_STATUSES = [
   OrderStatus.EXPIRED,
   OrderStatus.FAILED,
 ] as const;
+
+// Đơn đã chốt (hoàn tất, huỷ, đã nhận lại hàng hoàn): hiển thị theo trạng thái đơn.
+export const ORDER_FINAL_DISPLAY_STATUSES: OrderStatus[] = [
+  OrderStatus.COMPLETED,
+  OrderStatus.CANCELLED,
+  OrderStatus.RETURNED,
+];
+
+// Đơn đang trong luồng trả hàng, shop chưa nhận lại hàng.
+export const RETURN_FLOW_STATUSES: OrderStatus[] = [
+  OrderStatus.RETURN_REQUESTED,
+  OrderStatus.RETURN_APPROVED,
+  OrderStatus.RETURNING,
+];

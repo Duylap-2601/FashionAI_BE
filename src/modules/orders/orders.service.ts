@@ -12,7 +12,7 @@ import { MailQueueService } from '../mail/mail-queue.service';
 import { NotificationService } from '../notification/notification.service';
 import { createWithUniqueOrderCode } from '../../common/utils/order-code.util';
 import { resolveGarmentUrlForColor } from '../../common/utils/garment-image.util';
-import { resolveManualRefundAmount, resolveRefundPaymentStatus } from '../../common/utils/refund.util';
+import { mergeRefundEvidence, resolveManualRefundAmount, resolveRefundPaymentStatus } from '../../common/utils/refund.util';
 import { COLLECTED_PAYMENT_STATUSES } from '../../common/constants/order.constants';
 import { isAllowedProductColor } from '../../common/utils/product-color.util';
 import { CreateOrderDto } from './dto/create-order.dto';
@@ -20,8 +20,10 @@ import {
   MAX_INT4,
   MEASUREMENT_SNAPSHOT_FIELDS,
   ONLINE_PAYMENT_METHODS,
+  ORDER_FINAL_DISPLAY_STATUSES,
   ORDER_STATUS_MESSAGE,
   ORDER_STATUS_TRANSITIONS,
+  RETURN_FLOW_STATUSES,
   STATUS_NOTIFY_EMAIL,
   UUID_REGEX,
 } from './constants/order-flow.constants';
@@ -217,7 +219,7 @@ export class OrdersService {
       note: resolvedDto.shippingInfo.note ?? resolvedDto.shippingInfo.notes ?? '',
     };
 
-    const order = await createWithUniqueOrderCode((orderCode) =>
+    const createdOrder = await createWithUniqueOrderCode((orderCode) =>
       this.prisma.$transaction(async (tx) => {
         if (resolvedDto.shippingAddressId) {
           const addressAtCommit = await tx.userAddress.findFirst({
@@ -290,7 +292,8 @@ export class OrdersService {
               },
             },
           },
-          include: this.orderInclude(),
+          // Chỉ lấy id trong transaction; đọc đơn đầy đủ sau khi commit để transaction ngắn.
+          select: { id: true },
         });
 
         await this.createOrderEvent(tx, {
@@ -353,6 +356,10 @@ export class OrdersService {
         return created;
       }),
     );
+    const order = await this.prisma.order.findUniqueOrThrow({
+      where: { id: createdOrder.id },
+      include: this.orderInclude(),
+    });
 
     // Notify admins about new order (fire-and-forget, don't block response)
     const user = await this.prisma.user.findUnique({ where: { id: userId }, select: { name: true } });
@@ -740,7 +747,7 @@ export class OrdersService {
       throw new BadRequestException('Đơn hàng chưa ghi nhận tiền thanh toán, không thể hoàn tiền.');
     }
 
-    const refundEvidence = this.buildRefundEvidence(dto, receiptImageUrls);
+    const refundEvidence = this.buildRefundEvidence(dto, receiptImageUrls, order.refundEvidence);
 
     await this.prisma.$transaction(async (tx) => {
       const completedBefore = await tx.refund.aggregate({
@@ -888,24 +895,20 @@ export class OrdersService {
   }
 
   /**
-   * Ghép mã giao dịch + ảnh chứng từ chuyển khoản admin vừa tải lên. Trả về
-   * undefined khi không có gì mới để Prisma giữ nguyên evidence cũ.
+   * Ghép mã giao dịch + ảnh chứng từ chuyển khoản admin vừa tải lên vào chứng từ
+   * đã lưu (ảnh cộng dồn, không ghi đè bill của lần trước). Trả về undefined khi
+   * không có gì mới để Prisma giữ nguyên evidence cũ.
    */
   private buildRefundEvidence(
     dto: RefundOrderDto,
     receiptImageUrls: string[],
+    currentEvidence: Prisma.JsonValue | null,
   ): Prisma.InputJsonValue | undefined {
-    const reference = dto.evidenceReference?.trim();
-    if (!reference && receiptImageUrls.length === 0) {
-      return dto.evidence as Prisma.InputJsonValue | undefined;
-    }
-
-    const base = (dto.evidence ?? {}) as Record<string, unknown>;
-    return {
-      ...base,
-      ...(reference ? { reference } : {}),
-      ...(receiptImageUrls.length > 0 ? { receiptImages: receiptImageUrls } : {}),
-    } as Prisma.InputJsonValue;
+    return mergeRefundEvidence(currentEvidence, {
+      evidence: dto.evidence,
+      reference: dto.evidenceReference,
+      receiptImageUrls,
+    }) as Prisma.InputJsonValue | undefined;
   }
 
   /**
@@ -1749,13 +1752,16 @@ export class OrdersService {
   }
 
   private resolveDisplayStatus(order: IOrderWithRelations, currentShipment: IShipmentWithOrder | null) {
-    if (order.status === OrderStatus.CANCELLED || order.status === OrderStatus.COMPLETED) {
+    const isOrderFinal = ORDER_FINAL_DISPLAY_STATUSES.includes(order.status);
+    // Đơn đã chốt hoặc đang trả hàng thì hiển thị theo trạng thái đơn: vận đơn giao
+    // đi vẫn "Đã giao hàng" nhưng không còn phản ánh tiến độ của đơn nữa.
+    if (isOrderFinal || RETURN_FLOW_STATUSES.includes(order.status)) {
       return {
         source: 'ORDER',
         code: order.status,
         label: this.labelOrderStatus(order.status),
         providerTerminal: false,
-        orderFinal: true,
+        orderFinal: isOrderFinal,
         issue: false,
       };
     }
