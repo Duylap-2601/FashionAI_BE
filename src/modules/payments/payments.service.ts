@@ -20,6 +20,7 @@ import { GatewayCode, GatewayPaymentResult, PaymentGateway } from './gateways/pa
 import { PaymentGatewayRegistry } from './gateways/payment-gateway.registry';
 import { RedisService } from '../../common/services/redis.service';
 import { MailQueueService } from '../mail/mail-queue.service';
+import { RefundCompletedData } from '../mail/mail.types';
 import { NotificationService } from '../notification/notification.service';
 import { CartService } from '../cart/cart.service';
 import { OutboxService } from '../outbox/services/outbox.service';
@@ -816,6 +817,7 @@ export class PaymentsService {
         return this.toRefundResponse(failed);
       }
 
+      let orderRefundedTotalVnd = 0;
       const updatedRefund = await this.prisma.$transaction(async (tx) => {
         const updated = await tx.refund.update({
           where: { id: refund.id },
@@ -838,6 +840,7 @@ export class PaymentsService {
             _sum: { amountVnd: true },
           });
           const orderRefundedTotal = orderCompleted._sum.amountVnd ?? BigInt(0);
+          orderRefundedTotalVnd = Number(orderRefundedTotal);
           const orderCollectedVnd = Number(payment.order.amountPaidVnd) > 0
             ? Number(payment.order.amountPaidVnd)
             : Math.round(Number(payment.order.amount));
@@ -877,6 +880,15 @@ export class PaymentsService {
         return updated;
       });
       this.notifyRefundUpdate(payment.order.userId, payment.order.orderCode, 'COMPLETED', dto.amountVnd);
+      this.sendRefundCompletedEmail(payment.order.userId, {
+        refundId: updatedRefund.id,
+        orderId: payment.orderId,
+        orderCode: payment.order.orderCode,
+        amountVnd: dto.amountVnd,
+        totalRefundedVnd: orderRefundedTotalVnd,
+        provider: gateway.code,
+        processedAt: updatedRefund.processedAt ?? new Date(),
+      }).catch(() => undefined);
       return this.toRefundResponse(updatedRefund);
     } catch (err) {
       await this.prisma.refund.update({
@@ -1831,6 +1843,7 @@ export class PaymentsService {
   }
 
   private async finalizeGatewayRefund(refundId: string, outcome: 'COMPLETED' | 'FAILED', providerResponse: Record<string, unknown>, message?: string) {
+    let orderRefundedTotalVnd = 0;
     const result = await this.prisma.$transaction(async (tx) => {
       const refund = await tx.refund.findUnique({ where: { id: refundId }, include: { payment: { include: { order: true } } } });
       if (!refund || !refund.payment) return null;
@@ -1859,6 +1872,7 @@ export class PaymentsService {
           // Tổng đã hoàn của cả đơn, không chỉ payment hiện tại.
           const orderCompleted = await tx.refund.aggregate({ where: { orderId: refund.orderId, status: RefundStatus.COMPLETED }, _sum: { amountVnd: true } });
           const orderRefundedTotal = orderCompleted._sum.amountVnd ?? BigInt(0);
+          orderRefundedTotalVnd = Number(orderRefundedTotal);
           await tx.order.update({
             where: { id: refund.orderId },
             data: {
@@ -1895,8 +1909,28 @@ export class PaymentsService {
         outcome,
         Number(result.refund.amountVnd),
       );
+      if (outcome === 'COMPLETED') {
+        this.sendRefundCompletedEmail(result.refund.payment.order.userId, {
+          refundId: result.refund.id,
+          orderId: result.refund.orderId,
+          orderCode: result.refund.payment.order.orderCode,
+          amountVnd: Number(result.refund.amountVnd),
+          totalRefundedVnd: orderRefundedTotalVnd,
+          provider: result.refund.provider,
+          processedAt: new Date(),
+        }).catch(() => undefined);
+      }
     }
     return result;
+  }
+
+  private async sendRefundCompletedEmail(userId: string, data: RefundCompletedData) {
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { email: true },
+    });
+    if (!user?.email) return;
+    await this.mailQueueService.sendRefundCompletedEmail(user.email, data);
   }
 
   private notifyRefundUpdate(userId: string, orderCode: number, status: 'COMPLETED' | 'FAILED', amountVnd: number) {

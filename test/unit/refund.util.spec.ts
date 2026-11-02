@@ -1,5 +1,7 @@
 import { PaymentStatus } from '@prisma/client';
 import {
+  getRefundEvidenceReference,
+  getRefundReceiptImages,
   mergeRefundEvidence,
   resolveManualRefundAmount,
   resolveRefundPaymentStatus,
@@ -61,6 +63,37 @@ describe('resolveManualRefundAmount', () => {
     expect(
       resolveManualRefundAmount({ collectedVnd: 1_000_000, completedVnd: 1_000_000 }),
     ).toEqual({ amountVnd: 0, remainingVnd: 0 });
+  });
+});
+
+describe('getRefundReceiptImages', () => {
+  it('lấy ảnh chứng từ đã lưu, bỏ trùng và chỉ nhận URL http(s)', () => {
+    expect(
+      getRefundReceiptImages({
+        receiptImages: [
+          'https://cdn/a.png',
+          'https://cdn/a.png',
+          'javascript:alert(1)',
+          'ftp://cdn/b.png',
+        ],
+      }),
+    ).toEqual(['https://cdn/a.png']);
+  });
+
+  it('trả rỗng khi chứng từ không có ảnh hợp lệ', () => {
+    expect(getRefundReceiptImages(null)).toEqual([]);
+    expect(getRefundReceiptImages({ receiptImages: 'not-an-array' })).toEqual([]);
+  });
+});
+
+describe('getRefundEvidenceReference', () => {
+  it('lấy mã giao dịch đã trim', () => {
+    expect(getRefundEvidenceReference({ reference: '  VCB 123  ' })).toBe('VCB 123');
+  });
+
+  it('trả null khi không có mã giao dịch', () => {
+    expect(getRefundEvidenceReference({})).toBeNull();
+    expect(getRefundEvidenceReference(null)).toBeNull();
   });
 });
 

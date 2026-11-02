@@ -47,7 +47,14 @@ export class OrderIssuesController {
   @ApiBody({
     schema: {
       type: "object",
-      required: ["reason", "description", "bankName", "accountNumber", "accountHolder"],
+      required: [
+        "reason",
+        "description",
+        "bankName",
+        "accountNumber",
+        "accountHolder",
+        "evidenceImages",
+      ],
       properties: {
         reason: {
           type: "string",
@@ -73,7 +80,7 @@ export class OrderIssuesController {
           type: "array",
           items: { type: "string", format: "binary" },
           description:
-            "Ảnh minh chứng lỗi (tối đa 10 ảnh, mỗi ảnh tối đa 10MB)",
+            "Ảnh minh chứng lỗi, bắt buộc ít nhất 1 ảnh (tối đa 10 ảnh, mỗi ảnh tối đa 10MB)",
         },
       },
     },

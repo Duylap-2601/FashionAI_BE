@@ -4,11 +4,13 @@ import * as brevo from '@getbrevo/brevo';
 import {
   OrderConfirmationData,
   OrderStatusUpdateData,
+  RefundCompletedData,
   RenderedMail,
   RenewalReminderData,
 } from './mail.types';
 import { renderOrderConfirmationMail } from './templates/order-confirmation.template';
 import { renderOrderStatusUpdateMail } from './templates/order-status-update.template';
+import { renderRefundCompletedMail } from './templates/refund-completed.template';
 import { renderPasswordResetMail } from './templates/password-reset.template';
 import { renderRenewalReminderMail } from './templates/renewal-reminder.template';
 import { renderVerificationMail } from './templates/verification.template';
@@ -68,6 +70,15 @@ export class MailService {
       email,
       'order-status-update',
       renderOrderStatusUpdateMail({ ...data, detailUrl }),
+    );
+  }
+
+  async sendRefundCompletedEmail(email: string, data: RefundCompletedData): Promise<void> {
+    const detailUrl = this.buildFrontendUrl(`/orders/${encodeURIComponent(data.orderId)}`);
+    await this.sendMail(
+      email,
+      'refund-completed',
+      renderRefundCompletedMail({ ...data, detailUrl }),
     );
   }
 

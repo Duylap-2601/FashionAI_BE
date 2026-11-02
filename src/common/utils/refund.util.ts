@@ -66,3 +66,29 @@ export function mergeRefundEvidence(
     ...(receiptImages.length > 0 ? { receiptImages } : {}),
   };
 }
+
+const HTTP_URL_PATTERN = /^https?:\/\//i;
+
+/**
+ * Lấy danh sách ảnh chứng từ chuyển khoản đã lưu trên đơn. Chỉ nhận URL http(s)
+ * để không đưa giá trị lạ vào email/href.
+ */
+export function getRefundReceiptImages(evidence: unknown): string[] {
+  if (!evidence || typeof evidence !== 'object' || Array.isArray(evidence)) return [];
+  const value = (evidence as Record<string, unknown>).receiptImages;
+  if (!Array.isArray(value)) return [];
+  return [
+    ...new Set(
+      value.filter(
+        (url): url is string => typeof url === 'string' && HTTP_URL_PATTERN.test(url),
+      ),
+    ),
+  ];
+}
+
+/** Mã giao dịch / ghi chú chứng từ admin đã lưu trên đơn. */
+export function getRefundEvidenceReference(evidence: unknown): string | null {
+  if (!evidence || typeof evidence !== 'object' || Array.isArray(evidence)) return null;
+  const value = (evidence as Record<string, unknown>).reference;
+  return typeof value === 'string' && value.trim() ? value.trim() : null;
+}

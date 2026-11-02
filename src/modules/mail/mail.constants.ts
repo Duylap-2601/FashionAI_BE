@@ -5,5 +5,6 @@ export const MAIL_JOB = {
   PASSWORD_RESET: 'password-reset',
   ORDER_CONFIRMATION: 'order-confirmation',
   ORDER_STATUS_UPDATE: 'order-status-update',
+  REFUND_COMPLETED: 'refund-completed',
   RENEWAL_REMINDER: 'renewal-reminder',
 } as const;

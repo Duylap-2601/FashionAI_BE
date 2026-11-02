@@ -94,13 +94,29 @@ export class OrderIssuesService {
     const activeIssue = await this.prisma.orderIssue.findFirst({
       where: {
         orderItemId: item.id,
-        status: { in: [OrderIssueStatus.PENDING, OrderIssueStatus.APPROVED] },
+        status: isRefundNotReceived
+          ? { in: [OrderIssueStatus.PENDING, OrderIssueStatus.APPROVED] }
+          : {
+              in: [
+                OrderIssueStatus.PENDING,
+                OrderIssueStatus.APPROVED,
+                OrderIssueStatus.RESOLVED,
+              ],
+            },
       },
-      select: { id: true },
+      select: { id: true, status: true },
     });
     if (activeIssue) {
       throw new BadRequestException(
-        "Sản phẩm này đã có yêu cầu xử lý đang chờ giải quyết",
+        activeIssue.status === OrderIssueStatus.RESOLVED
+          ? "Sản phẩm này đã được xử lý hoàn tiền, không thể báo lỗi lại"
+          : "Sản phẩm này đã có yêu cầu xử lý đang chờ giải quyết",
+      );
+    }
+
+    if (files.length === 0) {
+      throw new BadRequestException(
+        "Vui lòng đính kèm ít nhất 1 ảnh minh chứng cho yêu cầu.",
       );
     }
 
