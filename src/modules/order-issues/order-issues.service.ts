@@ -114,6 +114,12 @@ export class OrderIssuesService {
       );
     }
 
+    if (files.length === 0) {
+      throw new BadRequestException(
+        "Vui lòng đính kèm ít nhất 1 ảnh minh chứng cho yêu cầu.",
+      );
+    }
+
     const evidenceImages: string[] = [];
     for (const file of files) {
       evidenceImages.push(
