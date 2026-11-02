@@ -9,6 +9,9 @@ import { UpdateReviewReplyDto } from './dto/update-review-reply.dto';
 import { QueryReviewReplyDto } from './dto/query-review-reply.dto';
 import { Prisma, OrderStatus, Role, NotificationType } from '@prisma/client';
 
+// Trang quản trị phân trang phía client nên tải cả danh sách; chặn trần để không quét vô hạn.
+const ADMIN_REVIEWS_MAX_LIMIT = 500;
+
 @Injectable()
 export class ReviewsService {
   constructor(
@@ -174,6 +177,55 @@ export class ReviewsService {
         limit,
         totalPages: Math.ceil(total / limit),
       },
+    };
+  }
+
+  /** Danh sách mọi đánh giá cho trang quản trị, mới nhất trước, kèm sản phẩm và người viết. */
+  async findAllAdmin(query: QueryReviewDto) {
+    const page = query.page ?? 1;
+    const limit = Math.min(query.limit ?? 10, ADMIN_REVIEWS_MAX_LIMIT);
+    const where: Prisma.ReviewWhereInput = query.rating ? { rating: query.rating } : {};
+
+    const [rows, total] = await Promise.all([
+      this.prisma.review.findMany({
+        where,
+        skip: (page - 1) * limit,
+        take: limit,
+        orderBy: { createdAt: 'desc' },
+        include: {
+          user: { select: { id: true, name: true, avatarUrl: true } },
+          product: {
+            select: {
+              id: true,
+              name: true,
+              garmentUrl: true,
+              images: { orderBy: { isMain: 'desc' }, take: 1, select: { imageUrl: true } },
+            },
+          },
+          replies: {
+            orderBy: { createdAt: 'asc' },
+            include: {
+              user: { select: { id: true, name: true, avatarUrl: true, role: true } },
+            },
+          },
+        },
+      }),
+      this.prisma.review.count({ where }),
+    ]);
+
+    const items = rows.map(({ product, ...review }) => ({
+      ...review,
+      product: {
+        id: product.id,
+        name: product.name,
+        garmentUrl: product.garmentUrl,
+        image: product.images[0]?.imageUrl ?? product.garmentUrl,
+      },
+    }));
+
+    return {
+      items,
+      meta: { total, page, limit, totalPages: Math.ceil(total / limit) },
     };
   }
 
