@@ -44,6 +44,9 @@ interface CheckoutLinkResult {
   extra?: Record<string, unknown>;
 }
 
+/** Định danh GA4 gửi kèm checkout; rỗng khi client không gửi. */
+type CheckoutGaData = { gaClientId?: string; gaSessionId?: string | null };
+
 @Injectable()
 export class PaymentsService {
   private readonly logger = new Logger(PaymentsService.name);
@@ -74,13 +77,11 @@ export class PaymentsService {
     const provider = dto.provider ?? this.gatewayRegistry.getDefaultCode();
 
     // Lưu định danh GA4 của trình duyệt để event purchase gửi từ server được gắn vào
-    // đúng phiên truy cập. Checkout gọi lại thì ghi đè bằng phiên mới nhất.
-    if (dto.gaClientId) {
-      await this.prisma.order.update({
-        where: { id: order.id },
-        data: { gaClientId: dto.gaClientId, gaSessionId: dto.gaSessionId ?? null },
-      });
-    }
+    // đúng phiên truy cập. Checkout gọi lại thì ghi đè bằng phiên mới nhất. Ghi chung
+    // với lần cập nhật đơn bên dưới để không tốn thêm một vòng gọi DB.
+    const gaData: CheckoutGaData = dto.gaClientId
+      ? { gaClientId: dto.gaClientId, gaSessionId: dto.gaSessionId ?? null }
+      : {};
 
     if (provider === 'SEPAY') {
       const { checkoutUrl, extra } = await this.createSePayCheckoutLink(order);
@@ -88,6 +89,7 @@ export class PaymentsService {
       await this.prisma.order.update({
         where: { id: order.id },
         data: {
+          ...gaData,
           paymentProvider: 'SEPAY',
           checkoutUrl,
           checkoutExpiresAt: new Date(Date.now() + CHECKOUT_TTL_MS),
@@ -108,7 +110,7 @@ export class PaymentsService {
     }
 
     const gateway = this.gatewayRegistry.resolve(provider);
-    return this.createGatewayCheckoutLink(order, gateway);
+    return this.createGatewayCheckoutLink(order, gateway, gaData);
   }
 
   /**
@@ -116,9 +118,11 @@ export class PaymentsService {
    * dụng link cũ nếu còn hiệu lực để không tạo rác ở phía cổng thanh toán.
    */
   private async resolveProductOrder(userId: string, orderId: string) {
+    // Chỉ cần biết đơn có sản phẩm hay không: đếm trong cùng câu query thay vì tải
+    // items bằng một query riêng.
     const order = await this.prisma.order.findFirst({
       where: { id: orderId, userId },
-      include: { items: true },
+      include: { _count: { select: { items: true } } },
     });
 
     if (!order) {
@@ -135,7 +139,7 @@ export class PaymentsService {
       );
     }
 
-    if (order.items.length === 0 && !order.targetTier) {
+    if (order._count.items === 0 && !order.targetTier) {
       throw new BadRequestException('Đơn hàng không có sản phẩm nào.');
     }
 
@@ -143,7 +147,7 @@ export class PaymentsService {
       throw new BadRequestException('Giá trị đơn hàng không hợp lệ.');
     }
 
-    if (order.items.length > 0) {
+    if (order._count.items > 0) {
       const snapshot = order.shippingAddressSnapshot ?? order.shippingInfo;
       const info = snapshot as {
         address?: string;
@@ -321,26 +325,35 @@ export class PaymentsService {
     };
   }
 
-  private async createGatewayCheckoutLink(order: Order, gateway: PaymentGateway) {
+  private async createGatewayCheckoutLink(order: Order, gateway: PaymentGateway, gaData: CheckoutGaData = {}) {
     const amount = Math.trunc(Number(order.amount));
     const now = new Date();
     const expiresAt = new Date(now.getTime() + gateway.checkoutTtlMs);
     const minUsableExpiry = new Date(now.getTime() + 60_000);
     const minCreatedAt = new Date(now.getTime() - gateway.linkReuseMs);
-    const existingPayment = await this.prisma.payment.findFirst({
-      where: {
-        orderId: order.id,
-        provider: gateway.code,
-        status: PaymentStatus.PENDING,
-        expiresAt: { gt: minUsableExpiry },
-        createdAt: { gt: minCreatedAt },
-      },
-      orderBy: { createdAt: 'desc' },
+    // Đọc một lần mọi payment PENDING của đơn (chỉ vài row) rồi chọn trong bộ nhớ cả
+    // link còn dùng lại được lẫn placeholder, thay vì hai query nối tiếp tới DB ở xa.
+    const pendingPayments = await this.prisma.payment.findMany({
+      where: { orderId: order.id, status: PaymentStatus.PENDING },
+      orderBy: { createdAt: 'asc' },
     });
+    const existingPayment =
+      pendingPayments
+        .filter(
+          (p) =>
+            p.provider === gateway.code &&
+            p.expiresAt !== null &&
+            p.expiresAt > minUsableExpiry &&
+            p.createdAt > minCreatedAt,
+        )
+        .pop() ?? null;
 
     const existingData = existingPayment?.paymentData as Record<string, unknown> | null;
     const existingCheckoutUrl = existingData?.checkoutUrl ?? existingData?.payUrl;
     if (existingPayment && typeof existingCheckoutUrl === 'string' && existingCheckoutUrl) {
+      if (gaData.gaClientId) {
+        await this.prisma.order.update({ where: { id: order.id }, data: gaData });
+      }
       return {
         orderId: order.id,
         orderCode: order.orderCode,
@@ -362,15 +375,7 @@ export class PaymentsService {
     if (!payment) {
       // Order tạo sẵn một payment placeholder PENDING; dùng lại row đó thay vì
       // tạo row mới để không để lại payment treo vĩnh viễn.
-      const placeholder = await this.prisma.payment.findFirst({
-        where: {
-          orderId: order.id,
-          status: PaymentStatus.PENDING,
-          providerPaymentId: null,
-          transactionId: null,
-        },
-        orderBy: { createdAt: 'asc' },
-      });
+      const placeholder = pendingPayments.find((p) => p.providerPaymentId === null && p.transactionId === null);
       const gatewayPaymentData = {
         provider: gateway.code,
         providerPaymentId: gateway.buildProviderOrderId(order.orderCode),
@@ -444,6 +449,7 @@ export class PaymentsService {
       this.prisma.order.update({
         where: { id: order.id },
         data: {
+          ...gaData,
           paymentProvider: gateway.code,
           checkoutUrl,
           checkoutExpiresAt: expiresAt,
