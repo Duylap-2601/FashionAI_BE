@@ -1,10 +1,31 @@
 import { ConflictException, Injectable, Logger, NotFoundException } from '@nestjs/common';
-import { Prisma, ShipmentStatus } from '@prisma/client';
+import { Prisma, Shipment, ShipmentStatus } from '@prisma/client';
 import { PrismaService } from '../../database/prisma.service';
+import { RedisService } from '../../common/services/redis.service';
 import { ShippingService } from './shipping.service';
 import { ShippingProviderType } from './constants/shipping-provider.enum';
+import { shipmentInsuranceValueVnd } from './utils/shipment-insurance.util';
 
 type OrderWithItems = Prisma.OrderGetPayload<{ include: { items: true } }>;
+
+// Tự đồng bộ trạng thái vận đơn với GHN, dự phòng khi webhook không tới.
+const STATUS_SYNC_LOCK_KEY = 'shipment-status-sync';
+const STATUS_SYNC_LOCK_TTL_SECONDS = 240;
+const STATUS_SYNC_BATCH_SIZE = 25;
+const STATUS_SYNC_MIN_INTERVAL_MS = 5 * 60 * 1000;
+const STATUS_SYNC_WINDOW_MS = 30 * 24 * 60 * 60 * 1000;
+const STATUS_SYNC_ACTIVE_STATUSES: ShipmentStatus[] = [
+  ShipmentStatus.UNKNOWN,
+  ShipmentStatus.READY_TO_PICK,
+  ShipmentStatus.CREATED,
+  ShipmentStatus.PICKING,
+  ShipmentStatus.PICKED,
+  ShipmentStatus.SHIPPING,
+  ShipmentStatus.IN_TRANSIT,
+  ShipmentStatus.DELIVERING,
+  ShipmentStatus.DELIVERY_FAILED,
+  ShipmentStatus.RETURNING,
+];
 
 @Injectable()
 export class ShipmentService {
@@ -13,6 +34,7 @@ export class ShipmentService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly shippingService: ShippingService,
+    private readonly redisService: RedisService,
   ) {}
 
   /**
@@ -136,6 +158,82 @@ export class ShipmentService {
     return updated;
   }
 
+  /**
+   * Hỏi GHN trạng thái các vận đơn chưa kết thúc (MaintenanceService gọi định kỳ).
+   * Webhook GHN vẫn là nguồn chính; đây là phần bù khi webhook không tới.
+   */
+  async syncActiveShipments() {
+    const locked = await this.redisService.acquireLock(STATUS_SYNC_LOCK_KEY, STATUS_SYNC_LOCK_TTL_SECONDS);
+    if (!locked) return { skipped: true as const, reason: 'locked' };
+
+    try {
+      const now = Date.now();
+      const shipments = await this.prisma.shipment.findMany({
+        where: {
+          providerOrderCode: { not: null },
+          status: { in: STATUS_SYNC_ACTIVE_STATUSES },
+          createdAt: { gt: new Date(now - STATUS_SYNC_WINDOW_MS) },
+          OR: [{ lastSyncedAt: null }, { lastSyncedAt: { lt: new Date(now - STATUS_SYNC_MIN_INTERVAL_MS) } }],
+        },
+        orderBy: { lastSyncedAt: { sort: 'asc', nulls: 'first' } },
+        take: STATUS_SYNC_BATCH_SIZE,
+      });
+
+      let updated = 0;
+      let failed = 0;
+      for (const shipment of shipments) {
+        try {
+          if (await this.syncShipmentStatus(shipment)) updated += 1;
+        } catch (error) {
+          failed += 1;
+          const message = error instanceof Error ? error.message : 'unknown';
+          this.logger.warn(`Shipment status sync failed | shipment=${shipment.id} code=${shipment.providerOrderCode}: ${message}`);
+        }
+      }
+      return { skipped: false as const, checked: shipments.length, updated, failed };
+    } finally {
+      await this.redisService.releaseLock(STATUS_SYNC_LOCK_KEY);
+    }
+  }
+
+  /** Ghi nhận trạng thái GHN khi nó khác và mới hơn trạng thái đang lưu; trả về true nếu có cập nhật. */
+  private async syncShipmentStatus(shipment: Shipment) {
+    const provider = shipment.provider as ShippingProviderType;
+    const providerOrderCode = shipment.providerOrderCode as string;
+    const tracking = await this.shippingService.getTracking(provider, providerOrderCode);
+    const rawStatus = (tracking.rawStatus ?? '').trim().toLowerCase();
+    const changed = rawStatus !== '' && rawStatus !== (shipment.rawStatus ?? '').trim().toLowerCase();
+    // Không lùi trạng thái: bỏ qua mốc GHN cũ hơn mốc đang lưu (vd. vận đơn đã giả lập trên staging).
+    const newer =
+      !shipment.providerEventAt ||
+      (tracking.providerEventAt !== undefined && tracking.providerEventAt > shipment.providerEventAt);
+
+    const apply = changed && newer;
+    if (apply) {
+      await this.shippingService.handleShippingStatus({
+        provider,
+        providerOrderCode,
+        shipmentId: shipment.id,
+        shipmentStatus: tracking.status,
+        rawStatus: tracking.rawStatus,
+        eventKey: `${provider}:${providerOrderCode}:AUTO_SYNC:${rawStatus}:${tracking.providerEventAt?.toISOString() ?? 'unknown'}`,
+        eventType: 'AUTO_SYNC',
+        payload: tracking.raw as Record<string, unknown>,
+        source: 'AUTO_SYNC',
+        providerEventAt: tracking.providerEventAt,
+      });
+    }
+
+    await this.prisma.shipment.update({
+      where: { id: shipment.id },
+      data: {
+        lastSyncedAt: new Date(),
+        ...(tracking.expectedDeliveryTime ? { expectedDeliveryTime: tracking.expectedDeliveryTime } : {}),
+      },
+    });
+    return apply;
+  }
+
   private mapProviderStatus(status: ShipmentStatus): ShipmentStatus {
     const map: Partial<Record<ShipmentStatus, ShipmentStatus>> = {
       [ShipmentStatus.READY_TO_PICK]: ShipmentStatus.READY_TO_PICK,
@@ -208,7 +306,7 @@ export class ShipmentService {
       weight,
       dimensions: { length: 25, width: 20, height: 8 },
       codAmount: 0,
-      insuranceValue: Number(order.amount),
+      insuranceValue: shipmentInsuranceValueVnd(items),
       note: (shippingInfo.note as string) ?? (shippingInfo.notes as string),
     };
   }

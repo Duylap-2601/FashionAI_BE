@@ -1,4 +1,4 @@
-import { Body, Controller, Headers, HttpCode, HttpStatus, Post, Req } from '@nestjs/common';
+import { Body, Controller, Headers, HttpCode, HttpStatus, Post, Query, Req } from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
 import { Request } from 'express';
 import { buildApiResponse } from '../../../common/utils/api-response.util';
@@ -16,8 +16,9 @@ export class GhnWebhookController {
     @Req() req: Request,
     @Body() payload: Record<string, unknown>,
     @Headers() headers: Record<string, unknown>,
+    @Query() query: Record<string, unknown>,
   ) {
-    const data = await this.shippingService.handleGhnWebhook(payload, headers);
+    const data = await this.shippingService.handleGhnWebhook(payload, headers, query);
     return buildApiResponse(req, 'GHN_WEBHOOK_PROCESSED', 'GHN webhook processed', data);
   }
 }

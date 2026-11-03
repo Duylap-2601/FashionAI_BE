@@ -19,6 +19,7 @@ import { releaseOrderCouponRedemption } from '../../common/utils/coupon-redempti
 import { isAllowedProductColor } from '../../common/utils/product-color.util';
 import { CreateOrderDto } from './dto/create-order.dto';
 import {
+  DELIVERY_CONFIRMABLE_STATUSES,
   MAX_INT4,
   MEASUREMENT_SNAPSHOT_FIELDS,
   ONLINE_PAYMENT_METHODS,
@@ -37,6 +38,8 @@ import { RefundOrderDto } from './dto/refund-order.dto';
 import { CancelShipmentDto, CreateShipmentDto } from './dto/shipment.dto';
 import { ShippingProviderType } from '../shipping/constants/shipping-provider.enum';
 import { ShippingService } from '../shipping/shipping.service';
+import { shipmentInsuranceValueVnd } from '../shipping/utils/shipment-insurance.util';
+import { SHIPMENT_CANCELLABLE_STATUSES, SHIPMENT_NOT_CANCELLABLE_MESSAGE } from '../shipping/constants/shipment-status.constants';
 import { SalePricingService } from '../sale-campaigns/sale-pricing.service';
 import { UserAddressesService } from '../users/user-addresses.service';
 import {
@@ -1201,6 +1204,9 @@ export class OrdersService {
       orderBy: { createdAt: 'desc' },
     });
     if (!shipment) throw new NotFoundException('Không có vận đơn active để hủy');
+    if (!SHIPMENT_CANCELLABLE_STATUSES.includes(shipment.status)) {
+      throw new BadRequestException(SHIPMENT_NOT_CANCELLABLE_MESSAGE);
+    }
 
     if (shipment.providerOrderCode) {
       await this.shippingService.cancelShipment(shipment.provider as ShippingProviderType, shipment.providerOrderCode);
@@ -1219,8 +1225,8 @@ export class OrdersService {
     if (order.status === OrderStatus.COMPLETED) {
       return this.toPublicOrder(order);
     }
-    if (order.status !== OrderStatus.READY_TO_SHIP) {
-      throw new BadRequestException('Chỉ có thể xác nhận khi đơn hàng đã sẵn sàng giao và vận đơn đã giao thành công.');
+    if (!DELIVERY_CONFIRMABLE_STATUSES.includes(order.status)) {
+      throw new BadRequestException('Chỉ có thể xác nhận khi đơn vị vận chuyển đã giao hàng.');
     }
     const currentShipment = this.getCurrentShipment(order);
     if (!currentShipment || this.normalizeRawStatus(currentShipment.rawStatus) !== 'delivered') {
@@ -1843,7 +1849,7 @@ export class OrdersService {
       })),
       allowedActions: {
         cancel: order.status === OrderStatus.CREATED && (!order.paymentStatus || order.paymentStatus === PaymentStatus.PENDING),
-        confirmDelivery: order.status === OrderStatus.READY_TO_SHIP && this.normalizeRawStatus(this.getCurrentShipment(order)?.rawStatus) === 'delivered',
+        confirmDelivery: DELIVERY_CONFIRMABLE_STATUSES.includes(order.status) && this.normalizeRawStatus(this.getCurrentShipment(order)?.rawStatus) === 'delivered',
         startShipmentCreation: order.status === OrderStatus.READY_TO_SHIP && order.paymentStatus === PaymentStatus.PAID,
         createReplacementShipment: order.status === OrderStatus.READY_TO_SHIP && !this.getActiveShipment(order),
         updateMeasurement: order.status === OrderStatus.MEASUREMENT_REVIEW,
@@ -1947,13 +1953,13 @@ export class OrdersService {
       money_collect_delivering: { label: 'Đang thu tiền khi giao hàng', providerTerminal: false, issue: false },
       delivered: { label: 'Đã giao hàng', providerTerminal: true, issue: false },
       delivery_fail: { label: 'Giao hàng không thành công', providerTerminal: false, issue: true },
-      waiting_to_return: { label: 'Chờ hoàn hàng', providerTerminal: false, issue: false },
-      return: { label: 'Đang hoàn hàng', providerTerminal: false, issue: false },
-      return_transporting: { label: 'Đang trung chuyển hoàn hàng', providerTerminal: false, issue: false },
-      return_sorting: { label: 'Đang phân loại hoàn hàng', providerTerminal: false, issue: false },
-      returning: { label: 'Đang trả hàng', providerTerminal: false, issue: false },
+      waiting_to_return: { label: 'Chờ hoàn hàng', providerTerminal: false, issue: true },
+      return: { label: 'Đang hoàn hàng', providerTerminal: false, issue: true },
+      return_transporting: { label: 'Đang trung chuyển hoàn hàng', providerTerminal: false, issue: true },
+      return_sorting: { label: 'Đang phân loại hoàn hàng', providerTerminal: false, issue: true },
+      returning: { label: 'Đang trả hàng', providerTerminal: false, issue: true },
       return_fail: { label: 'Hoàn hàng không thành công', providerTerminal: false, issue: true },
-      returned: { label: 'Đã hoàn hàng', providerTerminal: true, issue: false },
+      returned: { label: 'Đã hoàn hàng', providerTerminal: true, issue: true },
       cancel: { label: 'Vận đơn đã hủy', providerTerminal: true, issue: false },
       exception: { label: 'Vận đơn gặp sự cố', providerTerminal: false, issue: true },
       lost: { label: 'Thất lạc hàng', providerTerminal: true, issue: true },
@@ -2020,7 +2026,7 @@ export class OrdersService {
       weight,
       dimensions: { length: 25, width: 20, height: 8 },
       codAmount: 0,
-      insuranceValue: Number(order.amount),
+      insuranceValue: shipmentInsuranceValueVnd(items),
       note: shippingInfo.note ?? shippingInfo.notes,
     };
   }
