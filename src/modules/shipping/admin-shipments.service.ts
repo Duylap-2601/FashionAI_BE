@@ -2,11 +2,13 @@ import { BadRequestException, Injectable, NotFoundException } from '@nestjs/comm
 import { Prisma, ShipmentStatus } from '@prisma/client';
 import { PrismaService } from '../../database/prisma.service';
 import { ShippingProviderType } from './constants/shipping-provider.enum';
+import { SHIPMENT_CANCELLABLE_STATUSES, SHIPMENT_NOT_CANCELLABLE_MESSAGE } from './constants/shipment-status.constants';
 import { CancelAdminShipmentDto } from './dto/cancel-admin-shipment.dto';
 import { QueryAdminShipmentsDto } from './dto/query-admin-shipments.dto';
 import { ShippingService } from './shipping.service';
 
-const ISSUE_STATUSES: ShipmentStatus[] = [ShipmentStatus.DELIVERY_FAILED, ShipmentStatus.FAILED, ShipmentStatus.RETURNING];
+// GHN hoàn hàng về shop: đơn vẫn để "Đang giao", admin xử lý qua cờ sự cố này.
+const ISSUE_STATUSES: ShipmentStatus[] = [ShipmentStatus.DELIVERY_FAILED, ShipmentStatus.FAILED, ShipmentStatus.RETURNING, ShipmentStatus.RETURNED];
 const TERMINAL_STATUSES: ShipmentStatus[] = [ShipmentStatus.DELIVERED, ShipmentStatus.RETURNED, ShipmentStatus.CANCELLED];
 
 @Injectable()
@@ -103,43 +105,13 @@ export class AdminShipmentsService {
     };
   }
 
-  async sync(id: string) {
-    const shipment = await this.prisma.shipment.findUnique({ where: { id }, include: { order: true } });
-    if (!shipment) throw new NotFoundException('Không tìm thấy vận đơn');
-    if (!shipment.providerOrderCode) throw new BadRequestException('Vận đơn chưa có mã GHN để đồng bộ');
-
-    const tracking = await this.shippingService.getTracking(
-      shipment.provider as ShippingProviderType,
-      shipment.providerOrderCode,
-    );
-
-    await this.shippingService.handleShippingStatus({
-      provider: shipment.provider as ShippingProviderType,
-      providerOrderCode: shipment.providerOrderCode,
-      shipmentId: shipment.id,
-      shipmentStatus: tracking.status,
-      rawStatus: tracking.rawStatus,
-      eventKey: `GHN:${shipment.providerOrderCode}:ADMIN_SYNC:${Date.now()}`,
-      eventType: 'ADMIN_SYNC',
-      payload: tracking.raw as Record<string, unknown>,
-      source: 'ADMIN_SYNC',
-      providerEventAt: tracking.providerEventAt,
-    });
-
-    if (tracking.expectedDeliveryTime) {
-      await this.prisma.shipment.update({
-        where: { id: shipment.id },
-        data: { expectedDeliveryTime: tracking.expectedDeliveryTime },
-      });
-    }
-
-    return this.findOne(id);
-  }
-
   async cancel(id: string, dto: CancelAdminShipmentDto, actorId?: string) {
     const shipment = await this.prisma.shipment.findUnique({ where: { id }, include: { order: true } });
     if (!shipment) throw new NotFoundException('Không tìm thấy vận đơn');
     if (TERMINAL_STATUSES.includes(shipment.status)) return this.findOne(id);
+    if (!SHIPMENT_CANCELLABLE_STATUSES.includes(shipment.status)) {
+      throw new BadRequestException(SHIPMENT_NOT_CANCELLABLE_MESSAGE);
+    }
 
     if (shipment.providerOrderCode) {
       await this.shippingService.cancelShipment(
@@ -260,7 +232,7 @@ export class AdminShipmentsService {
         provinceName: typeof receiver.provinceName === 'string' ? receiver.provinceName : null,
         wardName: typeof receiver.wardName === 'string' ? receiver.wardName : null,
       },
-      canCancel: !TERMINAL_STATUSES.includes(shipment.status),
+      canCancel: SHIPMENT_CANCELLABLE_STATUSES.includes(shipment.status),
       issue: ISSUE_STATUSES.includes(shipment.status),
       stale: !shipment.lastSyncedAt || shipment.lastSyncedAt.getTime() < Date.now() - 6 * 60 * 60 * 1000,
     };

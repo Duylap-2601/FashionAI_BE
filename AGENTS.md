@@ -120,7 +120,16 @@ Existing ownership boundaries:
   integration. GHN pickup address settings are stored through admin settings
   and should override environment fallback values when calculating fees.
   Persisted shipment state that changes an order still needs to coordinate with
-  `orders`.
+  `orders`. The order status follows the GHN shipment: `handleShippingStatus`
+  (webhook, staging simulator, auto sync) moves `READY_TO_SHIP` → `SHIPPING`
+  once GHN has picked up and → `DELIVERED` when delivered
+  (`orders/utils/shipment-order-status.util.ts`); the customer still confirms
+  receipt to reach `COMPLETED`. Failed delivery and GHN returns keep `SHIPPING`
+  and flag the shipment as an issue. `MaintenanceService` polls GHN every 5
+  minutes for active shipments (`ShipmentService.syncActiveShipments`) as the
+  fallback for missed webhooks; there is no manual admin sync. Shipments insure
+  the goods value (`shipping/utils/shipment-insurance.util.ts`), the same value
+  the checkout quote uses.
 - `notification`: notification persistence and user notification APIs.
 - `realtime`: Socket.IO gateway/auth/emitter plumbing. Business modules should
   emit through exported services instead of depending directly on gateways.

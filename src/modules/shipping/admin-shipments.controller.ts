@@ -34,13 +34,6 @@ export class AdminShipmentsController {
     return buildApiResponse(req, 'ADMIN_SHIPMENT_FETCH_SUCCESS', 'Lấy chi tiết vận đơn thành công', data);
   }
 
-  @Post(':id/sync')
-  @ApiOperation({ summary: 'Đồng bộ trạng thái GHN cho vận đơn' })
-  async sync(@Req() req: Request, @Param('id') id: string) {
-    const data = await this.adminShipmentsService.sync(id);
-    return buildApiResponse(req, 'ADMIN_SHIPMENT_SYNCED', 'Đồng bộ vận đơn thành công', data);
-  }
-
   @Post(':id/cancel')
   @ApiOperation({ summary: 'Hủy vận đơn GHN' })
   async cancel(

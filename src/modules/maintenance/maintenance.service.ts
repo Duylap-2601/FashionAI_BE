@@ -6,10 +6,12 @@ import { AuthService } from '../auth/auth.service';
 import { SubscriptionService } from '../payments/subscription.service';
 import { PaymentsService } from '../payments/payments.service';
 import { OrdersService } from '../orders/orders.service';
+import { ShipmentService } from '../shipping/shipment.service';
 
 /**
  * Dọn dẹp định kỳ những bảng chỉ phình ra theo thời gian: token đã hết hạn,
- * cache kết quả thử đồ quá TTL, subscription hết hạn; và hủy đơn quá hạn thanh toán.
+ * cache kết quả thử đồ quá TTL, subscription hết hạn; hủy đơn quá hạn thanh toán
+ * và tự đồng bộ trạng thái vận đơn với GHN.
  */
 @Injectable()
 export class MaintenanceService {
@@ -23,6 +25,7 @@ export class MaintenanceService {
     private readonly subscriptionService: SubscriptionService,
     private readonly paymentsService: PaymentsService,
     private readonly ordersService: OrdersService,
+    private readonly shipmentService: ShipmentService,
   ) {
     this.enabled = this.config.get<string>('MAINTENANCE_CRON_ENABLED') !== 'false';
     if (!this.enabled) {
@@ -126,6 +129,23 @@ export class MaintenanceService {
     } catch (err) {
       const message = err instanceof Error ? err.message : 'unknown';
       this.logger.error(`Payment gateway reconcile failed: ${message}`);
+    }
+  }
+
+  @Cron(CronExpression.EVERY_5_MINUTES, { name: 'shipment-status-sync' })
+  async syncShipmentStatuses() {
+    if (!this.enabled) return;
+
+    try {
+      const result = await this.shipmentService.syncActiveShipments();
+      if (!result.skipped && result.checked > 0) {
+        this.logger.log(
+          `Shipment status sync completed | checked=${result.checked} updated=${result.updated} failed=${result.failed}`,
+        );
+      }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'unknown';
+      this.logger.error(`Shipment status sync failed: ${message}`);
     }
   }
 }

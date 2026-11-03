@@ -170,3 +170,12 @@ export const RETURN_FLOW_STATUSES: OrderStatus[] = [
   OrderStatus.RETURN_APPROVED,
   OrderStatus.RETURNING,
 ];
+
+// Đơn mà khách được bấm "Tôi đã nhận hàng" (khi vận đơn báo đã giao). DELIVERED là
+// đường chính vì đơn đi theo GHN; READY_TO_SHIP/SHIPPING giữ cho đơn có vận đơn
+// đã giao trước khi đơn tự đi theo GHN.
+export const DELIVERY_CONFIRMABLE_STATUSES: OrderStatus[] = [
+  OrderStatus.DELIVERED,
+  OrderStatus.SHIPPING,
+  OrderStatus.READY_TO_SHIP,
+];

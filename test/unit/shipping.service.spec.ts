@@ -17,6 +17,7 @@ function createService() {
     {} as any,
     {} as any,
     {} as any,
+    {} as any,
   );
   return { service, prisma };
 }
@@ -54,6 +55,7 @@ function createShipmentService(pickupSettings: Record<string, string | null>) {
     factory as any,
     {} as any,
     adminSettingsService as any,
+    {} as any,
     {} as any,
   );
   return { service, provider, factory };
@@ -248,6 +250,7 @@ describe('ShippingService fee cache', () => {
       ghnProvider as any,
       adminSettingsService as any,
       redis as any,
+      {} as any,
     );
     return { service, ghnProvider };
   }

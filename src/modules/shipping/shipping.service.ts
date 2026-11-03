@@ -1,12 +1,15 @@
-import { createHash } from 'crypto';
+import { createHash, timingSafeEqual } from 'crypto';
 import { BadRequestException, ConflictException, Injectable, NotFoundException, UnauthorizedException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { GhnAddressModel, GhnLocationLevel, Prisma, ShipmentStatus } from '@prisma/client';
+import { GhnAddressModel, GhnLocationLevel, OrderStatus, Prisma, ShipmentStatus } from '@prisma/client';
 import { PrismaService } from '../../database/prisma.service';
 import { ShippingProviderType } from './constants/shipping-provider.enum';
 import { ShippingProviderFactory } from './shipping-provider.factory';
 import { GhnShippingProvider } from './providers/ghn/ghn.provider';
 import { AdminSettingsService } from '../admin/admin-settings.service';
+import { ORDER_STATUS_MESSAGE } from '../orders/constants/order-flow.constants';
+import { orderStatusForShipment } from '../orders/utils/shipment-order-status.util';
+import { NotificationService } from '../notification/notification.service';
 import { RedisService } from '../../common/services/redis.service';
 import type { ShippingFee } from './types/shipping.types';
 
@@ -29,6 +32,7 @@ export class ShippingService {
     private readonly ghnProvider: GhnShippingProvider,
     private readonly adminSettingsService: AdminSettingsService,
     private readonly redisService: RedisService,
+    private readonly notificationService: NotificationService,
   ) {}
 
   async cancelShipment(provider: ShippingProviderType, providerOrderCode: string) {
@@ -221,8 +225,8 @@ export class ShippingService {
     return { id: row.code, name: row.name, aliases, catalogRevision: revision.toString() };
   }
 
-  async handleGhnWebhook(payload: Record<string, unknown>, headers: Record<string, unknown>) {
-    this.verifyWebhookSecret(headers);
+  async handleGhnWebhook(payload: Record<string, unknown>, headers: Record<string, unknown>, query: Record<string, unknown> = {}) {
+    this.verifyWebhookSecret(headers, query);
 
     const providerOrderCode = String(payload.OrderCode ?? payload.order_code ?? payload.orderCode ?? '');
     const eventType = String(payload.Type ?? payload.type ?? 'status');
@@ -250,7 +254,7 @@ export class ShippingService {
   }
 
   /**
-   * Handle shipment status update from any source (webhook, staging simulator, reconciliation).
+   * Handle shipment status update from any source (webhook, staging simulator, auto sync).
    * This is the single handler that both production webhooks and staging simulator use.
    */
   async handleShippingStatus(params: {
@@ -275,7 +279,8 @@ export class ShippingService {
     });
     if (!shipment) return { ignored: true };
 
-    return this.prisma.$transaction(async (tx) => {
+    let movedOrderTo: OrderStatus | null = null;
+    const result = await this.prisma.$transaction(async (tx) => {
       try {
         await tx.webhookEvent.create({
           data: {
@@ -302,8 +307,8 @@ export class ShippingService {
           data: {
             orderId: shipment.orderId,
             shipmentId: shipment.id,
-            type: source === 'STAGING_SIMULATOR' ? 'SHIPMENT_SIMULATED' : source === 'ADMIN_SYNC' ? 'SHIPMENT_SYNCED' : 'SHIPMENT_WEBHOOK',
-            source: source === 'STAGING_SIMULATOR' ? 'STAGING' : source === 'ADMIN_SYNC' ? 'ADMIN' : 'SHIPPING',
+            type: source === 'STAGING_SIMULATOR' ? 'SHIPMENT_SIMULATED' : source === 'AUTO_SYNC' ? 'SHIPMENT_SYNCED' : 'SHIPMENT_WEBHOOK',
+            source: source === 'STAGING_SIMULATOR' ? 'STAGING' : 'SHIPPING',
             fromStatus: shipment.order.status,
             toStatus: shipment.order.status,
             fromShipmentStatus: shipment.status,
@@ -328,14 +333,38 @@ export class ShippingService {
         },
       });
 
+      // Đơn đi theo vận đơn (đã lấy hàng → SHIPPING, đã giao → DELIVERED). Điều kiện
+      // status cũ trong where để không đè thay đổi đồng thời (vd. khách vừa hủy).
+      let orderStatus = shipment.order.status;
+      const nextOrderStatus = orderStatusForShipment(shipment.order.status, shipmentStatus);
+      if (nextOrderStatus) {
+        const moved = await tx.order.updateMany({
+          where: { id: shipment.orderId, status: shipment.order.status },
+          data: { status: nextOrderStatus },
+        });
+        if (moved.count > 0) {
+          orderStatus = nextOrderStatus;
+          movedOrderTo = nextOrderStatus;
+        }
+      }
+
+      // GHN có thể bắn nhiều callback cho một lần đổi (switch_status, update_fee...):
+      // trạng thái không đổi thì chỉ giữ audit (webhookEvent), không thêm dòng lịch sử đơn.
+      const shipmentUnchanged =
+        shipment.status === shipmentStatus &&
+        (shipment.rawStatus ?? '').trim().toLowerCase() === String(rawStatus ?? shipmentStatus).trim().toLowerCase();
+      if (shipmentUnchanged && !movedOrderTo) {
+        return { processed: true, status: shipmentStatus, unchanged: true };
+      }
+
       await tx.orderEvent.create({
         data: {
           orderId: shipment.orderId,
           shipmentId: shipment.id,
-          type: source === 'STAGING_SIMULATOR' ? 'SHIPMENT_SIMULATED' : source === 'ADMIN_SYNC' ? 'SHIPMENT_SYNCED' : 'SHIPMENT_WEBHOOK',
-          source: source === 'STAGING_SIMULATOR' ? 'STAGING' : source === 'ADMIN_SYNC' ? 'ADMIN' : 'SHIPPING',
+          type: source === 'STAGING_SIMULATOR' ? 'SHIPMENT_SIMULATED' : source === 'AUTO_SYNC' ? 'SHIPMENT_SYNCED' : 'SHIPMENT_WEBHOOK',
+          source: source === 'STAGING_SIMULATOR' ? 'STAGING' : 'SHIPPING',
           fromStatus: shipment.order.status,
-          toStatus: shipment.order.status,
+          toStatus: orderStatus,
           fromShipmentStatus: shipment.status,
           toShipmentStatus: shipmentStatus,
           publicMessage: this.buildShipmentPublicMessage(shipmentStatus),
@@ -347,6 +376,21 @@ export class ShippingService {
 
       return { processed: true, status: shipmentStatus };
     });
+
+    // Báo khách như khi admin đổi trạng thái; lỗi thông báo không làm hỏng cập nhật vận đơn.
+    if (movedOrderTo) {
+      const orderStatus: OrderStatus = movedOrderTo;
+      this.notificationService
+        .create({
+          userId: shipment.order.userId,
+          type: 'ORDER_STATUS',
+          title: `Cập nhật đơn hàng #${shipment.order.orderCode}`,
+          message: ORDER_STATUS_MESSAGE[orderStatus] ?? `Trạng thái đơn hàng: ${orderStatus}`,
+          data: { orderId: shipment.orderId, orderCode: shipment.order.orderCode, status: orderStatus },
+        })
+        .catch(() => undefined);
+    }
+    return result;
   }
 
   private parseProviderEventTime(value: unknown) {
@@ -355,11 +399,14 @@ export class ShippingService {
     return Number.isNaN(parsed.getTime()) ? new Date() : parsed;
   }
 
-  private verifyWebhookSecret(headers: Record<string, unknown>) {
+  // Portal GHN chỉ cho đăng ký URL callback, nên secret nhận qua header hoặc `?secret=`
+  // trên URL đã đăng ký (log request đã cắt query string).
+  private verifyWebhookSecret(headers: Record<string, unknown>, query: Record<string, unknown>) {
     const expected = this.configService.get<string>('GHN_WEBHOOK_SECRET');
     if (!expected) return;
-    const provided = headers['x-webhook-secret'] ?? headers['x-ghn-webhook-secret'];
-    if (provided !== expected) {
+    const provided = headers['x-webhook-secret'] ?? headers['x-ghn-webhook-secret'] ?? query.secret;
+    const digest = (value: string) => createHash('sha256').update(value).digest();
+    if (typeof provided !== 'string' || !timingSafeEqual(digest(provided), digest(expected))) {
       throw new UnauthorizedException('Invalid GHN webhook secret');
     }
   }
