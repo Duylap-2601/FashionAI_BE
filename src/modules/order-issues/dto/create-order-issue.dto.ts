@@ -15,7 +15,7 @@ export class CreateOrderIssueDto {
   @ApiProperty({
     enum: OrderIssueReason,
     description:
-      "Nhóm lỗi: sai size, sai màu vải, chất lượng, khác, hoặc chưa nhận được tiền hoàn",
+      "Nhóm lỗi: sai số đo, sai màu / sai mẫu, chất lượng, khác, hoặc chưa nhận được tiền hoàn",
   })
   @IsEnum(OrderIssueReason)
   reason!: OrderIssueReason;

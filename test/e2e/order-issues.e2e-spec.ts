@@ -94,6 +94,33 @@ describe("OrderIssues (e2e)", () => {
     await app?.close();
   });
 
+  // Đơn 3 món (750k + 550k + 550k) + 30.150đ ship, khách báo sai số đo món 750k.
+  function pendingIssue() {
+    const item = { price: 750000, quantity: 1, lineTotalVnd: BigInt(750000) };
+    return {
+      id: "issue-1",
+      status: OrderIssueStatus.PENDING,
+      reason: "WRONG_SIZE",
+      orderId: ORDER_ID,
+      orderItemId: ITEM_ID,
+      order: {
+        id: ORDER_ID,
+        orderCode: 100001,
+        itemsSubtotalVnd: BigInt(1850000),
+        discountVnd: BigInt(0),
+        discountAmount: null,
+        shippingFeeVnd: BigInt(30150),
+        shippingFee: null,
+        items: [
+          item,
+          { price: 550000, quantity: 1, lineTotalVnd: BigInt(550000) },
+          { price: 550000, quantity: 1, lineTotalVnd: BigInt(550000) },
+        ],
+      },
+      orderItem: item,
+    };
+  }
+
   function mockCompletedOrder() {
     prisma.order.findFirst.mockResolvedValue(completedOrder);
     prisma.orderItem.findFirst.mockResolvedValue(orderItem);
@@ -209,13 +236,7 @@ describe("OrderIssues (e2e)", () => {
     });
 
     it("approve REFUND gọi updateRefund và chuyển issue sang RESOLVED", async () => {
-      prisma.orderIssue.findUnique.mockResolvedValue({
-        id: "issue-1",
-        status: OrderIssueStatus.PENDING,
-        orderId: ORDER_ID,
-        orderItemId: ITEM_ID,
-        order: { id: ORDER_ID, orderCode: 100001 },
-      });
+      prisma.orderIssue.findUnique.mockResolvedValue(pendingIssue());
       prisma.orderIssue.update.mockResolvedValue({
         id: "issue-1",
         status: "RESOLVED",
@@ -233,22 +254,39 @@ describe("OrderIssues (e2e)", () => {
 
       expect(res.body.data.status).toBe("RESOLVED");
       expect(storageService.uploadImage).toHaveBeenCalled();
+      // Chỉ hoàn món bị lỗi + phần ship của món, không hoàn cả đơn 1.880.150đ.
       expect(ordersService.updateRefund).toHaveBeenCalledWith(
         ORDER_ID,
-        expect.objectContaining({ refundStatus: "REQUIRED" }),
+        expect.objectContaining({ refundStatus: "REQUIRED", amountVnd: 762223 }),
+        ADMIN_ID,
+        ["https://cdn.test/order-issues/x.png"],
+      );
+    });
+
+    it("approve món thứ hai cộng vào khoản hoàn đang chờ chuyển", async () => {
+      prisma.orderIssue.findUnique.mockResolvedValue(pendingIssue());
+      prisma.orderIssue.update.mockResolvedValue({ id: "issue-1", status: "RESOLVED" });
+      prisma.refund.findFirst.mockResolvedValue({ amountVnd: BigInt(559186) });
+
+      await request(app.getHttpServer())
+        .patch("/api/order-issues/issue-1/review")
+        .field("decision", "APPROVE")
+        .attach("receiptImages", Buffer.from("receipt"), {
+          filename: "receipt.png",
+          contentType: "image/png",
+        })
+        .expect(200);
+
+      expect(ordersService.updateRefund).toHaveBeenCalledWith(
+        ORDER_ID,
+        expect.objectContaining({ refundStatus: "REQUIRED", amountVnd: 559186 + 762223 }),
         ADMIN_ID,
         ["https://cdn.test/order-issues/x.png"],
       );
     });
 
     it("trả 400 khi approve mà không có ảnh chứng từ chuyển khoản", async () => {
-      prisma.orderIssue.findUnique.mockResolvedValue({
-        id: "issue-1",
-        status: OrderIssueStatus.PENDING,
-        orderId: ORDER_ID,
-        orderItemId: ITEM_ID,
-        order: { id: ORDER_ID, orderCode: 100001 },
-      });
+      prisma.orderIssue.findUnique.mockResolvedValue(pendingIssue());
 
       const res = await request(app.getHttpServer())
         .patch("/api/order-issues/issue-1/review")
@@ -270,13 +308,7 @@ describe("OrderIssues (e2e)", () => {
     });
 
     it("approve thiếu approvedResolution vẫn duyệt REFUND", async () => {
-      prisma.orderIssue.findUnique.mockResolvedValue({
-        id: "issue-1",
-        status: OrderIssueStatus.PENDING,
-        orderId: ORDER_ID,
-        orderItemId: ITEM_ID,
-        order: { id: ORDER_ID, orderCode: 100001 },
-      });
+      prisma.orderIssue.findUnique.mockResolvedValue(pendingIssue());
       prisma.orderIssue.update.mockResolvedValue({
         id: "issue-1",
         status: "RESOLVED",

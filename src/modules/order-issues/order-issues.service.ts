@@ -21,11 +21,29 @@ import { StorageService } from "../storage/storage.service";
 import { CreateOrderIssueDto } from "./dto/create-order-issue.dto";
 import { QueryOrderIssueDto } from "./dto/query-order-issue.dto";
 import { ReviewOrderIssueDto } from "./dto/review-order-issue.dto";
+import { issueRefundAmountVnd } from "./utils/issue-refund-amount.util";
 
 const UUID_REGEX =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const MAX_INT4 = 2147483647;
 const ISSUE_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
+
+// Các cột tiền cần để tính số hoàn của món theo chính sách đổi trả.
+const refundItemSelect = {
+  price: true,
+  quantity: true,
+  lineTotalVnd: true,
+} satisfies Prisma.OrderItemSelect;
+const refundOrderSelect = {
+  id: true,
+  orderCode: true,
+  itemsSubtotalVnd: true,
+  discountVnd: true,
+  discountAmount: true,
+  shippingFeeVnd: true,
+  shippingFee: true,
+  items: { select: refundItemSelect },
+} satisfies Prisma.OrderSelect;
 
 const issueInclude = {
   order: { select: { id: true, orderCode: true, status: true } },
@@ -267,7 +285,10 @@ export class OrderIssuesService {
   ) {
     const issue = await this.prisma.orderIssue.findUnique({
       where: { id: issueId },
-      include: { order: { select: { id: true, orderCode: true } } },
+      include: {
+        order: { select: refundOrderSelect },
+        orderItem: { select: refundItemSelect },
+      },
     });
     if (!issue) {
       throw new NotFoundException("Không tìm thấy yêu cầu xử lý");
@@ -348,10 +369,15 @@ export class OrderIssuesService {
       }
       // Tái dùng luồng refund có sẵn: tạo Refund MANUAL + chuyển Order.refundStatus
       // sang REQUIRED, không tự ghi đè Payment/Order.amountRefundedVnd.
+      // Báo chưa nhận được tiền giữ số của khoản hoàn cũ; báo lỗi món thì chỉ hoàn
+      // món đó, cộng vào khoản đang chờ chuyển nếu đơn đã có món khác được duyệt.
       await this.ordersService.updateRefund(
         issue.orderId,
         {
           refundStatus: RefundStatus.REQUIRED,
+          amountVnd: isRefundNotReceived
+            ? undefined
+            : await this.approvedRefundAmountVnd(issue),
           internalNote: isRefundNotReceived
             ? `Mở lại hoàn tiền cho issue ${issue.id}${dto.adminNote ? `: ${dto.adminNote}` : ""}`
             : `Duyệt hoàn tiền cho issue ${issue.id} (item ${issue.orderItemId})${dto.adminNote ? `: ${dto.adminNote}` : ""}`,
@@ -569,6 +595,29 @@ export class OrderIssuesService {
         data: { issueId, orderCode, type: "NEW_ORDER_ISSUE", reason },
       });
     }
+  }
+
+  private async approvedRefundAmountVnd(issue: {
+    orderId: string;
+    reason: OrderIssueReason;
+    order: Prisma.OrderGetPayload<{ select: typeof refundOrderSelect }>;
+    orderItem: Prisma.OrderItemGetPayload<{ select: typeof refundItemSelect }>;
+  }): Promise<number> {
+    const openRefund = await this.prisma.refund.findFirst({
+      where: {
+        orderId: issue.orderId,
+        provider: "MANUAL",
+        status: {
+          in: [RefundStatus.REQUIRED, RefundStatus.PENDING, RefundStatus.PROCESSING],
+        },
+      },
+      orderBy: { requestedAt: "desc" },
+      select: { amountVnd: true },
+    });
+    return (
+      Number(openRefund?.amountVnd ?? 0) +
+      issueRefundAmountVnd(issue.order, issue.orderItem, issue.reason)
+    );
   }
 
   private async notifyUserReviewed(
