@@ -37,6 +37,7 @@ describe("OrderIssues (e2e)", () => {
   let prisma: PrismaMock;
   let ordersService: { updateRefund: jest.Mock; updateStatus: jest.Mock };
   let storageService: { uploadImage: jest.Mock };
+  let notificationService: { create: jest.Mock };
 
   const completedOrder = {
     id: ORDER_ID,
@@ -52,6 +53,7 @@ describe("OrderIssues (e2e)", () => {
       updateRefund: jest.fn().mockResolvedValue({}),
       updateStatus: jest.fn().mockResolvedValue({}),
     };
+    notificationService = { create: jest.fn().mockResolvedValue({}) };
     storageService = {
       uploadImage: jest
         .fn()
@@ -77,7 +79,7 @@ describe("OrderIssues (e2e)", () => {
           OrderIssuesService,
           {
             provide: NotificationService,
-            useValue: { create: jest.fn().mockResolvedValue({}) },
+            useValue: notificationService,
           },
           { provide: StorageService, useValue: storageService },
           { provide: OrdersService, useValue: ordersService },
@@ -272,6 +274,24 @@ describe("OrderIssues (e2e)", () => {
       );
     });
 
+    it("thông báo duyệt cho khách kèm orderId để mở trang đổi trả của đơn", async () => {
+      prisma.orderIssue.findUnique.mockResolvedValue(pendingIssue());
+      prisma.orderIssue.update.mockResolvedValue({ id: "issue-1", status: "RESOLVED", userId: USER_ID });
+
+      await request(app.getHttpServer())
+        .patch("/api/order-issues/issue-1/review")
+        .field("decision", "APPROVE")
+        .attach("receiptImages", Buffer.from("receipt"), { filename: "receipt.png", contentType: "image/png" })
+        .expect(200);
+
+      expect(notificationService.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: "ORDER_ISSUE",
+          data: expect.objectContaining({ orderId: ORDER_ID, orderCode: 100001, type: "ORDER_ISSUE_REVIEWED" }),
+        }),
+      );
+    });
+
     it("admin bỏ chọn hoàn phí ship thì chỉ tạo khoản tiền hàng", async () => {
       prisma.orderIssue.findUnique.mockResolvedValue(pendingIssue());
       prisma.orderIssue.update.mockResolvedValue({ id: "issue-1", status: "RESOLVED" });
@@ -379,6 +399,33 @@ describe("OrderIssues (e2e)", () => {
         .expect(400);
     });
 
+  });
+
+  describe("GET /api/order-issues/mine", () => {
+    it("trả các đơn có đổi trả của chính khách, không bị route :issueId bắt nhầm", async () => {
+      prisma.order.findMany.mockResolvedValue([
+        {
+          id: ORDER_ID,
+          orderCode: 100001,
+          status: "RETURNED",
+          refundStatus: "COMPLETED",
+          amountRefundedVnd: BigInt(1300000),
+          createdAt: new Date(),
+          updatedAt: new Date(),
+          issues: [{ id: "issue-1", status: "RESOLVED", reason: "WRONG_SIZE", createdAt: new Date(), orderItem: null }],
+        },
+      ]);
+      prisma.order.count.mockResolvedValue(1);
+
+      const res = await request(app.getHttpServer()).get("/api/order-issues/mine").expect(200);
+
+      expect(prisma.order.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({ where: { userId: USER_ID, issues: { some: {} } } }),
+      );
+      expect(prisma.orderIssue.findUnique).not.toHaveBeenCalled();
+      expect(res.body.data[0]).toEqual(expect.objectContaining({ orderCode: 100001, amountRefundedVnd: 1300000 }));
+      expect(res.body.meta.total).toBe(1);
+    });
   });
 
   describe("GET /api/order-issues (admin)", () => {

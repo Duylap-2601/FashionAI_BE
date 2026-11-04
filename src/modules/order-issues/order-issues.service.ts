@@ -260,6 +260,51 @@ export class OrderIssuesService {
     };
   }
 
+  /**
+   * Các đơn của khách có yêu cầu đổi trả (mới cập nhật trước), kèm tóm tắt từng yêu cầu
+   * và số tiền đã hoàn, cho trang "Đổi trả & hoàn tiền" trong tài khoản.
+   */
+  async findMineByOrder(userId: string, query: QueryOrderIssueDto) {
+    const { page = 1, limit = 20 } = query;
+    const where: Prisma.OrderWhereInput = { userId, issues: { some: {} } };
+    const [orders, total] = await Promise.all([
+      this.prisma.order.findMany({
+        where,
+        orderBy: { updatedAt: "desc" },
+        skip: (page - 1) * limit,
+        take: limit,
+        select: {
+          id: true,
+          orderCode: true,
+          status: true,
+          refundStatus: true,
+          amountRefundedVnd: true,
+          createdAt: true,
+          updatedAt: true,
+          issues: {
+            orderBy: { createdAt: "desc" },
+            select: {
+              id: true,
+              status: true,
+              reason: true,
+              createdAt: true,
+              orderItem: { select: { productNameSnapshot: true, productImageSnapshot: true } },
+            },
+          },
+        },
+      }),
+      this.prisma.order.count({ where }),
+    ]);
+
+    return {
+      items: orders.map(({ amountRefundedVnd, ...order }) => ({
+        ...order,
+        amountRefundedVnd: Number(amountRefundedVnd),
+      })),
+      meta: { total, page, limit, totalPages: Math.ceil(total / limit) },
+    };
+  }
+
   async findAllAdmin(query: QueryOrderIssueDto) {
     const { page = 1, limit = 20 } = query;
     const where: Prisma.OrderIssueWhereInput = {
@@ -343,7 +388,7 @@ export class OrderIssuesService {
         "Yêu cầu xử lý lỗi đơn hàng đã bị từ chối.",
         "review",
       );
-      await this.notifyUserReviewed(rejected.userId, rejected.id, false).catch(
+      await this.notifyUserReviewed(rejected.userId, rejected.id, issue.order, false).catch(
         () => undefined,
       );
       return rejected;
@@ -479,6 +524,7 @@ export class OrderIssuesService {
     await this.notifyUserReviewed(
       resolved.userId,
       resolved.id,
+      issue.order,
       true,
       isRefundNotReceived,
     ).catch(() => undefined);
@@ -682,6 +728,7 @@ export class OrderIssuesService {
   private async notifyUserReviewed(
     userId: string,
     issueId: string,
+    order: { id: string; orderCode: number },
     approved: boolean,
     refundNotReceived = false,
   ) {
@@ -694,7 +741,14 @@ export class OrderIssuesService {
           ? "Shop đã ghi nhận báo cáo chưa nhận được tiền hoàn và đang kiểm tra lại khoản chuyển cho bạn."
           : "Yêu cầu báo lỗi của bạn đã được duyệt, shop sẽ liên hệ để xử lý tiếp"
         : "Yêu cầu báo lỗi của bạn chưa được chấp nhận, vui lòng xem ghi chú từ shop",
-      data: { issueId, type: "ORDER_ISSUE_REVIEWED", reason: refundNotReceived ? "REFUND_NOT_RECEIVED" : undefined },
+      // orderId để thông báo mở thẳng trang đổi trả & hoàn tiền của đơn.
+      data: {
+        issueId,
+        orderId: order.id,
+        orderCode: order.orderCode,
+        type: "ORDER_ISSUE_REVIEWED",
+        reason: refundNotReceived ? "REFUND_NOT_RECEIVED" : undefined,
+      },
     });
   }
 }

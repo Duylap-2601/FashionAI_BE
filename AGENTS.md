@@ -329,6 +329,11 @@ When schema changes are required:
   order. A manual refund sent without an amount uses the approved amount of that
   kind, not the whole order. "Refund not received" reopens the same refund (same
   kind and amount). Keep this in sync with the FE return-policy text.
+- Customers list their returns with `GET /order-issues/mine` (orders that have
+  issues, newest first, with each issue's status and the refunded amount). The
+  route is declared before `GET /order-issues/:issueId`. Review notifications
+  (`ORDER_ISSUE`) carry `orderId` and `orderCode` so the FE opens
+  `/orders/:id/returns`.
 
 ## Testing And Validation
 

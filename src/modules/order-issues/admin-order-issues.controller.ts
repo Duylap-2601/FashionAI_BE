@@ -61,6 +61,24 @@ export class AdminOrderIssuesController {
     );
   }
 
+  // Đặt trước ":issueId" để "mine" không bị hiểu là id yêu cầu.
+  @Get("mine")
+  @ApiOperation({ summary: "Các đơn của tôi có yêu cầu đổi trả, kèm tóm tắt yêu cầu" })
+  async findMine(
+    @Req() req: Request,
+    @CurrentUser() user: AuthenticatedUser,
+    @Query() query: QueryOrderIssueDto,
+  ) {
+    const result = await this.orderIssuesService.findMineByOrder(user.id, query);
+    return buildApiResponse(
+      req,
+      "MY_ORDER_ISSUES_FETCH_SUCCESS",
+      "Lấy danh sách đổi trả thành công",
+      result.items,
+      result.meta,
+    );
+  }
+
   @Get(":issueId")
   @ApiOperation({ summary: "Chi tiết yêu cầu xử lý (chủ đơn hoặc admin)" })
   async findOne(
