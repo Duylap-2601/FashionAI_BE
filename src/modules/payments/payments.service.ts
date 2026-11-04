@@ -27,6 +27,7 @@ import { OutboxService } from '../outbox/services/outbox.service';
 import { OUTBOX_EVENT_TYPE } from '../outbox/constants/outbox.constants';
 import { PaymentPostSuccessPayload } from '../outbox/types/outbox.types';
 import { SubscriptionService } from './subscription.service';
+import { paymentSucceededEventKey, paymentTransactionId } from './utils/payment-keys.util';
 import {
   TIER_PRICES,
   RENEWAL_REMINDER_DAYS_BEFORE,
@@ -1482,7 +1483,7 @@ export class PaymentsService {
             where: { id: existingPaymentId },
             data: {
               status: PaymentStatus.PAID,
-              transactionId: String(paymentData?.transId ?? paymentData?.reference ?? Date.now()),
+              transactionId: paymentTransactionId(provider, order.orderCode, paymentData),
               paymentData,
               paidAt: new Date(),
               failureReason: null,
@@ -1501,7 +1502,7 @@ export class PaymentsService {
           });
           const paidPaymentData = {
             provider,
-            transactionId: String(paymentData?.transId ?? paymentData?.reference ?? Date.now()),
+            transactionId: paymentTransactionId(provider, order.orderCode, paymentData),
             paymentData,
             status: PaymentStatus.PAID,
             paidAt: new Date(),
@@ -1522,7 +1523,7 @@ export class PaymentsService {
             fromStatus: OrderStatus.CREATED,
             toStatus: paidOrderStatus,
             publicMessage: 'Thanh toán đã được xác minh thành công.',
-            deduplicationKey: `payment:${provider}:${paymentData?.transId ?? paymentData?.reference ?? Date.now()}`,
+            deduplicationKey: paymentSucceededEventKey(provider, order.id, paymentData),
           },
         });
 

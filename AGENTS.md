@@ -313,6 +313,11 @@ When schema changes are required:
   `idempotencyKey` must be a UUID. `REFUND_REQUIRED` payments are payment-only
   refunds and must be refunded for the full collected amount without mutating the
   order's paid/refunded aggregates.
+- Manual payment confirmation (`MANUAL_ADMIN`) scopes the payment `transactionId`
+  and the `PAYMENT_SUCCEEDED` dedup key to the order (`payments/utils/payment-keys.util.ts`):
+  the admin's note or statement code is not unique, and a collision used to be
+  swallowed as "already processed" while the order stayed unpaid. Gateway payments
+  keep keys per gateway transaction so one transfer cannot pay two orders.
 - Approving a customer issue opens a MANUAL refund for that item only, following
   the return policy: the price paid for the line (coupon split by line value), plus
   the order's full original shipping fee when the reason is the shop's fault
