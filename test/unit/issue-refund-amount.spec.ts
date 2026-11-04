@@ -18,15 +18,19 @@ function order(overrides: Partial<Parameters<typeof issueRefundAmountVnd>[0]> = 
 }
 
 describe('issueRefundAmountVnd', () => {
-  it('chỉ hoàn món bị lỗi kèm phần phí ship của món, không hoàn cả đơn', () => {
+  it('chỉ hoàn món bị lỗi kèm toàn bộ phí ship ban đầu, không hoàn cả đơn', () => {
     // Đơn 1.880.150đ (3 món + 30.150đ ship), khách báo sai số đo áo blazer 750.000đ.
-    expect(issueRefundAmountVnd(order(), blazer, OrderIssueReason.WRONG_SIZE)).toBe(762_223);
+    expect(issueRefundAmountVnd(order(), blazer, OrderIssueReason.WRONG_SIZE)).toBe(780_150);
+  });
+
+  it('phí ship chỉ hoàn một lần mỗi đơn', () => {
+    expect(issueRefundAmountVnd(order(), shirt, OrderIssueReason.WRONG_COLOR, true)).toBe(550_000);
   });
 
   it('trừ phần mã giảm giá của món theo giá trị món', () => {
     expect(
       issueRefundAmountVnd(order({ discountVnd: BigInt(185_000) }), blazer, OrderIssueReason.QUALITY_MISMATCH),
-    ).toBe(687_223);
+    ).toBe(705_150);
   });
 
   it('lý do khác (không do shop) không hoàn phí vận chuyển', () => {
@@ -50,7 +54,7 @@ describe('issueRefundAmountVnd', () => {
       shippingFee: '20000.00',
       items: [legacyItem, other],
     };
-    // Món chiếm 600k/1tr: hoàn 600k - 60k giảm giá + 12k ship.
-    expect(issueRefundAmountVnd(legacy, legacyItem, OrderIssueReason.WRONG_SIZE)).toBe(552_000);
+    // Món chiếm 600k/1tr: hoàn 600k - 60k giảm giá + 20k ship.
+    expect(issueRefundAmountVnd(legacy, legacyItem, OrderIssueReason.WRONG_SIZE)).toBe(560_000);
   });
 });

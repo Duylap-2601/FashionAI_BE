@@ -21,7 +21,10 @@ import { StorageService } from "../storage/storage.service";
 import { CreateOrderIssueDto } from "./dto/create-order-issue.dto";
 import { QueryOrderIssueDto } from "./dto/query-order-issue.dto";
 import { ReviewOrderIssueDto } from "./dto/review-order-issue.dto";
-import { issueRefundAmountVnd } from "./utils/issue-refund-amount.util";
+import {
+  issueRefundAmountVnd,
+  SHOP_FAULT_ISSUE_REASONS,
+} from "./utils/issue-refund-amount.util";
 
 const UUID_REGEX =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -598,6 +601,7 @@ export class OrderIssuesService {
   }
 
   private async approvedRefundAmountVnd(issue: {
+    id: string;
     orderId: string;
     reason: OrderIssueReason;
     order: Prisma.OrderGetPayload<{ select: typeof refundOrderSelect }>;
@@ -614,9 +618,25 @@ export class OrderIssuesService {
       orderBy: { requestedAt: "desc" },
       select: { amountVnd: true },
     });
+    // Phí giao ban đầu đã hoàn kèm món lỗi do shop được duyệt trước đó của đơn.
+    const shippingRefunded =
+      (await this.prisma.orderIssue.count({
+        where: {
+          orderId: issue.orderId,
+          id: { not: issue.id },
+          status: OrderIssueStatus.RESOLVED,
+          approvedResolution: OrderIssueResolution.REFUND,
+          reason: { in: [...SHOP_FAULT_ISSUE_REASONS] },
+        },
+      })) > 0;
     return (
       Number(openRefund?.amountVnd ?? 0) +
-      issueRefundAmountVnd(issue.order, issue.orderItem, issue.reason)
+      issueRefundAmountVnd(
+        issue.order,
+        issue.orderItem,
+        issue.reason,
+        shippingRefunded,
+      )
     );
   }
 

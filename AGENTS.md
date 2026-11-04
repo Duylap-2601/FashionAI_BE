@@ -315,9 +315,10 @@ When schema changes are required:
   order's paid/refunded aggregates.
 - Approving a customer issue opens a MANUAL refund for that item only, following
   the return policy: the price paid for the line (coupon split by line value), plus
-  the line's share of shipping when the reason is the shop's fault
-  (`order-issues/utils/issue-refund-amount.util.ts`). A second approved item adds
-  to the open refund. A manual refund sent without an amount uses the approved
+  the order's full original shipping fee when the reason is the shop's fault
+  (`order-issues/utils/issue-refund-amount.util.ts`). Shipping is refunded once per
+  order: a later shop-fault issue on the same order adds only the item. A second
+  approved item adds to the open refund. A manual refund sent without an amount uses the approved
   amount, not the whole order. Keep this in sync with the FE return-policy text.
 
 ## Testing And Validation
