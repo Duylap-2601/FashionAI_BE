@@ -5,6 +5,15 @@ import { PrismaService } from '../../../database/prisma.service';
 import { OUTBOX_QUEUE, OutboxEventType } from '../constants/outbox.constants';
 import { OutboxJobData } from '../types/outbox.types';
 
+/**
+ * BullMQ từ chối jobId tự đặt có dấu ":" (trừ dạng 3 phần của repeatable job cũ):
+ * `outbox:${eventKey}` với eventKey `TYPE:aggregateId:ts` làm mọi lần enqueue lỗi khi
+ * Redis chạy thật. Id của OutboxEvent (uuid) duy nhất như eventKey và không có ":".
+ */
+export function outboxJobId(eventId: string): string {
+  return `outbox-${eventId}`;
+}
+
 @Injectable()
 export class OutboxService {
   private readonly logger = new Logger(OutboxService.name);
@@ -49,7 +58,7 @@ export class OutboxService {
         payload: (event.payload as Record<string, unknown>) ?? undefined,
       },
       {
-        jobId: `outbox:${event.eventKey}`,
+        jobId: outboxJobId(event.id),
         attempts: 5,
         backoff: { type: 'exponential', delay: 5000 },
         removeOnComplete: 500,
@@ -92,7 +101,7 @@ export class OutboxService {
         payload: (event.payload as Record<string, unknown>) ?? undefined,
       },
       {
-        jobId: `outbox:${event.eventKey}`,
+        jobId: outboxJobId(event.id),
         attempts: 5,
         backoff: { type: 'exponential', delay: 5000 },
         removeOnComplete: 500,

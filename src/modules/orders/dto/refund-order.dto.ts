@@ -1,5 +1,5 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { RefundStatus } from '@prisma/client';
+import { RefundKind, RefundStatus } from '@prisma/client';
 import { Type } from 'class-transformer';
 import { IsEnum, IsInt, IsObject, IsOptional, IsString, MaxLength, Min } from 'class-validator';
 
@@ -8,9 +8,17 @@ export class RefundOrderDto {
   @IsEnum(RefundStatus)
   refundStatus!: RefundStatus;
 
+  @ApiPropertyOptional({
+    enum: RefundKind,
+    description: 'Khoản hoàn: tiền hàng (mặc định) hoặc phí ship. Mỗi khoản chuyển và ghi nhận riêng.',
+  })
+  @IsEnum(RefundKind)
+  @IsOptional()
+  kind?: RefundKind;
+
   @ApiProperty({
     required: false,
-    description: 'Số tiền hoàn (VND). Bỏ trống để hoàn phần còn lại của đơn.',
+    description: 'Số tiền hoàn (VND). Bỏ trống để hoàn số đã duyệt của khoản, chưa duyệt thì phần còn lại của đơn.',
   })
   @Type(() => Number)
   @IsInt()

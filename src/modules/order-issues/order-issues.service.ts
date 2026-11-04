@@ -11,6 +11,7 @@ import {
   OrderIssueStatus,
   OrderStatus,
   Prisma,
+  RefundKind,
   RefundStatus,
   Role,
 } from "@prisma/client";
@@ -21,14 +22,73 @@ import { StorageService } from "../storage/storage.service";
 import { CreateOrderIssueDto } from "./dto/create-order-issue.dto";
 import { QueryOrderIssueDto } from "./dto/query-order-issue.dto";
 import { ReviewOrderIssueDto } from "./dto/review-order-issue.dto";
+import { OPEN_REFUND_STATUSES } from "../orders/constants/order-flow.constants";
+import {
+  issueRefundAmountVnd,
+  orderShippingFeeVnd,
+  SHOP_FAULT_ISSUE_REASONS,
+} from "./utils/issue-refund-amount.util";
 
 const UUID_REGEX =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const MAX_INT4 = 2147483647;
 const ISSUE_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
 
+// Các cột tiền cần để tính số hoàn của món theo chính sách đổi trả.
+const refundItemSelect = {
+  price: true,
+  quantity: true,
+  lineTotalVnd: true,
+} satisfies Prisma.OrderItemSelect;
+const refundOrderSelect = {
+  id: true,
+  orderCode: true,
+  itemsSubtotalVnd: true,
+  discountVnd: true,
+  discountAmount: true,
+  shippingFeeVnd: true,
+  shippingFee: true,
+  items: { select: refundItemSelect },
+} satisfies Prisma.OrderSelect;
+
+/**
+ * Tìm yêu cầu theo mã đơn (gõ "35501248", "#35501248" hay "ORD-35501248"), email /
+ * tên khách hoặc tên sản phẩm. Mã yêu cầu (uuid) chỉ khớp khi gõ đủ.
+ */
+function issueSearchFilter(q?: string): Prisma.OrderIssueWhereInput[] | null {
+  const term = q?.trim();
+  if (!term) return null;
+  const contains = { contains: term, mode: "insensitive" as const };
+  const filters: Prisma.OrderIssueWhereInput[] = [
+    { user: { email: contains } },
+    { user: { name: contains } },
+    { orderItem: { productNameSnapshot: contains } },
+  ];
+  const code = term.replace(/^(#|ORD-)/i, "");
+  if (/^\d+$/.test(code) && Number(code) <= MAX_INT4) {
+    filters.push({ order: { orderCode: Number(code) } });
+  }
+  if (UUID_REGEX.test(term)) filters.push({ id: term });
+  return filters;
+}
+
 const issueInclude = {
-  order: { select: { id: true, orderCode: true, status: true } },
+  order: {
+    select: {
+      id: true,
+      orderCode: true,
+      status: true,
+      // Modal duyệt hiện phí ship ban đầu và ẩn ô "hoàn phí ship" khi đơn đã có khoản đó.
+      shippingFee: true,
+      refunds: {
+        where: {
+          kind: RefundKind.SHIPPING,
+          status: { in: [...OPEN_REFUND_STATUSES, RefundStatus.COMPLETED] },
+        },
+        select: { id: true, status: true },
+      },
+    },
+  },
   orderItem: {
     select: {
       id: true,
@@ -221,11 +281,58 @@ export class OrderIssuesService {
     };
   }
 
+  /**
+   * Các đơn của khách có yêu cầu đổi trả (mới cập nhật trước), kèm tóm tắt từng yêu cầu
+   * và số tiền đã hoàn, cho trang "Đổi trả & hoàn tiền" trong tài khoản.
+   */
+  async findMineByOrder(userId: string, query: QueryOrderIssueDto) {
+    const { page = 1, limit = 20 } = query;
+    const where: Prisma.OrderWhereInput = { userId, issues: { some: {} } };
+    const [orders, total] = await Promise.all([
+      this.prisma.order.findMany({
+        where,
+        orderBy: { updatedAt: "desc" },
+        skip: (page - 1) * limit,
+        take: limit,
+        select: {
+          id: true,
+          orderCode: true,
+          status: true,
+          refundStatus: true,
+          amountRefundedVnd: true,
+          createdAt: true,
+          updatedAt: true,
+          issues: {
+            orderBy: { createdAt: "desc" },
+            select: {
+              id: true,
+              status: true,
+              reason: true,
+              createdAt: true,
+              orderItem: { select: { productNameSnapshot: true, productImageSnapshot: true } },
+            },
+          },
+        },
+      }),
+      this.prisma.order.count({ where }),
+    ]);
+
+    return {
+      items: orders.map(({ amountRefundedVnd, ...order }) => ({
+        ...order,
+        amountRefundedVnd: Number(amountRefundedVnd),
+      })),
+      meta: { total, page, limit, totalPages: Math.ceil(total / limit) },
+    };
+  }
+
   async findAllAdmin(query: QueryOrderIssueDto) {
     const { page = 1, limit = 20 } = query;
+    const search = issueSearchFilter(query.q);
     const where: Prisma.OrderIssueWhereInput = {
       ...(query.status ? { status: query.status } : {}),
       ...(query.reason ? { reason: query.reason } : {}),
+      ...(search ? { OR: search } : {}),
     };
 
     const [items, total] = await Promise.all([
@@ -267,7 +374,10 @@ export class OrderIssuesService {
   ) {
     const issue = await this.prisma.orderIssue.findUnique({
       where: { id: issueId },
-      include: { order: { select: { id: true, orderCode: true } } },
+      include: {
+        order: { select: refundOrderSelect },
+        orderItem: { select: refundItemSelect },
+      },
     });
     if (!issue) {
       throw new NotFoundException("Không tìm thấy yêu cầu xử lý");
@@ -301,15 +411,26 @@ export class OrderIssuesService {
         "Yêu cầu xử lý lỗi đơn hàng đã bị từ chối.",
         "review",
       );
-      await this.notifyUserReviewed(rejected.userId, rejected.id, false).catch(
+      await this.notifyUserReviewed(rejected.userId, rejected.id, issue.order, false).catch(
         () => undefined,
       );
       return rejected;
     }
 
+    // "Duyệt & hoàn ngay": shop chuyển khoản luôn, không cần khách gửi trả hàng.
+    // Kiểm tra chứng từ trước khi đổi bất kỳ trạng thái nào.
+    const refundNow = dto.refundNow === true;
+    const transferReference = dto.evidenceReference?.trim();
+    if (refundNow && (receiptImageUrls.length === 0 || !transferReference)) {
+      throw new BadRequestException(
+        "Hoàn tiền ngay cần mã giao dịch và ảnh chứng từ chuyển khoản.",
+      );
+    }
+
     // Chỉ còn hướng hoàn tiền: duyệt yêu cầu sẽ đưa đơn vào luồng hoàn trả và
-    // tạo khoản hoàn tiền chờ xử lý.
-    // Chuyển issue sang RESOLVED trước, rồi mới gọi sang luồng refund có sẵn
+    // tạo khoản hoàn tiền chờ xử lý. Yêu cầu ở APPROVED ("đã duyệt, chờ hoàn tiền");
+    // updateRefund chuyển sang RESOLVED khi mọi khoản hoàn của đơn đã chuyển xong.
+    // Chuyển issue sang APPROVED trước, rồi mới gọi sang luồng refund có sẵn
     // (ordersService.updateRefund tự mở transaction riêng, không thể lồng chung
     // transaction với orderIssue.update). Nếu updateRefund thất bại (validation
     // hoặc lỗi tạm thời), rollback issue về PENDING để tránh lệch trạng thái
@@ -317,7 +438,7 @@ export class OrderIssuesService {
     const resolved = await this.prisma.orderIssue.update({
       where: { id: issue.id },
       data: {
-        status: OrderIssueStatus.RESOLVED,
+        status: OrderIssueStatus.APPROVED,
         approvedResolution: OrderIssueResolution.REFUND,
         adminNote: dto.adminNote,
         adminId,
@@ -328,37 +449,65 @@ export class OrderIssuesService {
     const isRefundNotReceived =
       issue.reason === OrderIssueReason.REFUND_NOT_RECEIVED;
 
-    // Duyệt yêu cầu luôn là duyệt hoàn tiền nên bắt buộc có ảnh chứng từ
-    // chuyển khoản để khách đối chiếu và shop lưu vết.
-    if (receiptImageUrls.length === 0) {
-      throw new BadRequestException(
-        "Vui lòng đính kèm ảnh chứng từ chuyển khoản hoàn tiền cho khách.",
-      );
-    }
+    // Duyệt chưa chuyển tiền (hàng còn chưa về) nên không bắt buộc ảnh chứng từ;
+    // ảnh bắt buộc khi admin xác nhận đã chuyển khoản (updateRefund COMPLETED).
 
     try {
       // Báo chưa nhận được tiền: khoản hoàn cũ đã bị đánh dấu "đã hoàn" nên phải
       // mở lại trước, nếu không updateRefund sẽ báo không còn tiền để hoàn.
+      const note = dto.adminNote ? `: ${dto.adminNote}` : "";
       if (isRefundNotReceived) {
-        await this.ordersService.reopenRefundNotReceived(
+        // Báo chưa nhận được tiền: khoản cũ bị đánh dấu thất bại rồi mở lại đúng
+        // khoản đó (cùng loại, cùng số tiền) để admin chuyển lại.
+        const reopened = await this.ordersService.reopenRefundNotReceived(
           issue.orderId,
           issue.id,
           adminId,
         );
+        await this.ordersService.updateRefund(
+          issue.orderId,
+          {
+            refundStatus: RefundStatus.REQUIRED,
+            kind: reopened.kind,
+            amountVnd: reopened.amountVnd,
+            internalNote: `Mở lại hoàn tiền cho issue ${issue.id}${note}`,
+          },
+          adminId,
+          receiptImageUrls,
+        );
+      } else {
+        // Tái dùng luồng refund có sẵn: tạo Refund MANUAL + chuyển Order.refundStatus
+        // sang REQUIRED, không tự ghi đè Payment/Order.amountRefundedVnd. Tiền hàng chỉ
+        // gồm món bị lỗi, cộng vào khoản đang chờ chuyển nếu đơn đã có món khác được duyệt.
+        await this.ordersService.updateRefund(
+          issue.orderId,
+          {
+            refundStatus: RefundStatus.REQUIRED,
+            kind: RefundKind.GOODS,
+            amountVnd: await this.approvedGoodsRefundVnd(issue),
+            internalNote: `Duyệt hoàn tiền cho issue ${issue.id} (item ${issue.orderItemId})${note}`,
+          },
+          adminId,
+          receiptImageUrls,
+        );
+        // Phí ship ban đầu là khoản riêng, admin chọn có hoàn hay không (mặc định hoàn
+        // khi lỗi từ phía shop) và mỗi đơn chỉ hoàn một lần.
+        const refundShipping =
+          dto.refundShipping ?? SHOP_FAULT_ISSUE_REASONS.includes(issue.reason);
+        const shippingFeeVnd = orderShippingFeeVnd(issue.order);
+        if (refundShipping && shippingFeeVnd > 0 && !(await this.hasShippingRefund(issue.orderId))) {
+          await this.ordersService.updateRefund(
+            issue.orderId,
+            {
+              refundStatus: RefundStatus.REQUIRED,
+              kind: RefundKind.SHIPPING,
+              amountVnd: shippingFeeVnd,
+              internalNote: `Hoàn phí ship ban đầu theo issue ${issue.id}${note}`,
+            },
+            adminId,
+          );
+        }
       }
-      // Tái dùng luồng refund có sẵn: tạo Refund MANUAL + chuyển Order.refundStatus
-      // sang REQUIRED, không tự ghi đè Payment/Order.amountRefundedVnd.
-      await this.ordersService.updateRefund(
-        issue.orderId,
-        {
-          refundStatus: RefundStatus.REQUIRED,
-          internalNote: isRefundNotReceived
-            ? `Mở lại hoàn tiền cho issue ${issue.id}${dto.adminNote ? `: ${dto.adminNote}` : ""}`
-            : `Duyệt hoàn tiền cho issue ${issue.id} (item ${issue.orderItemId})${dto.adminNote ? `: ${dto.adminNote}` : ""}`,
-        },
-        adminId,
-        receiptImageUrls,
-      );
     } catch (err) {
       await this.prisma.orderIssue.update({
         where: { id: issue.id },
@@ -373,22 +522,36 @@ export class OrderIssuesService {
     }
 
     // Đơn chuyển sang "đã duyệt hoàn trả" để admin/theo dõi biết khách được
-    // gửi hàng về. Báo chưa nhận được tiền thì hàng đã về kho rồi (RETURNED),
-    // không đổi trạng thái đơn nữa.
+    // gửi hàng về. Hoàn ngay thì không cần gửi hàng nên đơn sang "đã hoàn trả" luôn.
+    // Báo chưa nhận được tiền thì hàng đã về kho rồi (RETURNED), không đổi trạng thái.
     if (!isRefundNotReceived) {
       await this.ordersService
         .updateStatus(
           issue.orderId,
-          {
-            status: OrderStatus.RETURN_APPROVED,
-            source: "ADMIN",
-            publicMessage:
-              "Yêu cầu hoàn trả đã được duyệt. Vui lòng gửi hàng về cửa hàng để được kiểm tra và hoàn tiền.",
-            internalNote: `Duyệt hoàn tiền cho issue ${issue.id}`,
-          },
+          refundNow
+            ? {
+                status: OrderStatus.RETURNED,
+                source: "ADMIN",
+                publicMessage:
+                  "Yêu cầu hoàn trả đã được duyệt và shop đã hoàn tiền. Bạn không cần gửi trả sản phẩm.",
+                internalNote: `Duyệt và hoàn tiền ngay cho issue ${issue.id}`,
+              }
+            : {
+                status: OrderStatus.RETURN_APPROVED,
+                source: "ADMIN",
+                publicMessage:
+                  "Yêu cầu hoàn trả đã được duyệt. Vui lòng gửi hàng về cửa hàng để được kiểm tra và hoàn tiền.",
+                internalNote: `Duyệt hoàn tiền cho issue ${issue.id}`,
+              },
           adminId,
         )
         .catch(() => undefined);
+    }
+
+    // Ghi nhận luôn các khoản vừa duyệt là đã chuyển (ảnh chứng từ đã lưu ở bước tạo
+    // khoản); khoản cuối xong thì updateRefund chuyển yêu cầu sang RESOLVED.
+    if (refundNow && transferReference) {
+      await this.completeOpenRefunds(issue.orderId, transferReference, adminId);
     }
 
     await this.logIssueEvent(
@@ -404,10 +567,17 @@ export class OrderIssuesService {
     await this.notifyUserReviewed(
       resolved.userId,
       resolved.id,
+      issue.order,
       true,
       isRefundNotReceived,
     ).catch(() => undefined);
-    return resolved;
+    if (!refundNow) return resolved;
+    return (
+      (await this.prisma.orderIssue.findUnique({
+        where: { id: issue.id },
+        include: issueInclude,
+      })) ?? resolved
+    );
   }
 
   // Ghi OrderEvent lên timeline đơn hàng gốc để FE order detail thấy mốc xử lý
@@ -571,9 +741,66 @@ export class OrderIssuesService {
     }
   }
 
+  private async approvedGoodsRefundVnd(issue: {
+    order: Prisma.OrderGetPayload<{ select: typeof refundOrderSelect }>;
+    orderItem: Prisma.OrderItemGetPayload<{ select: typeof refundItemSelect }>;
+    orderId: string;
+  }): Promise<number> {
+    const openGoods = await this.prisma.refund.findFirst({
+      where: {
+        orderId: issue.orderId,
+        provider: "MANUAL",
+        kind: RefundKind.GOODS,
+        status: { in: OPEN_REFUND_STATUSES },
+      },
+      orderBy: { requestedAt: "desc" },
+      select: { amountVnd: true },
+    });
+    return (
+      Number(openGoods?.amountVnd ?? 0) +
+      issueRefundAmountVnd(issue.order, issue.orderItem)
+    );
+  }
+
+  /** Ghi nhận các khoản hoàn đang chờ của đơn là đã chuyển (tiền hàng trước, rồi phí ship). */
+  private async completeOpenRefunds(orderId: string, transferReference: string, adminId: string) {
+    const open = await this.prisma.refund.findMany({
+      where: { orderId, provider: "MANUAL", status: { in: OPEN_REFUND_STATUSES } },
+      select: { kind: true },
+    });
+    const kinds = [RefundKind.GOODS, RefundKind.SHIPPING].filter((kind) =>
+      open.some((refund) => refund.kind === kind),
+    );
+    for (const kind of kinds) {
+      await this.ordersService.updateRefund(
+        orderId,
+        {
+          refundStatus: RefundStatus.COMPLETED,
+          kind,
+          evidenceReference: transferReference,
+          internalNote: transferReference,
+        },
+        adminId,
+      );
+    }
+  }
+
+  /** Đơn đã có khoản hoàn phí ship đang chờ hoặc đã chuyển. */
+  private async hasShippingRefund(orderId: string): Promise<boolean> {
+    const count = await this.prisma.refund.count({
+      where: {
+        orderId,
+        kind: RefundKind.SHIPPING,
+        status: { in: [...OPEN_REFUND_STATUSES, RefundStatus.COMPLETED] },
+      },
+    });
+    return count > 0;
+  }
+
   private async notifyUserReviewed(
     userId: string,
     issueId: string,
+    order: { id: string; orderCode: number },
     approved: boolean,
     refundNotReceived = false,
   ) {
@@ -586,7 +813,14 @@ export class OrderIssuesService {
           ? "Shop đã ghi nhận báo cáo chưa nhận được tiền hoàn và đang kiểm tra lại khoản chuyển cho bạn."
           : "Yêu cầu báo lỗi của bạn đã được duyệt, shop sẽ liên hệ để xử lý tiếp"
         : "Yêu cầu báo lỗi của bạn chưa được chấp nhận, vui lòng xem ghi chú từ shop",
-      data: { issueId, type: "ORDER_ISSUE_REVIEWED", reason: refundNotReceived ? "REFUND_NOT_RECEIVED" : undefined },
+      // orderId để thông báo mở thẳng trang đổi trả & hoàn tiền của đơn.
+      data: {
+        issueId,
+        orderId: order.id,
+        orderCode: order.orderCode,
+        type: "ORDER_ISSUE_REVIEWED",
+        reason: refundNotReceived ? "REFUND_NOT_RECEIVED" : undefined,
+      },
     });
   }
 }

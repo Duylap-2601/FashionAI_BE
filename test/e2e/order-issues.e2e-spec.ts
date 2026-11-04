@@ -37,6 +37,7 @@ describe("OrderIssues (e2e)", () => {
   let prisma: PrismaMock;
   let ordersService: { updateRefund: jest.Mock; updateStatus: jest.Mock };
   let storageService: { uploadImage: jest.Mock };
+  let notificationService: { create: jest.Mock };
 
   const completedOrder = {
     id: ORDER_ID,
@@ -52,6 +53,7 @@ describe("OrderIssues (e2e)", () => {
       updateRefund: jest.fn().mockResolvedValue({}),
       updateStatus: jest.fn().mockResolvedValue({}),
     };
+    notificationService = { create: jest.fn().mockResolvedValue({}) };
     storageService = {
       uploadImage: jest
         .fn()
@@ -77,7 +79,7 @@ describe("OrderIssues (e2e)", () => {
           OrderIssuesService,
           {
             provide: NotificationService,
-            useValue: { create: jest.fn().mockResolvedValue({}) },
+            useValue: notificationService,
           },
           { provide: StorageService, useValue: storageService },
           { provide: OrdersService, useValue: ordersService },
@@ -93,6 +95,33 @@ describe("OrderIssues (e2e)", () => {
   afterEach(async () => {
     await app?.close();
   });
+
+  // Đơn 3 món (750k + 550k + 550k) + 30.150đ ship, khách báo sai số đo món 750k.
+  function pendingIssue() {
+    const item = { price: 750000, quantity: 1, lineTotalVnd: BigInt(750000) };
+    return {
+      id: "issue-1",
+      status: OrderIssueStatus.PENDING,
+      reason: "WRONG_SIZE",
+      orderId: ORDER_ID,
+      orderItemId: ITEM_ID,
+      order: {
+        id: ORDER_ID,
+        orderCode: 100001,
+        itemsSubtotalVnd: BigInt(1850000),
+        discountVnd: BigInt(0),
+        discountAmount: null,
+        shippingFeeVnd: BigInt(30150),
+        shippingFee: null,
+        items: [
+          item,
+          { price: 550000, quantity: 1, lineTotalVnd: BigInt(550000) },
+          { price: 550000, quantity: 1, lineTotalVnd: BigInt(550000) },
+        ],
+      },
+      orderItem: item,
+    };
+  }
 
   function mockCompletedOrder() {
     prisma.order.findFirst.mockResolvedValue(completedOrder);
@@ -208,17 +237,11 @@ describe("OrderIssues (e2e)", () => {
       currentUser = { id: ADMIN_ID, email: "admin@test.com", role: "ADMIN" };
     });
 
-    it("approve REFUND gọi updateRefund và chuyển issue sang RESOLVED", async () => {
-      prisma.orderIssue.findUnique.mockResolvedValue({
-        id: "issue-1",
-        status: OrderIssueStatus.PENDING,
-        orderId: ORDER_ID,
-        orderItemId: ITEM_ID,
-        order: { id: ORDER_ID, orderCode: 100001 },
-      });
+    it("approve REFUND gọi updateRefund và để issue ở APPROVED (chờ hoàn tiền)", async () => {
+      prisma.orderIssue.findUnique.mockResolvedValue(pendingIssue());
       prisma.orderIssue.update.mockResolvedValue({
         id: "issue-1",
-        status: "RESOLVED",
+        status: "APPROVED",
       });
 
       const res = await request(app.getHttpServer())
@@ -231,32 +254,156 @@ describe("OrderIssues (e2e)", () => {
         })
         .expect(200);
 
-      expect(res.body.data.status).toBe("RESOLVED");
+      expect(res.body.data.status).toBe("APPROVED");
+      // Chỉ sang RESOLVED khi mọi khoản hoàn của đơn đã chuyển (OrdersService.updateRefund).
+      expect(prisma.orderIssue.update).toHaveBeenCalledWith(
+        expect.objectContaining({ data: expect.objectContaining({ status: "APPROVED", approvedResolution: "REFUND" }) }),
+      );
       expect(storageService.uploadImage).toHaveBeenCalled();
+      // Tiền hàng chỉ gồm món bị lỗi (không hoàn cả đơn 1.880.150đ); phí ship ban đầu
+      // là khoản riêng, mặc định hoàn khi lỗi từ phía shop.
+      expect(ordersService.updateRefund).toHaveBeenCalledTimes(2);
+      expect(ordersService.updateRefund).toHaveBeenNthCalledWith(
+        1,
+        ORDER_ID,
+        expect.objectContaining({ refundStatus: "REQUIRED", kind: "GOODS", amountVnd: 750000 }),
+        ADMIN_ID,
+        ["https://cdn.test/order-issues/x.png"],
+      );
+      expect(ordersService.updateRefund).toHaveBeenNthCalledWith(
+        2,
+        ORDER_ID,
+        expect.objectContaining({ refundStatus: "REQUIRED", kind: "SHIPPING", amountVnd: 30150 }),
+        ADMIN_ID,
+      );
+    });
+
+    it("thông báo duyệt cho khách kèm orderId để mở trang đổi trả của đơn", async () => {
+      prisma.orderIssue.findUnique.mockResolvedValue(pendingIssue());
+      prisma.orderIssue.update.mockResolvedValue({ id: "issue-1", status: "RESOLVED", userId: USER_ID });
+
+      await request(app.getHttpServer())
+        .patch("/api/order-issues/issue-1/review")
+        .field("decision", "APPROVE")
+        .attach("receiptImages", Buffer.from("receipt"), { filename: "receipt.png", contentType: "image/png" })
+        .expect(200);
+
+      expect(notificationService.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: "ORDER_ISSUE",
+          data: expect.objectContaining({ orderId: ORDER_ID, orderCode: 100001, type: "ORDER_ISSUE_REVIEWED" }),
+        }),
+      );
+    });
+
+    it("admin bỏ chọn hoàn phí ship thì chỉ tạo khoản tiền hàng", async () => {
+      prisma.orderIssue.findUnique.mockResolvedValue(pendingIssue());
+      prisma.orderIssue.update.mockResolvedValue({ id: "issue-1", status: "RESOLVED" });
+
+      await request(app.getHttpServer())
+        .patch("/api/order-issues/issue-1/review")
+        .field("decision", "APPROVE")
+        .field("refundShipping", "false")
+        .attach("receiptImages", Buffer.from("receipt"), {
+          filename: "receipt.png",
+          contentType: "image/png",
+        })
+        .expect(200);
+
+      expect(ordersService.updateRefund).toHaveBeenCalledTimes(1);
       expect(ordersService.updateRefund).toHaveBeenCalledWith(
         ORDER_ID,
-        expect.objectContaining({ refundStatus: "REQUIRED" }),
+        expect.objectContaining({ kind: "GOODS", amountVnd: 750000 }),
         ADMIN_ID,
         ["https://cdn.test/order-issues/x.png"],
       );
     });
 
-    it("trả 400 khi approve mà không có ảnh chứng từ chuyển khoản", async () => {
-      prisma.orderIssue.findUnique.mockResolvedValue({
-        id: "issue-1",
-        status: OrderIssueStatus.PENDING,
-        orderId: ORDER_ID,
-        orderItemId: ITEM_ID,
-        order: { id: ORDER_ID, orderCode: 100001 },
-      });
+    it("approve món thứ hai cộng vào khoản tiền hàng đang chờ, không hoàn ship lần nữa", async () => {
+      prisma.orderIssue.findUnique.mockResolvedValue(pendingIssue());
+      prisma.orderIssue.update.mockResolvedValue({ id: "issue-1", status: "RESOLVED" });
+      // Đơn đã có khoản tiền hàng 550k chờ chuyển và khoản phí ship từ món trước.
+      prisma.refund.findFirst.mockResolvedValue({ amountVnd: BigInt(550000) });
+      prisma.refund.count.mockResolvedValue(1);
+
+      await request(app.getHttpServer())
+        .patch("/api/order-issues/issue-1/review")
+        .field("decision", "APPROVE")
+        .attach("receiptImages", Buffer.from("receipt"), {
+          filename: "receipt.png",
+          contentType: "image/png",
+        })
+        .expect(200);
+
+      expect(ordersService.updateRefund).toHaveBeenCalledWith(
+        ORDER_ID,
+        expect.objectContaining({ refundStatus: "REQUIRED", kind: "GOODS", amountVnd: 550000 + 750000 }),
+        ADMIN_ID,
+        ["https://cdn.test/order-issues/x.png"],
+      );
+      expect(ordersService.updateRefund).toHaveBeenCalledTimes(1);
+    });
+
+    it("duyệt & hoàn ngay: tạo khoản, đơn sang RETURNED rồi ghi nhận đã hoàn từng khoản", async () => {
+      // Lần đọc thứ hai là yêu cầu sau khi hoàn xong (đã RESOLVED).
+      prisma.orderIssue.findUnique
+        .mockResolvedValueOnce(pendingIssue())
+        .mockResolvedValueOnce({ id: "issue-1", status: "RESOLVED" });
+      prisma.orderIssue.update.mockResolvedValue({ id: "issue-1", status: "APPROVED" });
+      prisma.refund.findMany.mockResolvedValue([{ kind: "SHIPPING" }, { kind: "GOODS" }]);
+
+      await request(app.getHttpServer())
+        .patch("/api/order-issues/issue-1/review")
+        .field("decision", "APPROVE")
+        .field("refundNow", "true")
+        .field("evidenceReference", "VCB FT2611040099")
+        .attach("receiptImages", Buffer.from("receipt"), { filename: "receipt.png", contentType: "image/png" })
+        .expect(200);
+
+      const calls = ordersService.updateRefund.mock.calls.map(([, dto]) => `${dto.refundStatus}:${dto.kind}`);
+      expect(calls).toEqual(["REQUIRED:GOODS", "REQUIRED:SHIPPING", "COMPLETED:GOODS", "COMPLETED:SHIPPING"]);
+      expect(ordersService.updateRefund).toHaveBeenLastCalledWith(
+        ORDER_ID,
+        expect.objectContaining({ refundStatus: "COMPLETED", kind: "SHIPPING", evidenceReference: "VCB FT2611040099" }),
+        ADMIN_ID,
+      );
+      expect(ordersService.updateStatus).toHaveBeenCalledWith(
+        ORDER_ID,
+        expect.objectContaining({ status: "RETURNED" }),
+        ADMIN_ID,
+      );
+    });
+
+    it("duyệt & hoàn ngay thiếu mã giao dịch thì báo lỗi trước khi đổi trạng thái", async () => {
+      prisma.orderIssue.findUnique.mockResolvedValue(pendingIssue());
 
       const res = await request(app.getHttpServer())
         .patch("/api/order-issues/issue-1/review")
-        .send({ decision: "APPROVE", approvedResolution: "REFUND" })
+        .field("decision", "APPROVE")
+        .field("refundNow", "true")
+        .attach("receiptImages", Buffer.from("receipt"), { filename: "receipt.png", contentType: "image/png" })
         .expect(400);
 
-      expect(res.body.message).toContain("ảnh chứng từ");
+      expect(res.body.message).toContain("mã giao dịch");
+      expect(prisma.orderIssue.update).not.toHaveBeenCalled();
       expect(ordersService.updateRefund).not.toHaveBeenCalled();
+    });
+
+    it("approve không cần ảnh chứng từ vì chưa chuyển tiền", async () => {
+      prisma.orderIssue.findUnique.mockResolvedValue(pendingIssue());
+      prisma.orderIssue.update.mockResolvedValue({ id: "issue-1", status: "APPROVED" });
+
+      await request(app.getHttpServer())
+        .patch("/api/order-issues/issue-1/review")
+        .send({ decision: "APPROVE", approvedResolution: "REFUND" })
+        .expect(200);
+
+      expect(ordersService.updateRefund).toHaveBeenCalledWith(
+        ORDER_ID,
+        expect.objectContaining({ refundStatus: "REQUIRED", kind: "GOODS" }),
+        ADMIN_ID,
+        [],
+      );
     });
 
     it("trả 400 khi approve EXCHANGE (chỉ hỗ trợ REFUND)", async () => {
@@ -270,13 +417,7 @@ describe("OrderIssues (e2e)", () => {
     });
 
     it("approve thiếu approvedResolution vẫn duyệt REFUND", async () => {
-      prisma.orderIssue.findUnique.mockResolvedValue({
-        id: "issue-1",
-        status: OrderIssueStatus.PENDING,
-        orderId: ORDER_ID,
-        orderItemId: ITEM_ID,
-        order: { id: ORDER_ID, orderCode: 100001 },
-      });
+      prisma.orderIssue.findUnique.mockResolvedValue(pendingIssue());
       prisma.orderIssue.update.mockResolvedValue({
         id: "issue-1",
         status: "RESOLVED",
@@ -314,9 +455,51 @@ describe("OrderIssues (e2e)", () => {
 
   });
 
+  describe("GET /api/order-issues/mine", () => {
+    it("trả các đơn có đổi trả của chính khách, không bị route :issueId bắt nhầm", async () => {
+      prisma.order.findMany.mockResolvedValue([
+        {
+          id: ORDER_ID,
+          orderCode: 100001,
+          status: "RETURNED",
+          refundStatus: "COMPLETED",
+          amountRefundedVnd: BigInt(1300000),
+          createdAt: new Date(),
+          updatedAt: new Date(),
+          issues: [{ id: "issue-1", status: "RESOLVED", reason: "WRONG_SIZE", createdAt: new Date(), orderItem: null }],
+        },
+      ]);
+      prisma.order.count.mockResolvedValue(1);
+
+      const res = await request(app.getHttpServer()).get("/api/order-issues/mine").expect(200);
+
+      expect(prisma.order.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({ where: { userId: USER_ID, issues: { some: {} } } }),
+      );
+      expect(prisma.orderIssue.findUnique).not.toHaveBeenCalled();
+      expect(res.body.data[0]).toEqual(expect.objectContaining({ orderCode: 100001, amountRefundedVnd: 1300000 }));
+      expect(res.body.meta.total).toBe(1);
+    });
+  });
+
   describe("GET /api/order-issues (admin)", () => {
     it("chặn user thường với 403", async () => {
       await request(app.getHttpServer()).get("/api/order-issues").expect(403);
+    });
+
+    it("admin tìm theo mã đơn dạng #35501248 hoặc ORD-35501248", async () => {
+      currentUser = { id: ADMIN_ID, email: "admin@test.com", role: "ADMIN" };
+      prisma.orderIssue.findMany.mockResolvedValue([]);
+
+      await request(app.getHttpServer()).get("/api/order-issues").query({ q: "ORD-35501248" }).expect(200);
+
+      expect(prisma.orderIssue.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: expect.objectContaining({
+            OR: expect.arrayContaining([{ order: { orderCode: 35501248 } }, { user: { email: { contains: "ORD-35501248", mode: "insensitive" } } }]),
+          }),
+        }),
+      );
     });
 
     it("admin xem được danh sách có phân trang", async () => {

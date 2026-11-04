@@ -1,6 +1,7 @@
 import { ApiProperty, ApiPropertyOptional } from "@nestjs/swagger";
 import { OrderIssueResolution } from "@prisma/client";
-import { IsIn, IsOptional, IsString, MaxLength } from "class-validator";
+import { Transform } from "class-transformer";
+import { IsBoolean, IsIn, IsOptional, IsString, MaxLength } from "class-validator";
 
 export class ReviewOrderIssueDto {
   @ApiProperty({
@@ -28,4 +29,36 @@ export class ReviewOrderIssueDto {
   @IsOptional()
   @MaxLength(2000)
   adminNote?: string;
+
+  @ApiPropertyOptional({
+    description:
+      "Có hoàn phí ship ban đầu không (khoản hoàn riêng, mỗi đơn một lần). Bỏ trống: hoàn khi lỗi từ phía shop.",
+  })
+  // Form multipart gửi "true"/"false" dạng chuỗi; đọc giá trị gốc vì chuyển kiểu ngầm
+  // biến chuỗi "false" thành true.
+  @Transform(({ obj, key }) => {
+    const raw = (obj as Record<string, unknown>)[key];
+    return raw === undefined || raw === "" ? undefined : raw === true || raw === "true";
+  })
+  @IsBoolean()
+  @IsOptional()
+  refundShipping?: boolean;
+
+  @ApiPropertyOptional({
+    description:
+      "Duyệt và hoàn tiền ngay, không cần khách gửi trả hàng. Bắt buộc kèm evidenceReference và ảnh chứng từ.",
+  })
+  @Transform(({ obj, key }) => {
+    const raw = (obj as Record<string, unknown>)[key];
+    return raw === undefined || raw === "" ? undefined : raw === true || raw === "true";
+  })
+  @IsBoolean()
+  @IsOptional()
+  refundNow?: boolean;
+
+  @ApiPropertyOptional({ description: "Mã giao dịch / ghi chú chuyển khoản khi hoàn tiền ngay" })
+  @IsString()
+  @IsOptional()
+  @MaxLength(500)
+  evidenceReference?: string;
 }

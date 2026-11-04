@@ -123,6 +123,13 @@ enum PaymentStatus {
   COD_COLLECTED
 }
 
+// Một lần hoàn tách thành khoản tiền hàng và khoản phí ship để admin chuyển,
+// ghi nhận và chọn không hoàn ship riêng.
+enum RefundKind {
+  GOODS
+  SHIPPING
+}
+
 enum RefundStatus {
   NONE
   PENDING
@@ -1112,6 +1119,7 @@ model Refund {
   provider         String       @default("MANUAL")
   providerRefundId String?      @map("provider_refund_id")
   amountVnd        BigInt       @map("amount_vnd")
+  kind             RefundKind   @default(GOODS)
   currency         String       @default("VND")
   reason           String?      @db.Text
   status           RefundStatus @default(PENDING)

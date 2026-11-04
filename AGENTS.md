@@ -313,6 +313,37 @@ When schema changes are required:
   `idempotencyKey` must be a UUID. `REFUND_REQUIRED` payments are payment-only
   refunds and must be refunded for the full collected amount without mutating the
   order's paid/refunded aggregates.
+- Manual payment confirmation (`MANUAL_ADMIN`) scopes the payment `transactionId`
+  and the `PAYMENT_SUCCEEDED` dedup key to the order (`payments/utils/payment-keys.util.ts`):
+  the admin's note or statement code is not unique, and a collision used to be
+  swallowed as "already processed" while the order stayed unpaid. Gateway payments
+  keep keys per gateway transaction so one transfer cannot pay two orders.
+- Refunds are split by `Refund.kind`: `GOODS` and `SHIPPING`, each transferred,
+  recorded (`updateRefund` with `kind`) and cancelled on its own. `Order.refundStatus`
+  stays `REQUIRED` while any MANUAL refund is open.
+- Approving a customer issue adds the item to the open GOODS refund: the price paid
+  for the line, coupon split by line value
+  (`order-issues/utils/issue-refund-amount.util.ts`). The admin chooses whether to
+  refund the original shipping fee (`refundShipping`, default on for shop-fault
+  reasons). That creates one SHIPPING refund for the full fee, at most once per
+  order. A manual refund sent without an amount uses the approved amount of that
+  kind, not the whole order. "Refund not received" reopens the same refund (same
+  kind and amount). Keep this in sync with the FE return-policy text.
+- Issue states follow the return policy:
+  - Approval sets an issue to `APPROVED` ("đã duyệt, chờ hoàn tiền") and does not need a transfer receipt, because no money moves yet.
+  - `updateRefund` moves the order's approved REFUND issues to `RESOLVED` once no MANUAL refund is open after a COMPLETED or CANCELLED update.
+  - A transfer receipt is required only when a refund is recorded as COMPLETED.
+  - Migration `20261104120000_issue_approved_until_refunded` moved older `RESOLVED` issues whose refunds were still open back to `APPROVED`.
+- "Duyệt & hoàn ngay": approving with `refundNow` (plus `evidenceReference` and a
+  receipt, checked before any state change) moves the order straight to RETURNED,
+  because the customer keeps the goods. It then records each open refund (goods,
+  then shipping) as COMPLETED, so the issue ends RESOLVED.
+- Admin issue search: `GET /order-issues?q=` matches the order code (`123`, `#123`, `ORD-123`), the customer's email or name, or the product name.
+- Customers list their returns with `GET /order-issues/mine` (orders that have
+  issues, newest first, with each issue's status and the refunded amount). The
+  route is declared before `GET /order-issues/:issueId`. Review notifications
+  (`ORDER_ISSUE`) carry `orderId` and `orderCode` so the FE opens
+  `/orders/:id/returns`.
 
 ## Testing And Validation
 
