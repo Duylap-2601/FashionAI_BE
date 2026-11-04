@@ -504,7 +504,9 @@ export class PaymentsService {
       throw new BadRequestException(`${gateway.code} requestId mismatch`);
     }
 
-    if (Number(payment.amountVnd ?? payment.order.amount) !== Number(result.amountVnd)) {
+    // Chỉ đối chiếu số tiền khi cổng báo đã thu: kết quả thất bại/hết hạn (vd. ZaloPay)
+    // trả amount = 0, so sánh sẽ làm payment kẹt PENDING và cron đối soát báo lỗi mãi.
+    if (result.status === 'SUCCESS' && Number(payment.amountVnd ?? payment.order.amount) !== Number(result.amountVnd)) {
       await this.markRefundRequiredIfCollected(payment, result, 'AMOUNT_MISMATCH');
       await this.recordWebhookFailure(gateway.code, 'AMOUNT_MISMATCH', `${gateway.code} amount không khớp cho payment ${payment.id}`, result.raw, payment.order.orderCode);
       throw new BadRequestException(`${gateway.code} amount mismatch`);
