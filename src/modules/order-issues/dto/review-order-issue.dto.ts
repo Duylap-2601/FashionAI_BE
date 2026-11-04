@@ -43,4 +43,22 @@ export class ReviewOrderIssueDto {
   @IsBoolean()
   @IsOptional()
   refundShipping?: boolean;
+
+  @ApiPropertyOptional({
+    description:
+      "Duyệt và hoàn tiền ngay, không cần khách gửi trả hàng. Bắt buộc kèm evidenceReference và ảnh chứng từ.",
+  })
+  @Transform(({ obj, key }) => {
+    const raw = (obj as Record<string, unknown>)[key];
+    return raw === undefined || raw === "" ? undefined : raw === true || raw === "true";
+  })
+  @IsBoolean()
+  @IsOptional()
+  refundNow?: boolean;
+
+  @ApiPropertyOptional({ description: "Mã giao dịch / ghi chú chuyển khoản khi hoàn tiền ngay" })
+  @IsString()
+  @IsOptional()
+  @MaxLength(500)
+  evidenceReference?: string;
 }

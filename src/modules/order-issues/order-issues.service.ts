@@ -417,6 +417,16 @@ export class OrderIssuesService {
       return rejected;
     }
 
+    // "Duyệt & hoàn ngay": shop chuyển khoản luôn, không cần khách gửi trả hàng.
+    // Kiểm tra chứng từ trước khi đổi bất kỳ trạng thái nào.
+    const refundNow = dto.refundNow === true;
+    const transferReference = dto.evidenceReference?.trim();
+    if (refundNow && (receiptImageUrls.length === 0 || !transferReference)) {
+      throw new BadRequestException(
+        "Hoàn tiền ngay cần mã giao dịch và ảnh chứng từ chuyển khoản.",
+      );
+    }
+
     // Chỉ còn hướng hoàn tiền: duyệt yêu cầu sẽ đưa đơn vào luồng hoàn trả và
     // tạo khoản hoàn tiền chờ xử lý. Yêu cầu ở APPROVED ("đã duyệt, chờ hoàn tiền");
     // updateRefund chuyển sang RESOLVED khi mọi khoản hoàn của đơn đã chuyển xong.
@@ -512,22 +522,36 @@ export class OrderIssuesService {
     }
 
     // Đơn chuyển sang "đã duyệt hoàn trả" để admin/theo dõi biết khách được
-    // gửi hàng về. Báo chưa nhận được tiền thì hàng đã về kho rồi (RETURNED),
-    // không đổi trạng thái đơn nữa.
+    // gửi hàng về. Hoàn ngay thì không cần gửi hàng nên đơn sang "đã hoàn trả" luôn.
+    // Báo chưa nhận được tiền thì hàng đã về kho rồi (RETURNED), không đổi trạng thái.
     if (!isRefundNotReceived) {
       await this.ordersService
         .updateStatus(
           issue.orderId,
-          {
-            status: OrderStatus.RETURN_APPROVED,
-            source: "ADMIN",
-            publicMessage:
-              "Yêu cầu hoàn trả đã được duyệt. Vui lòng gửi hàng về cửa hàng để được kiểm tra và hoàn tiền.",
-            internalNote: `Duyệt hoàn tiền cho issue ${issue.id}`,
-          },
+          refundNow
+            ? {
+                status: OrderStatus.RETURNED,
+                source: "ADMIN",
+                publicMessage:
+                  "Yêu cầu hoàn trả đã được duyệt và shop đã hoàn tiền. Bạn không cần gửi trả sản phẩm.",
+                internalNote: `Duyệt và hoàn tiền ngay cho issue ${issue.id}`,
+              }
+            : {
+                status: OrderStatus.RETURN_APPROVED,
+                source: "ADMIN",
+                publicMessage:
+                  "Yêu cầu hoàn trả đã được duyệt. Vui lòng gửi hàng về cửa hàng để được kiểm tra và hoàn tiền.",
+                internalNote: `Duyệt hoàn tiền cho issue ${issue.id}`,
+              },
           adminId,
         )
         .catch(() => undefined);
+    }
+
+    // Ghi nhận luôn các khoản vừa duyệt là đã chuyển (ảnh chứng từ đã lưu ở bước tạo
+    // khoản); khoản cuối xong thì updateRefund chuyển yêu cầu sang RESOLVED.
+    if (refundNow && transferReference) {
+      await this.completeOpenRefunds(issue.orderId, transferReference, adminId);
     }
 
     await this.logIssueEvent(
@@ -547,7 +571,13 @@ export class OrderIssuesService {
       true,
       isRefundNotReceived,
     ).catch(() => undefined);
-    return resolved;
+    if (!refundNow) return resolved;
+    return (
+      (await this.prisma.orderIssue.findUnique({
+        where: { id: issue.id },
+        include: issueInclude,
+      })) ?? resolved
+    );
   }
 
   // Ghi OrderEvent lên timeline đơn hàng gốc để FE order detail thấy mốc xử lý
@@ -730,6 +760,29 @@ export class OrderIssuesService {
       Number(openGoods?.amountVnd ?? 0) +
       issueRefundAmountVnd(issue.order, issue.orderItem)
     );
+  }
+
+  /** Ghi nhận các khoản hoàn đang chờ của đơn là đã chuyển (tiền hàng trước, rồi phí ship). */
+  private async completeOpenRefunds(orderId: string, transferReference: string, adminId: string) {
+    const open = await this.prisma.refund.findMany({
+      where: { orderId, provider: "MANUAL", status: { in: OPEN_REFUND_STATUSES } },
+      select: { kind: true },
+    });
+    const kinds = [RefundKind.GOODS, RefundKind.SHIPPING].filter((kind) =>
+      open.some((refund) => refund.kind === kind),
+    );
+    for (const kind of kinds) {
+      await this.ordersService.updateRefund(
+        orderId,
+        {
+          refundStatus: RefundStatus.COMPLETED,
+          kind,
+          evidenceReference: transferReference,
+          internalNote: transferReference,
+        },
+        adminId,
+      );
+    }
   }
 
   /** Đơn đã có khoản hoàn phí ship đang chờ hoặc đã chuyển. */

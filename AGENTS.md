@@ -334,6 +334,10 @@ When schema changes are required:
   - `updateRefund` moves the order's approved REFUND issues to `RESOLVED` once no MANUAL refund is open after a COMPLETED or CANCELLED update.
   - A transfer receipt is required only when a refund is recorded as COMPLETED.
   - Migration `20261104120000_issue_approved_until_refunded` moved older `RESOLVED` issues whose refunds were still open back to `APPROVED`.
+- "Duyệt & hoàn ngay": approving with `refundNow` (plus `evidenceReference` and a
+  receipt, checked before any state change) moves the order straight to RETURNED,
+  because the customer keeps the goods. It then records each open refund (goods,
+  then shipping) as COMPLETED, so the issue ends RESOLVED.
 - Admin issue search: `GET /order-issues?q=` matches the order code (`123`, `#123`, `ORD-123`), the customer's email or name, or the product name.
 - Customers list their returns with `GET /order-issues/mine` (orders that have
   issues, newest first, with each issue's status and the refunded amount). The
