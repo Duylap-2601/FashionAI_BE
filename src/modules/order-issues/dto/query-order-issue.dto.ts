@@ -1,7 +1,7 @@
 import { ApiProperty } from "@nestjs/swagger";
 import { OrderIssueReason, OrderIssueStatus } from "@prisma/client";
 import { Type } from "class-transformer";
-import { IsEnum, IsInt, IsOptional, Min } from "class-validator";
+import { IsEnum, IsInt, IsOptional, IsString, MaxLength, Min } from "class-validator";
 
 export class QueryOrderIssueDto {
   @ApiProperty({ enum: OrderIssueStatus, required: false })
@@ -13,6 +13,15 @@ export class QueryOrderIssueDto {
   @IsEnum(OrderIssueReason)
   @IsOptional()
   reason?: OrderIssueReason;
+
+  @ApiProperty({
+    required: false,
+    description: "Tìm theo mã đơn (35501248, #35501248, ORD-35501248), email / tên khách, tên sản phẩm",
+  })
+  @IsString()
+  @IsOptional()
+  @MaxLength(100)
+  q?: string;
 
   @ApiProperty({ required: false, default: 1 })
   @Type(() => Number)

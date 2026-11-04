@@ -9,14 +9,16 @@ import {
   CouponDiscountType,
   GarmentType,
   NotificationType,
+  OrderIssueResolution,
+  OrderIssueStatus,
   OrderStatus,
   PaymentStatus,
   Prisma,
   Product,
+  RefundKind,
   RefundStatus,
   Role,
   ShipmentStatus,
-  RefundKind,
 } from '@prisma/client';
 import { createHash, createHmac, timingSafeEqual } from 'crypto';
 import { PrismaService } from '../../database/prisma.service';
@@ -965,6 +967,19 @@ export class OrdersService {
         });
         if (stillOpen > 0) orderRefundStatus = RefundStatus.REQUIRED;
         else if (dto.refundStatus === RefundStatus.CANCELLED && refundedVnd > 0) orderRefundStatus = RefundStatus.COMPLETED;
+
+        // Không còn khoản nào chờ chuyển (đã hoàn xong hoặc shop bỏ khoản cuối): các yêu
+        // cầu đã duyệt hoàn tiền của đơn chuyển từ "đã duyệt" sang "đã giải quyết".
+        if (stillOpen === 0 && dto.refundStatus !== RefundStatus.FAILED) {
+          await tx.orderIssue.updateMany({
+            where: {
+              orderId: order.id,
+              status: OrderIssueStatus.APPROVED,
+              approvedResolution: OrderIssueResolution.REFUND,
+            },
+            data: { status: OrderIssueStatus.RESOLVED },
+          });
+        }
       }
 
       let paymentStatus = order.paymentStatus;

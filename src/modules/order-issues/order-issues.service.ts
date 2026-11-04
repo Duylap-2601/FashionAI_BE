@@ -51,6 +51,27 @@ const refundOrderSelect = {
   items: { select: refundItemSelect },
 } satisfies Prisma.OrderSelect;
 
+/**
+ * Tìm yêu cầu theo mã đơn (gõ "35501248", "#35501248" hay "ORD-35501248"), email /
+ * tên khách hoặc tên sản phẩm. Mã yêu cầu (uuid) chỉ khớp khi gõ đủ.
+ */
+function issueSearchFilter(q?: string): Prisma.OrderIssueWhereInput[] | null {
+  const term = q?.trim();
+  if (!term) return null;
+  const contains = { contains: term, mode: "insensitive" as const };
+  const filters: Prisma.OrderIssueWhereInput[] = [
+    { user: { email: contains } },
+    { user: { name: contains } },
+    { orderItem: { productNameSnapshot: contains } },
+  ];
+  const code = term.replace(/^(#|ORD-)/i, "");
+  if (/^\d+$/.test(code) && Number(code) <= MAX_INT4) {
+    filters.push({ order: { orderCode: Number(code) } });
+  }
+  if (UUID_REGEX.test(term)) filters.push({ id: term });
+  return filters;
+}
+
 const issueInclude = {
   order: {
     select: {
@@ -307,9 +328,11 @@ export class OrderIssuesService {
 
   async findAllAdmin(query: QueryOrderIssueDto) {
     const { page = 1, limit = 20 } = query;
+    const search = issueSearchFilter(query.q);
     const where: Prisma.OrderIssueWhereInput = {
       ...(query.status ? { status: query.status } : {}),
       ...(query.reason ? { reason: query.reason } : {}),
+      ...(search ? { OR: search } : {}),
     };
 
     const [items, total] = await Promise.all([
@@ -395,8 +418,9 @@ export class OrderIssuesService {
     }
 
     // Chỉ còn hướng hoàn tiền: duyệt yêu cầu sẽ đưa đơn vào luồng hoàn trả và
-    // tạo khoản hoàn tiền chờ xử lý.
-    // Chuyển issue sang RESOLVED trước, rồi mới gọi sang luồng refund có sẵn
+    // tạo khoản hoàn tiền chờ xử lý. Yêu cầu ở APPROVED ("đã duyệt, chờ hoàn tiền");
+    // updateRefund chuyển sang RESOLVED khi mọi khoản hoàn của đơn đã chuyển xong.
+    // Chuyển issue sang APPROVED trước, rồi mới gọi sang luồng refund có sẵn
     // (ordersService.updateRefund tự mở transaction riêng, không thể lồng chung
     // transaction với orderIssue.update). Nếu updateRefund thất bại (validation
     // hoặc lỗi tạm thời), rollback issue về PENDING để tránh lệch trạng thái
@@ -404,7 +428,7 @@ export class OrderIssuesService {
     const resolved = await this.prisma.orderIssue.update({
       where: { id: issue.id },
       data: {
-        status: OrderIssueStatus.RESOLVED,
+        status: OrderIssueStatus.APPROVED,
         approvedResolution: OrderIssueResolution.REFUND,
         adminNote: dto.adminNote,
         adminId,
@@ -415,13 +439,8 @@ export class OrderIssuesService {
     const isRefundNotReceived =
       issue.reason === OrderIssueReason.REFUND_NOT_RECEIVED;
 
-    // Duyệt yêu cầu luôn là duyệt hoàn tiền nên bắt buộc có ảnh chứng từ
-    // chuyển khoản để khách đối chiếu và shop lưu vết.
-    if (receiptImageUrls.length === 0) {
-      throw new BadRequestException(
-        "Vui lòng đính kèm ảnh chứng từ chuyển khoản hoàn tiền cho khách.",
-      );
-    }
+    // Duyệt chưa chuyển tiền (hàng còn chưa về) nên không bắt buộc ảnh chứng từ;
+    // ảnh bắt buộc khi admin xác nhận đã chuyển khoản (updateRefund COMPLETED).
 
     try {
       // Báo chưa nhận được tiền: khoản hoàn cũ đã bị đánh dấu "đã hoàn" nên phải
