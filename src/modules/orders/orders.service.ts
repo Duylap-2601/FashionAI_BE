@@ -5,7 +5,19 @@ import {
   Logger,
   NotFoundException,
 } from '@nestjs/common';
-import { CouponDiscountType, GarmentType, NotificationType, OrderStatus, PaymentStatus, Prisma, Product, RefundStatus, Role, ShipmentStatus } from '@prisma/client';
+import {
+  CouponDiscountType,
+  GarmentType,
+  NotificationType,
+  OrderStatus,
+  PaymentStatus,
+  Prisma,
+  Product,
+  RefundStatus,
+  Role,
+  ShipmentStatus,
+  RefundKind,
+} from '@prisma/client';
 import { createHash, createHmac, timingSafeEqual } from 'crypto';
 import { PrismaService } from '../../database/prisma.service';
 import { MailQueueService } from '../mail/mail-queue.service';
@@ -23,6 +35,7 @@ import {
   MAX_INT4,
   MEASUREMENT_SNAPSHOT_FIELDS,
   ONLINE_PAYMENT_METHODS,
+  OPEN_REFUND_STATUSES,
   ORDER_FINAL_DISPLAY_STATUSES,
   ORDER_STATUS_MESSAGE,
   ORDER_STATUS_TRANSITIONS,
@@ -843,6 +856,7 @@ export class OrdersService {
       );
     }
 
+    const kind = dto.kind ?? RefundKind.GOODS;
     let completedRefundId: string | null = null;
     let completedAmountVnd = 0;
     let completedTotalVnd = 0;
@@ -854,13 +868,14 @@ export class OrdersService {
       });
       const alreadyCompletedVnd = Number(completedBefore._sum.amountVnd ?? 0);
 
-      // Chỉ ghi đè lên khoản hoàn tiền đang mở; các khoản đã COMPLETED phải giữ
-      // nguyên để hoàn một phần nhiều lần vẫn cộng dồn đúng.
+      // Chỉ ghi đè lên khoản hoàn tiền đang mở cùng loại (tiền hàng / phí ship); các
+      // khoản đã COMPLETED phải giữ nguyên để hoàn một phần nhiều lần vẫn cộng dồn đúng.
       const openRefund = await tx.refund.findFirst({
         where: {
           orderId: order.id,
           provider: 'MANUAL',
-          status: { in: [RefundStatus.REQUIRED, RefundStatus.PENDING, RefundStatus.PROCESSING] },
+          kind,
+          status: { in: OPEN_REFUND_STATUSES },
         },
         orderBy: { requestedAt: 'desc' },
       });
@@ -888,6 +903,7 @@ export class OrdersService {
             data: {
               orderId: order.id,
               provider: 'MANUAL',
+              kind,
               amountVnd: BigInt(amountVnd),
               reason: dto.internalNote ?? 'Refund requested',
               status: refundRowStatus,
@@ -936,6 +952,21 @@ export class OrdersService {
         completedTotalVnd = refundedVnd;
       }
 
+      // Đơn có thể có hai khoản (tiền hàng, phí ship): còn khoản nào chờ chuyển thì đơn
+      // vẫn cần hoàn; hủy khoản cuối (vd. không hoàn ship) mà đã hoàn được tiền thì đã xong.
+      let orderRefundStatus: RefundStatus = dto.refundStatus;
+      if (
+        dto.refundStatus === RefundStatus.COMPLETED ||
+        dto.refundStatus === RefundStatus.FAILED ||
+        dto.refundStatus === RefundStatus.CANCELLED
+      ) {
+        const stillOpen = await tx.refund.count({
+          where: { orderId: order.id, provider: 'MANUAL', status: { in: OPEN_REFUND_STATUSES } },
+        });
+        if (stillOpen > 0) orderRefundStatus = RefundStatus.REQUIRED;
+        else if (dto.refundStatus === RefundStatus.CANCELLED && refundedVnd > 0) orderRefundStatus = RefundStatus.COMPLETED;
+      }
+
       let paymentStatus = order.paymentStatus;
       if (dto.refundStatus === RefundStatus.PROCESSING) {
         paymentStatus = PaymentStatus.REFUND_PENDING;
@@ -948,7 +979,7 @@ export class OrdersService {
       await tx.order.update({
         where: { id: order.id },
         data: {
-          refundStatus: dto.refundStatus,
+          refundStatus: orderRefundStatus,
           refundEvidence,
           paymentStatus,
           ...(dto.refundStatus === RefundStatus.COMPLETED || dto.refundStatus === RefundStatus.FAILED
@@ -1043,7 +1074,11 @@ export class OrdersService {
    * admin chuyển lại. Nhờ vậy `updateRefund(REQUIRED)` sau đó tính được phần
    * còn lại thay vì báo "không còn số tiền nào để hoàn".
    */
-  async reopenRefundNotReceived(orderId: string, issueId: string, actorId: string) {
+  async reopenRefundNotReceived(
+    orderId: string,
+    issueId: string,
+    actorId: string,
+  ): Promise<{ amountVnd: number; kind: RefundKind }> {
     const order = await this.findOrderByIdentifier(orderId);
     if (!order) throw new NotFoundException(`Không tìm thấy đơn hàng có ID ${orderId}`);
 
@@ -1104,6 +1139,10 @@ export class OrdersService {
         metadata: { issueId, refundId: completedRefund.id },
       });
     });
+
+    // Chuyển lại đúng khoản khách chưa nhận (cùng loại, cùng số tiền), không phải
+    // toàn bộ phần còn lại của đơn khi đơn mới hoàn một phần.
+    return { amountVnd: Number(completedRefund.amountVnd), kind: completedRefund.kind };
   }
 
   private async sendRefundCompletedEmail(userId: string, data: RefundCompletedData) {
@@ -1121,14 +1160,18 @@ export class OrdersService {
         return 'Shop đã ghi nhận yêu cầu hoàn tiền cho đơn hàng của bạn.';
       case RefundStatus.PROCESSING:
         return 'Yêu cầu hoàn tiền cho đơn hàng của bạn đang được xử lý.';
-      case RefundStatus.COMPLETED:
+      case RefundStatus.COMPLETED: {
+        const what = dto.kind === RefundKind.SHIPPING ? 'phí ship' : 'tiền hàng';
         return dto.amountVnd
-          ? `Shop đã hoàn ${dto.amountVnd.toLocaleString('vi-VN')}đ cho đơn hàng của bạn.`
-          : 'Shop đã hoàn tiền cho đơn hàng của bạn.';
+          ? `Shop đã hoàn ${dto.amountVnd.toLocaleString('vi-VN')}đ ${what} cho đơn hàng của bạn.`
+          : `Shop đã hoàn ${what} cho đơn hàng của bạn.`;
+      }
       case RefundStatus.FAILED:
         return 'Lần hoàn tiền trước chưa thành công, shop sẽ kiểm tra và xử lý lại.';
       case RefundStatus.CANCELLED:
-        return 'Yêu cầu hoàn tiền cho đơn hàng của bạn đã được hủy.';
+        return dto.kind === RefundKind.SHIPPING
+          ? 'Shop không hoàn phí ship cho đơn hàng của bạn.'
+          : 'Yêu cầu hoàn tiền cho đơn hàng của bạn đã được hủy.';
       default:
         return 'Trạng thái hoàn tiền của đơn hàng đã được cập nhật.';
     }
@@ -1823,6 +1866,7 @@ export class OrdersService {
         id: refund.id,
         paymentId: refund.paymentId,
         provider: refund.provider,
+        kind: refund.kind,
         amountVnd: Number(refund.amountVnd),
         reason: refund.reason,
         status: refund.status,

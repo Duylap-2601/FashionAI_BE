@@ -318,13 +318,17 @@ When schema changes are required:
   the admin's note or statement code is not unique, and a collision used to be
   swallowed as "already processed" while the order stayed unpaid. Gateway payments
   keep keys per gateway transaction so one transfer cannot pay two orders.
-- Approving a customer issue opens a MANUAL refund for that item only, following
-  the return policy: the price paid for the line (coupon split by line value), plus
-  the order's full original shipping fee when the reason is the shop's fault
-  (`order-issues/utils/issue-refund-amount.util.ts`). Shipping is refunded once per
-  order: a later shop-fault issue on the same order adds only the item. A second
-  approved item adds to the open refund. A manual refund sent without an amount uses the approved
-  amount, not the whole order. Keep this in sync with the FE return-policy text.
+- Refunds are split by `Refund.kind`: `GOODS` and `SHIPPING`, each transferred,
+  recorded (`updateRefund` with `kind`) and cancelled on its own. `Order.refundStatus`
+  stays `REQUIRED` while any MANUAL refund is open.
+- Approving a customer issue adds the item to the open GOODS refund: the price paid
+  for the line, coupon split by line value
+  (`order-issues/utils/issue-refund-amount.util.ts`). The admin chooses whether to
+  refund the original shipping fee (`refundShipping`, default on for shop-fault
+  reasons). That creates one SHIPPING refund for the full fee, at most once per
+  order. A manual refund sent without an amount uses the approved amount of that
+  kind, not the whole order. "Refund not received" reopens the same refund (same
+  kind and amount). Keep this in sync with the FE return-policy text.
 
 ## Testing And Validation
 

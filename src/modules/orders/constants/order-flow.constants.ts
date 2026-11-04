@@ -1,4 +1,4 @@
-import { OrderStatus } from '@prisma/client';
+import { OrderStatus, RefundStatus } from '@prisma/client';
 import { MeasurementField } from '../../../common/constants/measurement.constants';
 
 export const ONLINE_PAYMENT_METHODS = ['BANK_TRANSFER', 'BANK', 'SEPAY'] as const;
@@ -178,4 +178,11 @@ export const DELIVERY_CONFIRMABLE_STATUSES: OrderStatus[] = [
   OrderStatus.DELIVERED,
   OrderStatus.SHIPPING,
   OrderStatus.READY_TO_SHIP,
+];
+
+// Khoản hoàn (tiền hàng hoặc phí ship) đã duyệt nhưng shop chưa chuyển xong.
+export const OPEN_REFUND_STATUSES: RefundStatus[] = [
+  RefundStatus.REQUIRED,
+  RefundStatus.PENDING,
+  RefundStatus.PROCESSING,
 ];
