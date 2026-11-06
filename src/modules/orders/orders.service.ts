@@ -7,7 +7,8 @@ import {
 } from '@nestjs/common';
 import {
   CouponDiscountType,
-  GarmentType,
+  DeliveryDisputeResolution,
+  DeliveryDisputeStatus,
   NotificationType,
   OrderIssueResolution,
   OrderIssueStatus,
@@ -34,6 +35,8 @@ import { isAllowedProductColor } from '../../common/utils/product-color.util';
 import { CreateOrderDto } from './dto/create-order.dto';
 import {
   DELIVERY_CONFIRMABLE_STATUSES,
+  DELIVERY_DISPUTABLE_STATUSES,
+  DELIVERY_DISPUTE_WINDOW_MS,
   MAX_INT4,
   MEASUREMENT_SNAPSHOT_FIELDS,
   ONLINE_PAYMENT_METHODS,
@@ -47,7 +50,8 @@ import {
   UNPAID_ORDER_TTL_MS,
   UUID_REGEX,
 } from './constants/order-flow.constants';
-import { CreateMeasurementReviewDto, UpdateItemMeasurementDto } from './dto/measurement-review.dto';
+import { CreateMeasurementReviewDto, UpdateItemMeasurementDto, UpdateMeasurementReviewDto } from './dto/measurement-review.dto';
+import { CreateDeliveryDisputeDto, ResolveDeliveryDisputeDto } from './dto/delivery-dispute.dto';
 import { QueryAdminOrdersDto } from './dto/query-admin-orders.dto';
 import { RefundOrderDto } from './dto/refund-order.dto';
 import { CancelShipmentDto, CreateShipmentDto } from './dto/shipment.dto';
@@ -59,12 +63,12 @@ import { SalePricingService } from '../sale-campaigns/sale-pricing.service';
 import { UserAddressesService } from '../users/user-addresses.service';
 import {
   MEASUREMENT_LABELS,
+  MEASUREMENT_RANGES,
   MeasurementField,
-  REQUIRED_MEASUREMENTS_BY_CATEGORY,
-  REQUIRED_MEASUREMENTS_BY_TYPE,
   getMissingMeasurements,
+  isNumericMeasurementValue,
+  resolveItemRequiredFields,
 } from '../../common/constants/measurement.constants';
-import { ONLINE_REFUND_PROVIDERS } from '../../common/constants/payment.constants';
 
 type IOrderWithRelations = Prisma.OrderGetPayload<{
   include: ReturnType<OrdersService['orderInclude']>;
@@ -98,6 +102,26 @@ type QuotePayload = {
     couponCode?: string;
   };
   expiresAt: string;
+};
+
+type MeasurementReviewState = {
+  status?: 'OPEN' | 'SUBMITTED' | 'RESOLVED' | 'CLOSED' | string;
+  message?: string;
+  /** Field shop chọn để khách kiểm tra (dùng để highlight). */
+  requestedFields?: MeasurementField[];
+  /** Union(required, requested) dùng cho validate và hiển thị. */
+  fields?: MeasurementField[];
+  openedAt?: string;
+  submittedAt?: string;
+  resolvedAt?: string;
+  closedAt?: string;
+  internalNote?: string;
+  previousSnapshot?: Record<string, number>;
+};
+
+type ChatExtras = {
+  chatUnreadForCustomer?: number;
+  chatUnreadForAdmin?: number;
 };
 
 @Injectable()
@@ -438,8 +462,9 @@ export class OrdersService {
       this.prisma.order.count({ where }),
     ]);
 
+    const chatUnread = await this.getChatUnreadMap(orders.map((order) => order.id));
     return {
-      items: orders.map((order) => this.toPublicOrder(order)),
+      items: orders.map((order) => this.toPublicOrder(order, chatUnread.get(order.id))),
       meta: {
         total,
         page,
@@ -464,7 +489,15 @@ export class OrdersService {
       throw new NotFoundException(`Không tìm thấy đơn hàng có ID ${id}`);
     }
 
-    return this.toPublicOrder(order);
+    const chat = await this.prisma.orderConversation.findUnique({
+      where: { orderId: order.id },
+      select: { customerUnreadCount: true, adminUnreadCount: true },
+    });
+    return this.toPublicOrder(order, {
+      chatUnreadForCustomer: chat?.customerUnreadCount ?? 0,
+      chatUnreadForAdmin: chat?.adminUnreadCount ?? 0,
+      includeMeasurementInternal: isAdmin,
+    });
   }
 
   async cancel(userId: string, id: string) {
@@ -639,8 +672,12 @@ export class OrdersService {
       this.prisma.order.count({ where }),
     ]);
 
+    const chatUnread = await this.getChatUnreadMap(items.map((order) => order.id));
     return {
-      items: items.map((order) => this.toPublicOrder(order)),
+      items: items.map((order) => this.toPublicOrder(order, {
+        ...chatUnread.get(order.id),
+        includeMeasurementInternal: true,
+      })),
       meta: {
         total,
         page,
@@ -702,6 +739,25 @@ export class OrdersService {
       if (isNewFlow && status === OrderStatus.MEASUREMENT_CONFIRMED && order.status === OrderStatus.MEASUREMENT_REVIEW) {
         await this.resolveSubmittedMeasurementReviews(tx, order.id);
       }
+      if (order.status === OrderStatus.MEASUREMENT_REVIEW && status === OrderStatus.CANCELLED) {
+        await this.closeMeasurementReviews(tx, order.id);
+      }
+      if (
+        order.status === OrderStatus.DELIVERY_DISPUTED &&
+        (status === OrderStatus.COMPLETED || status === OrderStatus.CANCELLED)
+      ) {
+        await tx.deliveryDispute.updateMany({
+          where: { orderId: order.id, status: DeliveryDisputeStatus.OPEN },
+          data: {
+            status: DeliveryDisputeStatus.RESOLVED,
+            resolution: status === OrderStatus.COMPLETED
+              ? DeliveryDisputeResolution.ADMIN_CONFIRMED_RECEIVED
+              : DeliveryDisputeResolution.REFUNDED,
+            resolvedBy: actorId,
+            resolvedAt: new Date(),
+          },
+        });
+      }
       const needsRefundObligation =
         (status === OrderStatus.CANCELLED || status === OrderStatus.RETURNED) &&
         order.paymentStatus !== null &&
@@ -760,44 +816,245 @@ export class OrdersService {
 
   async requestMeasurementReview(orderId: string, itemId: string, dto: CreateMeasurementReviewDto, actorId: string) {
     const order = await this.findOrderByIdentifier(orderId);
-    const item = order
-      ? await this.prisma.orderItem.findFirst({ where: { id: itemId, orderId: order.id } })
-      : null;
-    if (!order || !item) throw new NotFoundException('Không tìm thấy item thuộc đơn hàng');
-    if (order.fulfillmentFlowVersion !== 1 || order.status !== OrderStatus.PROCESSING) {
+    if (!order) throw new NotFoundException('Không tìm thấy đơn hàng');
+    if (order.status !== OrderStatus.MEASUREMENT_REVIEW) {
       throw new BadRequestException('Chỉ mở yêu cầu số đo khi đơn đang ở bước kiểm tra số đo.');
     }
+    const item = await this.prisma.orderItem.findFirst({
+      where: { id: itemId, orderId: order.id },
+      include: { product: { select: { category: true, garmentType: true } } },
+    });
+    if (!item) throw new NotFoundException('Không tìm thấy item thuộc đơn hàng');
 
-    const review = { status: 'OPEN', message: dto.message, openedAt: new Date().toISOString() };
+    const requiredFields = resolveItemRequiredFields({
+      category: item.product?.category ?? item.productCategorySnapshot,
+      garmentType: item.product?.garmentType,
+    });
+    const requestedFields = this.unionMeasurementFields(
+      dto.fields as MeasurementField[] | undefined ?? [],
+      undefined,
+    );
+    const fields = this.unionMeasurementFields(
+      requiredFields,
+      requestedFields.length > 0 ? requestedFields : requiredFields,
+    );
+    const existing = item.measurementReview as MeasurementReviewState | null;
+    const review: MeasurementReviewState = {
+      ...(existing ?? {}),
+      status: 'OPEN',
+      message: dto.message,
+      requestedFields: requestedFields.length > 0 ? requestedFields : requiredFields,
+      fields,
+      openedAt: new Date().toISOString(),
+      submittedAt: undefined,
+      resolvedAt: undefined,
+      closedAt: undefined,
+      ...(dto.internalNote !== undefined ? { internalNote: dto.internalNote } : {}),
+    };
+
     await this.prisma.$transaction(async (tx) => {
-      await tx.order.update({ where: { id: order.id }, data: { status: OrderStatus.MEASUREMENT_REVIEW } });
-      await tx.orderItem.update({ where: { id: item.id }, data: { measurementReview: review as Prisma.InputJsonValue } });
-      await this.createOrderEvent(tx, { orderId: order.id, type: 'MEASUREMENT_REVIEW_OPENED', source: 'ADMIN', actorId, fromStatus: OrderStatus.PROCESSING, toStatus: OrderStatus.MEASUREMENT_REVIEW, publicMessage: dto.message, internalNote: dto.internalNote });
+      const guard = await tx.order.updateMany({
+        where: { id: order.id, status: OrderStatus.MEASUREMENT_REVIEW },
+        data: { status: OrderStatus.MEASUREMENT_REVIEW },
+      });
+      if (guard.count === 0) {
+        throw new ConflictException('Đơn hàng vừa thay đổi trạng thái. Vui lòng tải lại.');
+      }
+      await tx.orderItem.update({
+        where: { id: item.id },
+        data: { measurementReview: review as Prisma.InputJsonValue },
+      });
+      await this.createOrderEvent(tx, {
+        orderId: order.id,
+        type: 'MEASUREMENT_REVIEW_OPENED',
+        source: 'ADMIN',
+        actorId,
+        publicMessage: dto.message,
+        internalNote: dto.internalNote,
+        metadata: { fields } as Prisma.InputJsonValue,
+      });
     });
 
-    return this.findOne(order.userId, order.id);
+    this.notifyCustomerMeasurementReview(order, dto.message).catch(() => undefined);
+    return this.findOne(order.userId, order.id, true);
+  }
+
+  async reopenMeasurementReview(orderId: string, itemId: string, dto: UpdateMeasurementReviewDto, actorId: string) {
+    const order = await this.findOrderByIdentifier(orderId);
+    if (!order) throw new NotFoundException('Không tìm thấy đơn hàng');
+    if (order.status !== OrderStatus.MEASUREMENT_REVIEW) {
+      throw new BadRequestException('Chỉ mở lại yêu cầu số đo khi đơn đang ở bước kiểm tra số đo.');
+    }
+    const item = await this.prisma.orderItem.findFirst({
+      where: { id: itemId, orderId: order.id },
+      include: { product: { select: { category: true, garmentType: true } } },
+    });
+    if (!item) throw new NotFoundException('Không tìm thấy item thuộc đơn hàng');
+    const existing = item.measurementReview as MeasurementReviewState | null;
+    if (!existing || !['OPEN', 'SUBMITTED'].includes(existing.status ?? '')) {
+      throw new BadRequestException('Item này không có yêu cầu số đo để mở lại.');
+    }
+
+    const requiredFields = resolveItemRequiredFields({
+      category: item.product?.category ?? item.productCategorySnapshot,
+      garmentType: item.product?.garmentType,
+    });
+    const requestedFields = this.unionMeasurementFields(
+      dto.fields as MeasurementField[] | undefined ?? existing.requestedFields ?? existing.fields ?? requiredFields,
+      undefined,
+    );
+    const fields = this.unionMeasurementFields(
+      requiredFields,
+      requestedFields.length > 0 ? requestedFields : requiredFields,
+    );
+    const review: MeasurementReviewState = {
+      ...existing,
+      status: 'OPEN',
+      message: dto.message ?? existing.message,
+      requestedFields: requestedFields.length > 0 ? requestedFields : requiredFields,
+      fields,
+      openedAt: new Date().toISOString(),
+      submittedAt: undefined,
+      resolvedAt: undefined,
+      closedAt: undefined,
+    };
+
+    await this.prisma.$transaction(async (tx) => {
+      const guard = await tx.order.updateMany({
+        where: { id: order.id, status: OrderStatus.MEASUREMENT_REVIEW },
+        data: { status: OrderStatus.MEASUREMENT_REVIEW },
+      });
+      if (guard.count === 0) {
+        throw new ConflictException('Đơn hàng vừa thay đổi trạng thái. Vui lòng tải lại.');
+      }
+      await tx.orderItem.update({
+        where: { id: item.id },
+        data: { measurementReview: review as Prisma.InputJsonValue },
+      });
+      await this.createOrderEvent(tx, {
+        orderId: order.id,
+        type: 'MEASUREMENT_REVIEW_REOPENED',
+        source: 'ADMIN',
+        actorId,
+        publicMessage: review.message,
+        metadata: { fields } as Prisma.InputJsonValue,
+      });
+    });
+
+    this.notifyCustomerMeasurementReview(order, review.message ?? 'Shop cần bạn chỉnh lại số đo.').catch(() => undefined);
+    return this.findOne(order.userId, order.id, true);
   }
 
   async updateItemMeasurement(userId: string, orderId: string, itemId: string, dto: UpdateItemMeasurementDto) {
     const order = await this.findOrderForOwner(userId, orderId);
-    const item = await this.prisma.orderItem.findFirst({ where: { id: itemId, orderId: order.id } });
+    const item = await this.prisma.orderItem.findFirst({
+      where: { id: itemId, orderId: order.id },
+      include: { product: { select: { category: true, garmentType: true } } },
+    });
     if (!item) throw new NotFoundException('Không tìm thấy item thuộc đơn hàng');
-    const review = item.measurementReview as { status?: string; message?: string } | null;
+    const review = item.measurementReview as MeasurementReviewState | null;
     if (order.status !== OrderStatus.MEASUREMENT_REVIEW || review?.status !== 'OPEN') {
       throw new BadRequestException('Item này không có yêu cầu chỉnh số đo đang mở.');
     }
+
+    const requiredFields = resolveItemRequiredFields({
+      category: item.product?.category ?? item.productCategorySnapshot,
+      garmentType: item.product?.garmentType,
+    });
+    const reviewFields = this.unionMeasurementFields(
+      this.unionMeasurementFields(requiredFields, review.requestedFields),
+      review.fields,
+    );
+    const { normalized, unknownKeys } = this.normalizeMeasurementSnapshot(dto.measurementSnapshot);
+    if (unknownKeys.length > 0) {
+      throw new BadRequestException({
+        code: 'MEASUREMENT_INVALID_FIELD',
+        message: `Số đo không hợp lệ: ${unknownKeys.join(', ')}`,
+        fields: unknownKeys,
+      });
+    }
+
+    const previousSnapshot = this.pickNumericSnapshot(item.measurementSnapshot);
+    const merged: Record<string, number> = { ...previousSnapshot };
+    for (const [field, value] of Object.entries(normalized)) {
+      if (value === null) delete merged[field];
+      else merged[field] = value;
+    }
+
+    const invalidFields = reviewFields
+      .filter((field) => {
+        const value = merged[field];
+        if (!isNumericMeasurementValue(value)) return true;
+        const range = MEASUREMENT_RANGES[field];
+        const numeric = Number(value);
+        return numeric < range.min || numeric > range.max;
+      })
+      .map((field) => ({
+        field,
+        label: MEASUREMENT_LABELS[field],
+        ...MEASUREMENT_RANGES[field],
+      }));
+    if (invalidFields.length > 0) {
+      throw new BadRequestException({
+        code: 'MEASUREMENT_INVALID_VALUE',
+        message: 'Có số đo chưa hợp lệ, vui lòng kiểm tra lại.',
+        invalidFields,
+      });
+    }
+
+    const missingFields = requiredFields.filter((field) => !isNumericMeasurementValue(merged[field]));
+    if (missingFields.length > 0) {
+      throw new BadRequestException({
+        code: 'MEASUREMENTS_INCOMPLETE',
+        message: 'Vui lòng bổ sung đủ số đo bắt buộc.',
+        missingFields: missingFields.map((field) => ({ field, label: MEASUREMENT_LABELS[field] })),
+      });
+    }
+
+    const nextReview: MeasurementReviewState = {
+      ...(review ?? {}),
+      status: 'SUBMITTED',
+      submittedAt: new Date().toISOString(),
+      fields: reviewFields,
+      previousSnapshot,
+    };
 
     await this.prisma.$transaction(async (tx) => {
       await tx.orderItem.update({
         where: { id: item.id },
         data: {
-          measurementSnapshot: dto.measurementSnapshot as Prisma.InputJsonValue,
-          measurementReview: { ...review, status: 'SUBMITTED', submittedAt: new Date().toISOString() } as Prisma.InputJsonValue,
+          measurementSnapshot: merged as Prisma.InputJsonValue,
+          measurementReview: nextReview as Prisma.InputJsonValue,
         },
       });
-      await this.createOrderEvent(tx, { orderId: order.id, type: 'MEASUREMENT_RESUBMITTED', source: 'USER', actorId: userId, publicMessage: 'Khách hàng đã gửi lại số đo cho item.' });
+
+      if (dto.syncToProfile) {
+        const profileValues: Partial<Record<MeasurementField, Prisma.Decimal>> = {};
+        for (const field of reviewFields) {
+          const value = merged[field];
+          if (isNumericMeasurementValue(value)) {
+            profileValues[field] = new Prisma.Decimal(Number(value).toFixed(1));
+          }
+        }
+        if (Object.keys(profileValues).length > 0) {
+          await tx.measurement.upsert({
+            where: { userId: order.userId },
+            create: { userId: order.userId, ...profileValues },
+            update: profileValues,
+          });
+        }
+      }
+
+      await this.createOrderEvent(tx, {
+        orderId: order.id,
+        type: 'MEASUREMENT_RESUBMITTED',
+        source: 'USER',
+        actorId: userId,
+        publicMessage: 'Khách hàng đã gửi lại số đo cho item.',
+      });
     });
 
+    this.notifyAdminsMeasurementResubmitted(order).catch(() => undefined);
     return this.findOne(userId, order.id);
   }
 
@@ -824,17 +1081,32 @@ export class OrdersService {
       );
     }
 
-    const refundablePaymentStatuses: PaymentStatus[] = [PaymentStatus.PAID, PaymentStatus.PARTIALLY_REFUNDED, PaymentStatus.REFUNDED];
-    const hasOnlineOrderPayment = order.payments?.some((payment) => {
-      const paymentData = payment.paymentData as { refundScope?: string } | null;
-      return ONLINE_REFUND_PROVIDERS.includes(payment.provider as (typeof ONLINE_REFUND_PROVIDERS)[number])
-        && paymentData?.refundScope !== 'PAYMENT_ONLY'
-        && refundablePaymentStatuses.includes(payment.status);
-    });
     const movesMoney = dto.refundStatus === RefundStatus.COMPLETED || dto.refundStatus === RefundStatus.PROCESSING;
-    if (hasOnlineOrderPayment && movesMoney) {
-      throw new BadRequestException('Không được xác nhận hoàn tiền online thủ công. Vui lòng dùng endpoint hoàn tiền trong Payments.');
+
+    // Đơn trả qua MoMo/ZaloPay vẫn được shop chuyển khoản tay lại cho khách. Chỉ chặn
+    // khi cổng đang hoàn chính khoản đó: tiền có thể đang trên đường về và khách sẽ
+    // nhận hai lần. Khoản PAYMENT_ONLY (hoàn payment thu trùng, không phải tiền của
+    // đơn) không tính vào hạn mức hoàn của đơn.
+    const gatewayRefunds = await this.prisma.refund.findMany({
+      where: {
+        orderId: order.id,
+        provider: { not: 'MANUAL' },
+        status: { in: [RefundStatus.PENDING, RefundStatus.PROCESSING, RefundStatus.COMPLETED] },
+      },
+      select: { status: true, amountVnd: true, payment: { select: { paymentData: true } } },
+    });
+    const orderGatewayRefunds = gatewayRefunds.filter((refund) => {
+      const paymentData = refund.payment?.paymentData as { refundScope?: string } | null;
+      return paymentData?.refundScope !== 'PAYMENT_ONLY';
+    });
+    if (movesMoney && orderGatewayRefunds.some((refund) => refund.status !== RefundStatus.COMPLETED)) {
+      throw new BadRequestException(
+        'Cổng thanh toán đang xử lý hoàn tiền cho đơn này. Vui lòng chờ cổng xác nhận trước khi chốt chuyển khoản tay.',
+      );
     }
+    const gatewayRefundedVnd = orderGatewayRefunds
+      .filter((refund) => refund.status === RefundStatus.COMPLETED)
+      .reduce((sum, refund) => sum + Number(refund.amountVnd), 0);
 
     // Đơn chưa thu được tiền thì không có gì để hoàn; số đã thu lấy từ amountPaidVnd,
     // fallback order.amount cho dữ liệu cũ chưa ghi amountPaidVnd.
@@ -887,7 +1159,7 @@ export class OrdersService {
           requestedVnd: dto.amountVnd,
           openAmountVnd: Number(openRefund?.amountVnd ?? 0),
           collectedVnd,
-          completedVnd: alreadyCompletedVnd,
+          completedVnd: alreadyCompletedVnd + gatewayRefundedVnd,
         });
         if (amountVnd <= 0) {
           throw new BadRequestException('Không còn số tiền nào để hoàn cho đơn hàng này.');
@@ -949,7 +1221,9 @@ export class OrdersService {
         where: { orderId: order.id, provider: 'MANUAL', status: RefundStatus.COMPLETED },
         _sum: { amountVnd: true },
       });
-      const refundedVnd = Number(completedAfter._sum.amountVnd ?? 0);
+      // Tổng đã hoàn của đơn gồm cả tiền cổng đã hoàn, để trạng thái thanh toán và
+      // amountRefundedVnd không bị đếm thiếu khi shop vừa hoàn qua cổng vừa chuyển tay.
+      const refundedVnd = Number(completedAfter._sum.amountVnd ?? 0) + gatewayRefundedVnd;
       if (dto.refundStatus === RefundStatus.COMPLETED) {
         completedTotalVnd = refundedVnd;
       }
@@ -997,6 +1271,8 @@ export class OrdersService {
           refundStatus: orderRefundStatus,
           refundEvidence,
           paymentStatus,
+          // Khoản hoàn mở mới thì bỏ xác nhận cũ để khách xác nhận lại lần hoàn mới.
+          ...(dto.refundStatus === RefundStatus.REQUIRED ? { refundConfirmedAt: null } : {}),
           ...(dto.refundStatus === RefundStatus.COMPLETED || dto.refundStatus === RefundStatus.FAILED
             ? { amountRefundedVnd: BigInt(refundedVnd) }
             : {}),
@@ -1293,6 +1569,15 @@ export class OrdersService {
 
     const fromStatus = order.status;
     await this.prisma.$transaction(async (tx) => {
+      // Khách nhận được hàng sau khi đã báo chưa nhận: đóng tranh chấp luôn.
+      await tx.deliveryDispute.updateMany({
+        where: { orderId: order.id, status: DeliveryDisputeStatus.OPEN },
+        data: {
+          status: DeliveryDisputeStatus.RESOLVED,
+          resolution: DeliveryDisputeResolution.CUSTOMER_CONFIRMED_RECEIVED,
+          resolvedAt: new Date(),
+        },
+      });
       await tx.order.update({
         where: { id: order.id },
         data: { status: OrderStatus.COMPLETED, updatedAt: new Date() },
@@ -1320,6 +1605,150 @@ export class OrdersService {
       .catch(() => undefined);
 
     return this.findOne(userId, order.id);
+  }
+
+  async confirmRefundReceived(userId: string, orderId: string) {
+    const order = await this.findOrderForOwner(userId, orderId);
+    if (order.refundStatus !== RefundStatus.COMPLETED) {
+      throw new BadRequestException('Đơn hàng chưa hoàn tiền xong.');
+    }
+    if (order.refundConfirmedAt) {
+      return this.findOne(userId, order.id);
+    }
+
+    await this.prisma.$transaction(async (tx) => {
+      await tx.order.update({
+        where: { id: order.id },
+        data: { refundConfirmedAt: new Date() },
+      });
+      await this.createOrderEvent(tx, {
+        orderId: order.id,
+        type: 'REFUND_RECEIVED_CONFIRMED',
+        source: 'USER',
+        actorId: userId,
+        publicMessage: 'Khách hàng đã xác nhận nhận được tiền hoàn.',
+      });
+    });
+
+    this.notifyAdminsRefundConfirmed(order).catch(() => undefined);
+    return this.findOne(userId, order.id);
+  }
+
+  async createDeliveryDispute(
+    userId: string,
+    orderId: string,
+    dto: CreateDeliveryDisputeDto,
+    evidenceImages: string[] = [],
+  ) {
+    const order = await this.findOrderForOwner(userId, orderId);
+    if (!DELIVERY_DISPUTABLE_STATUSES.includes(order.status)) {
+      throw new BadRequestException('Đơn hàng không ở trạng thái có thể báo chưa nhận hàng.');
+    }
+    const currentShipment = this.getCurrentShipment(order);
+    if (!currentShipment || this.normalizeRawStatus(currentShipment.rawStatus) !== 'delivered') {
+      throw new BadRequestException('Đơn vị vận chuyển chưa báo đã giao hàng.');
+    }
+    if (!this.isWithinDeliveryDisputeWindow(currentShipment)) {
+      throw new BadRequestException('Đã quá 7 ngày kể từ khi đơn vị vận chuyển báo giao. Vui lòng liên hệ shop.');
+    }
+    if ((order.deliveryDisputes ?? []).length > 0) {
+      throw new ConflictException('Đơn hàng đã có báo cáo chưa nhận đang được xử lý.');
+    }
+
+    const carrierDeliveredAt = this.getCarrierDeliveredAt(currentShipment);
+    await this.prisma.$transaction(async (tx) => {
+      const guard = await tx.order.updateMany({
+        where: {
+          id: order.id,
+          status: { in: DELIVERY_DISPUTABLE_STATUSES },
+        },
+        data: { status: OrderStatus.DELIVERY_DISPUTED },
+      });
+      if (guard.count === 0) {
+        throw new ConflictException('Đơn hàng vừa thay đổi trạng thái. Vui lòng tải lại.');
+      }
+      await tx.deliveryDispute.create({
+        data: {
+          orderId: order.id,
+          userId,
+          description: dto.description,
+          evidenceImages: evidenceImages.length > 0
+            ? (evidenceImages as Prisma.InputJsonValue)
+            : undefined,
+          carrierRawStatus: currentShipment.rawStatus,
+          carrierDeliveredAt,
+        },
+      });
+      await this.createOrderEvent(tx, {
+        orderId: order.id,
+        type: 'DELIVERY_DISPUTE_OPENED',
+        source: 'USER',
+        actorId: userId,
+        fromStatus: order.status,
+        toStatus: OrderStatus.DELIVERY_DISPUTED,
+        publicMessage: 'Khách hàng báo chưa nhận được hàng.',
+      });
+    });
+
+    this.notifyAdminsDeliveryDispute(order, dto.description).catch(() => undefined);
+    return this.findOne(userId, order.id);
+  }
+
+  async resolveDeliveryDispute(orderId: string, dto: ResolveDeliveryDisputeDto, actorId: string) {
+    const order = await this.findOrderByIdentifier(orderId);
+    if (!order) throw new NotFoundException('Không tìm thấy đơn hàng');
+    if (order.status !== OrderStatus.DELIVERY_DISPUTED) {
+      throw new BadRequestException('Đơn hàng không có tranh chấp giao vận đang mở.');
+    }
+    const dispute = order.deliveryDisputes?.[0];
+    if (!dispute) {
+      throw new NotFoundException('Không tìm thấy phiếu báo chưa nhận hàng đang mở.');
+    }
+
+    const isRefundResolution =
+      dto.resolution === DeliveryDisputeResolution.REFUNDED ||
+      dto.resolution === DeliveryDisputeResolution.LOST;
+    const targetStatus = isRefundResolution ? OrderStatus.CANCELLED : OrderStatus.COMPLETED;
+
+    await this.prisma.$transaction(async (tx) => {
+      await tx.deliveryDispute.update({
+        where: { id: dispute.id },
+        data: {
+          status: DeliveryDisputeStatus.RESOLVED,
+          resolution: dto.resolution,
+          adminNote: dto.adminNote,
+          resolvedBy: actorId,
+          resolvedAt: new Date(),
+        },
+      });
+      const needsRefundObligation =
+        targetStatus === OrderStatus.CANCELLED &&
+        order.paymentStatus !== null &&
+        COLLECTED_PAYMENT_STATUSES.includes(order.paymentStatus) &&
+        order.refundStatus === RefundStatus.NONE;
+      await tx.order.update({
+        where: { id: order.id },
+        data: {
+          status: targetStatus,
+          ...(needsRefundObligation ? { refundStatus: RefundStatus.REQUIRED } : {}),
+        },
+      });
+      await this.createOrderEvent(tx, {
+        orderId: order.id,
+        type: 'DELIVERY_DISPUTE_RESOLVED',
+        source: 'ADMIN',
+        actorId,
+        fromStatus: OrderStatus.DELIVERY_DISPUTED,
+        toStatus: targetStatus,
+        publicMessage: isRefundResolution
+          ? 'Shop đã xác nhận xử lý hoàn tiền cho đơn hàng chưa nhận được.'
+          : 'Tranh chấp giao vận đã được đóng.',
+        internalNote: dto.adminNote,
+      });
+    });
+
+    this.notifyCustomerDeliveryDisputeResolved(order, dto.resolution).catch(() => undefined);
+    return this.findOne(order.userId, order.id, true);
   }
 
   async getTracking(userId: string, id: string) {
@@ -1637,27 +2066,30 @@ export class OrdersService {
   // may mà không phải tự tra 16 field thô. Không đổi cách lưu, chỉ lọc ở tầng response.
   private buildMeasurementDisplay(item: {
     measurementSnapshot: Prisma.JsonValue;
+    measurementReview?: Prisma.JsonValue;
     productCategorySnapshot: string | null;
     product?: { category: string; garmentType: string | null } | null;
   }): Array<{ field: string; label: string; value: number; unit: string }> {
     const snapshot = item.measurementSnapshot as Partial<Record<MeasurementField, unknown>> | null;
     if (!snapshot) return [];
 
-    const garmentType = item.product?.garmentType;
-    const requiredFields: readonly MeasurementField[] =
-      garmentType && garmentType in REQUIRED_MEASUREMENTS_BY_TYPE
-        ? REQUIRED_MEASUREMENTS_BY_TYPE[garmentType as GarmentType]
-        : REQUIRED_MEASUREMENTS_BY_CATEGORY[
-            (item.product?.category ?? item.productCategorySnapshot) as keyof typeof REQUIRED_MEASUREMENTS_BY_CATEGORY
-          ] ?? [];
+    const requiredFields = resolveItemRequiredFields({
+      category: item.product?.category ?? item.productCategorySnapshot,
+      garmentType: item.product?.garmentType,
+    });
+    const review = item.measurementReview as MeasurementReviewState | null;
+    const fields = this.unionMeasurementFields(
+      this.unionMeasurementFields(requiredFields, review?.requestedFields),
+      review?.fields,
+    );
 
-    return requiredFields
-      .filter((field) => snapshot[field] !== null && snapshot[field] !== undefined)
+    return fields
+      .filter((field) => isNumericMeasurementValue(snapshot[field]))
       .map((field) => ({
         field,
         label: MEASUREMENT_LABELS[field],
         value: Number(snapshot[field]),
-        unit: 'cm',
+        unit: MEASUREMENT_RANGES[field].unit,
       }));
   }
 
@@ -1674,6 +2106,11 @@ export class OrdersService {
       refunds: true,
       shipments: { orderBy: { createdAt: 'desc' } },
       events: { orderBy: { occurredAt: 'asc' } },
+      deliveryDisputes: {
+        where: { status: DeliveryDisputeStatus.OPEN },
+        orderBy: { createdAt: 'desc' },
+        take: 1,
+      },
     } satisfies Prisma.OrderInclude;
   }
 
@@ -1710,6 +2147,142 @@ export class OrdersService {
           where: { id: item.id },
           data: {
             measurementReview: { ...review, status: 'RESOLVED', resolvedAt: new Date().toISOString() } as Prisma.InputJsonValue,
+          },
+        });
+      }
+    }
+  }
+
+  private unionMeasurementFields(
+    required: readonly MeasurementField[],
+    extra?: readonly MeasurementField[] | null,
+  ): MeasurementField[] {
+    const fields = new Set<MeasurementField>(required);
+    for (const field of extra ?? []) {
+      if (MEASUREMENT_SNAPSHOT_FIELDS.includes(field)) fields.add(field);
+    }
+    return [...fields];
+  }
+
+  private normalizeMeasurementSnapshot(input: Record<string, unknown>): {
+    normalized: Record<string, number | null>;
+    unknownKeys: string[];
+  } {
+    const aliases: Record<string, MeasurementField> = {
+      bodyLength: 'shirtLength',
+      trouserLength: 'outseam',
+    };
+    const normalized: Record<string, number | null> = {};
+    const unknownKeys: string[] = [];
+    for (const [rawKey, rawValue] of Object.entries(input ?? {})) {
+      const key = (aliases[rawKey] ?? rawKey) as MeasurementField;
+      if (!MEASUREMENT_SNAPSHOT_FIELDS.includes(key)) {
+        unknownKeys.push(rawKey);
+        continue;
+      }
+      if (rawValue === null || rawValue === undefined || rawValue === '') {
+        normalized[key] = null;
+        continue;
+      }
+      const numeric = Number(rawValue);
+      normalized[key] = Number.isFinite(numeric) ? numeric : Number.NaN;
+    }
+    return { normalized, unknownKeys };
+  }
+
+  private pickNumericSnapshot(value: Prisma.JsonValue | null | undefined): Record<string, number> {
+    const source = (value ?? {}) as Record<string, unknown>;
+    const result: Record<string, number> = {};
+    for (const field of MEASUREMENT_SNAPSHOT_FIELDS) {
+      const raw = source[field];
+      if (isNumericMeasurementValue(raw)) result[field] = Number(raw);
+    }
+    return result;
+  }
+
+  private buildMeasurementReviewResponse(
+    review: MeasurementReviewState | null,
+    isMeasurementReviewStatus: boolean,
+    includeInternal: boolean,
+  ) {
+    if (!review) return null;
+    const base: Record<string, unknown> = {
+      status: review.status,
+      message: review.message,
+      requestedFields: review.requestedFields ?? review.fields ?? [],
+      fields: review.fields ?? [],
+      openedAt: review.openedAt,
+      submittedAt: review.submittedAt,
+      resolvedAt: review.resolvedAt,
+      closedAt: review.closedAt,
+      editable: isMeasurementReviewStatus && review.status === 'OPEN',
+    };
+    if (includeInternal) {
+      base.internalNote = review.internalNote;
+      base.previousSnapshot = review.previousSnapshot;
+    }
+    return base;
+  }
+
+  private async getChatUnreadMap(orderIds: string[]): Promise<Map<string, ChatExtras>> {
+    const map = new Map<string, ChatExtras>();
+    if (orderIds.length === 0) return map;
+    const conversations = await this.prisma.orderConversation.findMany({
+      where: { orderId: { in: orderIds } },
+      select: { orderId: true, customerUnreadCount: true, adminUnreadCount: true },
+    });
+    for (const conversation of conversations) {
+      map.set(conversation.orderId, {
+        chatUnreadForCustomer: conversation.customerUnreadCount,
+        chatUnreadForAdmin: conversation.adminUnreadCount,
+      });
+    }
+    return map;
+  }
+
+  private async notifyCustomerMeasurementReview(
+    order: { id: string; orderCode: number; userId: string },
+    message: string,
+  ) {
+    await this.notificationService.create({
+      userId: order.userId,
+      type: NotificationType.ORDER_STATUS,
+      title: `Shop cần bạn bổ sung số đo đơn #${order.orderCode}`,
+      message,
+      data: { orderId: order.id, orderCode: order.orderCode, type: 'MEASUREMENT_REVIEW' },
+    });
+  }
+
+  private async notifyAdminsMeasurementResubmitted(order: { id: string; orderCode: number }) {
+    const admins = await this.prisma.user.findMany({
+      where: { role: Role.ADMIN },
+      select: { id: true },
+    });
+    await Promise.all(admins.map((admin) => this.notificationService.create({
+      userId: admin.id,
+      type: NotificationType.ORDER_STATUS,
+      title: `Khách đã gửi lại số đo đơn #${order.orderCode}`,
+      message: 'Số đo mới đang chờ shop kiểm tra lại.',
+      data: { orderId: order.id, orderCode: order.orderCode, type: 'MEASUREMENT_RESUBMITTED' },
+    }).catch(() => undefined)));
+  }
+
+  private async closeMeasurementReviews(tx: Prisma.TransactionClient, orderId: string) {
+    const items = await tx.orderItem.findMany({
+      where: { orderId },
+      select: { id: true, measurementReview: true },
+    });
+    for (const item of items) {
+      const review = item.measurementReview as MeasurementReviewState | null;
+      if (review?.status === 'OPEN' || review?.status === 'SUBMITTED') {
+        await tx.orderItem.update({
+          where: { id: item.id },
+          data: {
+            measurementReview: {
+              ...review,
+              status: 'CLOSED',
+              closedAt: new Date().toISOString(),
+            } as Prisma.InputJsonValue,
           },
         });
       }
@@ -1789,7 +2362,10 @@ export class OrdersService {
     }
   }
 
-  private toPublicOrder(order: IOrderWithRelations) {
+  private toPublicOrder(
+    order: IOrderWithRelations,
+    extras: ChatExtras & { includeMeasurementInternal?: boolean } = {},
+  ) {
     const itemsTotal = (order.items ?? []).reduce(
       (sum, item) => sum + Number(item.price) * item.quantity,
       0,
@@ -1813,6 +2389,8 @@ export class OrdersService {
       listItemsTotal,
       status: order.status,
       displayStatus,
+      chatUnreadForCustomer: extras.chatUnreadForCustomer ?? 0,
+      chatUnreadForAdmin: extras.chatUnreadForAdmin ?? 0,
       paymentStatus: order.paymentStatus,
       // Hạn thanh toán: quá hạn thì cron tự hủy đơn.
       paymentDueAt:
@@ -1835,6 +2413,7 @@ export class OrdersService {
       totalVnd: order.totalVnd === null || order.totalVnd === undefined ? null : Number(order.totalVnd),
       amountPaidVnd: Number(order.amountPaidVnd),
       amountRefundedVnd: Number(order.amountRefundedVnd),
+      refundConfirmedAt: order.refundConfirmedAt,
       shippingAddressSnapshot: order.shippingAddressSnapshot,
       shippingQuoteSnapshot: order.shippingQuoteSnapshot,
       refundEvidence: order.refundEvidence,
@@ -1845,30 +2424,46 @@ export class OrdersService {
       checkoutExpiresAt: order.checkoutExpiresAt,
       createdAt: order.createdAt,
       updatedAt: order.updatedAt,
-      items: (order.items ?? []).map((item) => ({
-        id: item.id,
-        productId: item.productId,
-        quantity: item.quantity,
-        color: item.color,
-        comboType: item.comboType,
-        measurementSnapshot: item.measurementSnapshot,
-        measurementDisplay: this.buildMeasurementDisplay(item),
-        measurementReview: item.measurementReview,
-        productNameSnapshot: item.productNameSnapshot,
-        productSkuSnapshot: item.productSkuSnapshot,
-        productImageSnapshot: item.productImageSnapshot,
-        productCategorySnapshot: item.productCategorySnapshot,
-        brandSnapshot: item.brandSnapshot,
-        fabricSnapshot: item.fabricSnapshot,
-        price: Number(item.price),
-        listUnitPriceVnd:
-          item.listUnitPriceVnd === null || item.listUnitPriceVnd === undefined
-            ? null
-            : Number(item.listUnitPriceVnd),
-        unitPriceVnd: item.unitPriceVnd === null || item.unitPriceVnd === undefined ? null : Number(item.unitPriceVnd),
-        lineTotalVnd: item.lineTotalVnd === null || item.lineTotalVnd === undefined ? null : Number(item.lineTotalVnd),
-        product: item.product,
-      })),
+      items: (order.items ?? []).map((item) => {
+        const requiredFields = resolveItemRequiredFields({
+          category: item.product?.category ?? item.productCategorySnapshot,
+          garmentType: item.product?.garmentType,
+        });
+        const snapshot = item.measurementSnapshot as Record<string, unknown> | null;
+        const review = item.measurementReview as MeasurementReviewState | null;
+        return {
+          id: item.id,
+          productId: item.productId,
+          quantity: item.quantity,
+          color: item.color,
+          comboType: item.comboType,
+          measurementSnapshot: item.measurementSnapshot,
+          measurementDisplay: this.buildMeasurementDisplay(item),
+          measurementRequiredFields: requiredFields,
+          measurementMissingFields: requiredFields.filter(
+            (field) => !isNumericMeasurementValue(snapshot?.[field]),
+          ),
+          measurementReview: this.buildMeasurementReviewResponse(
+            review,
+            order.status === OrderStatus.MEASUREMENT_REVIEW,
+            Boolean(extras.includeMeasurementInternal),
+          ),
+          productNameSnapshot: item.productNameSnapshot,
+          productSkuSnapshot: item.productSkuSnapshot,
+          productImageSnapshot: item.productImageSnapshot,
+          productCategorySnapshot: item.productCategorySnapshot,
+          brandSnapshot: item.brandSnapshot,
+          fabricSnapshot: item.fabricSnapshot,
+          price: Number(item.price),
+          listUnitPriceVnd:
+            item.listUnitPriceVnd === null || item.listUnitPriceVnd === undefined
+              ? null
+              : Number(item.listUnitPriceVnd),
+          unitPriceVnd: item.unitPriceVnd === null || item.unitPriceVnd === undefined ? null : Number(item.unitPriceVnd),
+          lineTotalVnd: item.lineTotalVnd === null || item.lineTotalVnd === undefined ? null : Number(item.lineTotalVnd),
+          product: item.product,
+        };
+      }),
       payments: (order.payments ?? []).map((payment) => ({
         id: payment.id,
         provider: payment.provider,
@@ -1906,12 +2501,22 @@ export class OrdersService {
         toShipmentStatus: event.toShipmentStatus,
         metadata: event.metadata,
       })),
+      deliveryDispute: this.toPublicDeliveryDispute(order.deliveryDisputes?.[0]),
       allowedActions: {
         cancel: order.status === OrderStatus.CREATED && (!order.paymentStatus || order.paymentStatus === PaymentStatus.PENDING),
         confirmDelivery: DELIVERY_CONFIRMABLE_STATUSES.includes(order.status) && this.normalizeRawStatus(this.getCurrentShipment(order)?.rawStatus) === 'delivered',
+        reportDeliveryIssue:
+          DELIVERY_DISPUTABLE_STATUSES.includes(order.status) &&
+          this.normalizeRawStatus(currentShipment?.rawStatus) === 'delivered' &&
+          !order.deliveryDisputes?.length &&
+          this.isWithinDeliveryDisputeWindow(currentShipment),
         startShipmentCreation: order.status === OrderStatus.READY_TO_SHIP && order.paymentStatus === PaymentStatus.PAID,
         createReplacementShipment: order.status === OrderStatus.READY_TO_SHIP && !this.getActiveShipment(order),
-        updateMeasurement: order.status === OrderStatus.MEASUREMENT_REVIEW,
+        updateMeasurement:
+          order.status === OrderStatus.MEASUREMENT_REVIEW &&
+          (order.items ?? []).some(
+            (item) => (item.measurementReview as MeasurementReviewState | null)?.status === 'OPEN',
+          ),
       },
       user: order.user,
     };
@@ -1932,6 +2537,86 @@ export class OrdersService {
       ];
       return !terminalStatuses.includes(shipment.status) && !['delivered', 'returned', 'cancel'].includes(rawStatus);
     }) ?? null;
+  }
+
+  private getCarrierDeliveredAt(shipment: IShipmentWithOrder | null): Date | null {
+    if (!shipment) return null;
+    return shipment.providerEventAt ?? shipment.lastSyncedAt ?? shipment.updatedAt ?? null;
+  }
+
+  private isWithinDeliveryDisputeWindow(shipment: IShipmentWithOrder | null): boolean {
+    const deliveredAt = this.getCarrierDeliveredAt(shipment);
+    if (!deliveredAt) return false;
+    return Date.now() - deliveredAt.getTime() <= DELIVERY_DISPUTE_WINDOW_MS;
+  }
+
+  private toPublicDeliveryDispute(
+    dispute?: IOrderWithRelations['deliveryDisputes'][number],
+  ) {
+    if (!dispute) return null;
+    return {
+      id: dispute.id,
+      status: dispute.status,
+      resolution: dispute.resolution,
+      description: dispute.description,
+      evidenceImages: Array.isArray(dispute.evidenceImages)
+        ? (dispute.evidenceImages as string[])
+        : [],
+      carrierRawStatus: dispute.carrierRawStatus,
+      carrierDeliveredAt: dispute.carrierDeliveredAt,
+      adminNote: dispute.adminNote,
+      resolvedAt: dispute.resolvedAt,
+      createdAt: dispute.createdAt,
+    };
+  }
+
+  private async notifyAdminsRefundConfirmed(order: { id: string; orderCode: number }) {
+    const admins = await this.prisma.user.findMany({
+      where: { role: Role.ADMIN },
+      select: { id: true },
+    });
+    await Promise.all(admins.map((admin) => this.notificationService.create({
+      userId: admin.id,
+      type: NotificationType.PAYMENT,
+      title: `Khách đã nhận tiền hoàn đơn #${order.orderCode}`,
+      message: 'Khách xác nhận đã nhận được tiền hoàn. Hội thoại của đơn có thể đóng.',
+      data: { orderId: order.id, orderCode: order.orderCode, type: 'REFUND_CONFIRMED' },
+    }).catch(() => undefined)));
+  }
+
+  private async notifyAdminsDeliveryDispute(
+    order: { id: string; orderCode: number },
+    description: string,
+  ) {
+    const admins = await this.prisma.user.findMany({
+      where: { role: Role.ADMIN },
+      select: { id: true },
+    });
+    await Promise.all(admins.map((admin) => this.notificationService.create({
+      userId: admin.id,
+      type: NotificationType.ORDER_STATUS,
+      title: `Khách báo chưa nhận hàng đơn #${order.orderCode}`,
+      message: description.slice(0, 160),
+      data: { orderId: order.id, orderCode: order.orderCode, type: 'DELIVERY_DISPUTE' },
+    }).catch(() => undefined)));
+  }
+
+  private async notifyCustomerDeliveryDisputeResolved(
+    order: { id: string; orderCode: number; userId: string },
+    resolution: DeliveryDisputeResolution,
+  ) {
+    const message = resolution === DeliveryDisputeResolution.REFUNDED
+      ? 'Shop đã xác nhận hoàn tiền cho đơn hàng chưa nhận được.'
+      : resolution === DeliveryDisputeResolution.LOST
+        ? 'Shop ghi nhận kiện hàng bị thất lạc và sẽ xử lý hoàn tiền.'
+        : 'Tranh chấp giao vận đã được đóng. Cảm ơn bạn đã phản hồi.';
+    await this.notificationService.create({
+      userId: order.userId,
+      type: NotificationType.ORDER_STATUS,
+      title: `Cập nhật tranh chấp giao vận đơn #${order.orderCode}`,
+      message,
+      data: { orderId: order.id, orderCode: order.orderCode, type: 'DELIVERY_DISPUTE' },
+    });
   }
 
   private toPublicShipment(shipment: IShipmentWithOrder) {

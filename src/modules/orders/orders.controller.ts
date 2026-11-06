@@ -27,7 +27,8 @@ import { AuthenticatedUser } from '../auth/interfaces/authenticated-user.interfa
 import { StorageService } from '../storage/storage.service';
 import { buildApiResponse } from '../../common/utils/api-response.util';
 import { CreateOrderDto } from './dto/create-order.dto';
-import { CreateMeasurementReviewDto, UpdateItemMeasurementDto } from './dto/measurement-review.dto';
+import { CreateMeasurementReviewDto, UpdateItemMeasurementDto, UpdateMeasurementReviewDto } from './dto/measurement-review.dto';
+import { CreateDeliveryDisputeDto, ResolveDeliveryDisputeDto } from './dto/delivery-dispute.dto';
 import { QueryAdminOrdersDto } from './dto/query-admin-orders.dto';
 import { RefundOrderDto } from './dto/refund-order.dto';
 import { CancelShipmentDto, CreateShipmentDto } from './dto/shipment.dto';
@@ -181,6 +182,64 @@ export class OrdersController {
     return buildApiResponse(req, 'ORDER_MEASUREMENT_REVIEW_CREATED', 'Đã tạo yêu cầu bổ sung số đo', data);
   }
 
+  @Patch(':orderId/items/:itemId/measurement-review')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(Role.ADMIN)
+  @ApiOperation({ summary: 'Admin sửa/mở lại yêu cầu khách chỉnh số đo cho item' })
+  async updateMeasurementReview(
+    @Req() req: Request,
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('orderId') orderId: string,
+    @Param('itemId') itemId: string,
+    @Body() dto: UpdateMeasurementReviewDto,
+  ) {
+    const data = await this.ordersService.reopenMeasurementReview(orderId, itemId, dto, user.id);
+    return buildApiResponse(req, 'ORDER_MEASUREMENT_REVIEW_UPDATED', 'Đã mở lại yêu cầu bổ sung số đo', data);
+  }
+
+  @Post(':id/delivery-dispute')
+  @ApiOperation({ summary: 'Khách báo chưa nhận được hàng dù hãng vận chuyển đã báo giao' })
+  @ApiConsumes('application/json', 'multipart/form-data')
+  @UseInterceptors(AnyFilesInterceptor({
+    limits: { fileSize: 10 * 1024 * 1024, files: 5, fields: 5 },
+  }))
+  async createDeliveryDispute(
+    @Req() req: Request,
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id') id: string,
+    @Body() dto: CreateDeliveryDisputeDto,
+    @UploadedFiles() files?: Express.Multer.File[],
+  ) {
+    const images = (files ?? []).filter((file) =>
+      ['evidenceImages', 'images'].includes(file.fieldname),
+    );
+    if (images.length > 5) {
+      throw new BadRequestException('Chỉ được đính kèm tối đa 5 ảnh minh chứng.');
+    }
+    const filePipe = new FileValidationPipe({ maxSize: 10 * 1024 * 1024 });
+    const evidenceImages: string[] = [];
+    for (const image of images) {
+      filePipe.transform(image);
+      evidenceImages.push(await this.storageService.uploadImage(image.buffer, 'delivery-disputes'));
+    }
+    const data = await this.ordersService.createDeliveryDispute(user.id, id, dto, evidenceImages);
+    return buildApiResponse(req, 'DELIVERY_DISPUTE_CREATED', 'Đã ghi nhận báo chưa nhận hàng', data);
+  }
+
+  @Patch(':id/delivery-dispute')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(Role.ADMIN)
+  @ApiOperation({ summary: 'Admin xử lý tranh chấp giao vận' })
+  async resolveDeliveryDispute(
+    @Req() req: Request,
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id') id: string,
+    @Body() dto: ResolveDeliveryDisputeDto,
+  ) {
+    const data = await this.ordersService.resolveDeliveryDispute(id, dto, user.id);
+    return buildApiResponse(req, 'DELIVERY_DISPUTE_RESOLVED', 'Đã xử lý tranh chấp giao vận', data);
+  }
+
   @Patch(':id/refund')
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(Role.ADMIN)
@@ -249,6 +308,18 @@ export class OrdersController {
   ) {
     const data = await this.ordersService.cancelShipment(id, dto, user.id);
     return buildApiResponse(req, 'ORDER_SHIPMENT_CANCELLED', 'Hủy vận đơn thành công', data);
+  }
+
+  @Post(':id/refund/confirm-received')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Khách xác nhận đã nhận được tiền hoàn' })
+  async confirmRefundReceived(
+    @Req() req: Request,
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id') id: string,
+  ) {
+    const data = await this.ordersService.confirmRefundReceived(user.id, id);
+    return buildApiResponse(req, 'ORDER_REFUND_CONFIRMED', 'Đã xác nhận nhận tiền hoàn', data);
   }
 
   @Post(':id/confirm-delivery')

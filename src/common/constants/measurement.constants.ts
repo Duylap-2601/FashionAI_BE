@@ -1,4 +1,4 @@
-import { GarmentCategory, GarmentType } from '@prisma/client';
+import { GarmentCategory, GarmentType, Prisma } from '@prisma/client';
 
 // Re-export GarmentType for use in DTOs and other modules (as both type and value)
 export { GarmentType } from '@prisma/client';
@@ -113,6 +113,61 @@ export type MeasurementField =
   | 'shirtLength'
   | 'underbust';
 
+/** Khoảng hợp lệ duy nhất cho từng field; dùng chung cho DTO, order review và form. */
+export const MEASUREMENT_RANGES: Record<MeasurementField, { min: number; max: number; unit: 'cm' | 'kg' }> = {
+  height: { min: 100, max: 250, unit: 'cm' },
+  weight: { min: 30, max: 300, unit: 'kg' },
+  chest: { min: 50, max: 200, unit: 'cm' },
+  waist: { min: 50, max: 200, unit: 'cm' },
+  hip: { min: 50, max: 200, unit: 'cm' },
+  shoulder: { min: 30, max: 80, unit: 'cm' },
+  neck: { min: 28, max: 55, unit: 'cm' },
+  sleeveLength: { min: 45, max: 80, unit: 'cm' },
+  wrist: { min: 12, max: 25, unit: 'cm' },
+  thigh: { min: 35, max: 90, unit: 'cm' },
+  knee: { min: 25, max: 55, unit: 'cm' },
+  calf: { min: 25, max: 55, unit: 'cm' },
+  inseam: { min: 55, max: 95, unit: 'cm' },
+  outseam: { min: 80, max: 120, unit: 'cm' },
+  shirtLength: { min: 50, max: 85, unit: 'cm' },
+  underbust: { min: 55, max: 130, unit: 'cm' },
+};
+
+/**
+ * Giá trị số đo coi là "đã có" khi: number hữu hạn, Prisma Decimal, hoặc chuỗi số,
+ * và lớn hơn 0. Phải nhận Prisma Decimal vì Measurement đọc từ DB trả Decimal.
+ */
+export function isNumericMeasurementValue(value: unknown): value is number | string | Prisma.Decimal {
+  if (value === null || value === undefined || value === '') return false;
+  if (Prisma.Decimal.isDecimal(value)) {
+    return Number(value) > 0;
+  }
+  if (typeof value === 'number') {
+    return Number.isFinite(value) && value > 0;
+  }
+  if (typeof value === 'string') {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) && parsed > 0;
+  }
+  return false;
+}
+
+/** Trả về field bắt buộc theo garmentType, fallback category; an toàn khi thiếu dữ liệu. */
+export function resolveItemRequiredFields(item: {
+  category?: GarmentCategory | string | null;
+  garmentType?: GarmentType | string | null;
+}): MeasurementField[] {
+  const garmentType = item.garmentType;
+  if (garmentType && garmentType in REQUIRED_MEASUREMENTS_BY_TYPE) {
+    return [...REQUIRED_MEASUREMENTS_BY_TYPE[garmentType as GarmentType]];
+  }
+  const category = item.category as GarmentCategory | undefined | null;
+  if (category && category in REQUIRED_MEASUREMENTS_BY_CATEGORY) {
+    return [...REQUIRED_MEASUREMENTS_BY_CATEGORY[category]];
+  }
+  return [];
+}
+
 /** Nhãn tiếng Việt cho từng số đo, dùng trong thông báo lỗi và API completeness. */
 export const MEASUREMENT_LABELS: Record<MeasurementField, string> = {
   height: 'Chiều cao',
@@ -159,10 +214,7 @@ export function getMissingMeasurements(
     }
   }
 
-  return [...required].filter((field) => {
-    const value = measurement?.[field];
-    return value === null || value === undefined;
-  });
+  return [...required].filter((field) => !isNumericMeasurementValue(measurement?.[field]));
 }
 
 /**
@@ -179,8 +231,5 @@ export function getMissingMeasurementsByCategory(
     }
   }
 
-  return [...required].filter((field) => {
-    const value = measurement?.[field];
-    return value === null || value === undefined;
-  });
+  return [...required].filter((field) => !isNumericMeasurementValue(measurement?.[field]));
 }

@@ -18,6 +18,7 @@ import { MailModule } from './modules/mail/mail.module';
 import { StorageModule } from './modules/storage/storage.module';
 import { AdminModule } from './modules/admin/admin.module';
 import { ChatModule } from './modules/chat/chat.module';
+import { OrderChatModule } from './modules/order-chat/order-chat.module';
 import { MaintenanceModule } from './modules/maintenance/maintenance.module';
 import { HealthModule } from './modules/health/health.module';
 import { RealtimeModule } from './modules/realtime/realtime.module';
@@ -98,6 +99,7 @@ import { parseRedisUrl } from './common/redis/redis-url.util';
     PaymentsModule,
     AdminModule,
     ChatModule,
+    OrderChatModule,
     MaintenanceModule,
     RealtimeModule,
     NotificationModule,
