@@ -321,6 +321,11 @@ When schema changes are required:
 - Refunds are split by `Refund.kind`: `GOODS` and `SHIPPING`, each transferred,
   recorded (`updateRefund` with `kind`) and cancelled on its own. `Order.refundStatus`
   stays `REQUIRED` while any MANUAL refund is open.
+- Orders paid through MoMo/ZaloPay can still be refunded by bank transfer via
+  `updateRefund`; the shop transfers the money itself and records the receipt. The
+  endpoint only refuses `COMPLETED`/`PROCESSING` while a gateway refund for the same
+  order is `PENDING`/`PROCESSING` (avoids paying the customer twice), and completed
+  gateway refunds count against the order's refund cap. `PAYMENT_ONLY` refunds do not.
 - Approving a customer issue adds the item to the open GOODS refund: the price paid
   for the line, coupon split by line value
   (`order-issues/utils/issue-refund-amount.util.ts`). The admin chooses whether to
