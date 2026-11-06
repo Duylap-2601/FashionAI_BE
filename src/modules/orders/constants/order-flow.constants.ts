@@ -73,7 +73,7 @@ export const ORDER_STATUS_TRANSITIONS: Record<OrderStatus, OrderStatus[]> = {
     OrderStatus.READY_TO_SHIP,
     OrderStatus.CANCELLED,
   ],
-  [OrderStatus.READY_TO_SHIP]: [OrderStatus.CANCELLED],
+  [OrderStatus.READY_TO_SHIP]: [OrderStatus.DELIVERY_DISPUTED, OrderStatus.CANCELLED],
   [OrderStatus.CONFIRMED]: [
     OrderStatus.MEASUREMENT_REVIEW,
     OrderStatus.READY_TO_SHIP,
@@ -81,17 +81,23 @@ export const ORDER_STATUS_TRANSITIONS: Record<OrderStatus, OrderStatus[]> = {
   ],
   [OrderStatus.SHIPPING]: [
     OrderStatus.DELIVERED,
+    OrderStatus.DELIVERY_DISPUTED,
     OrderStatus.RETURN_REQUESTED,
     OrderStatus.RETURN_APPROVED,
     OrderStatus.RETURNING,
     OrderStatus.RETURNED,
   ],
   [OrderStatus.DELIVERED]: [
+    OrderStatus.DELIVERY_DISPUTED,
     OrderStatus.COMPLETED,
     OrderStatus.RETURN_REQUESTED,
     OrderStatus.RETURN_APPROVED,
     OrderStatus.RETURNING,
     OrderStatus.RETURNED,
+  ],
+  [OrderStatus.DELIVERY_DISPUTED]: [
+    OrderStatus.COMPLETED,
+    OrderStatus.CANCELLED,
   ],
   [OrderStatus.COMPLETED]: [
     OrderStatus.RETURN_REQUESTED,
@@ -122,13 +128,14 @@ export const ORDER_STATUS_MESSAGE: Partial<Record<OrderStatus, string>> = {
   [OrderStatus.PAID]: 'Đơn hàng đã được thanh toán.',
   [OrderStatus.CONFIRMED]: 'Đơn hàng đã được xác nhận và đang chuẩn bị.',
   [OrderStatus.PROCESSING]: 'Đơn hàng đang được chuẩn bị.',
-  [OrderStatus.MEASUREMENT_REVIEW]: 'Shop đang kiểm tra số đo cho đơn may đo.',
+  [OrderStatus.MEASUREMENT_REVIEW]: 'Shop đang kiểm tra số đo. Nếu thiếu, shop sẽ gửi yêu cầu bổ sung cho từng món.',
   [OrderStatus.MEASUREMENT_CONFIRMED]: 'Số đo của đơn hàng đã được xác nhận.',
   [OrderStatus.TAILORING]: 'Đơn hàng đang được may.',
   [OrderStatus.QUALITY_CHECK]: 'Đơn hàng đang được kiểm tra chất lượng.',
   [OrderStatus.READY_TO_SHIP]: 'Đơn hàng đã sẵn sàng bàn giao vận chuyển.',
   [OrderStatus.SHIPPING]: 'Đơn hàng đang được giao đến bạn.',
   [OrderStatus.DELIVERED]: 'Đơn hàng đã được giao thành công.',
+  [OrderStatus.DELIVERY_DISPUTED]: 'Khách báo chưa nhận được hàng, shop đang kiểm tra với đơn vị vận chuyển.',
   [OrderStatus.COMPLETED]: 'Đơn hàng đã hoàn tất.',
   [OrderStatus.CANCELLED]: 'Đơn hàng đã bị hủy.',
   [OrderStatus.RETURN_REQUESTED]: 'Yêu cầu hoàn trả đã được ghi nhận.',
@@ -148,6 +155,7 @@ export const CANONICAL_ORDER_STATUSES = [
   OrderStatus.READY_TO_SHIP,
   OrderStatus.SHIPPING,
   OrderStatus.DELIVERED,
+  OrderStatus.DELIVERY_DISPUTED,
   OrderStatus.COMPLETED,
   OrderStatus.CANCELLED,
   OrderStatus.RETURN_REQUESTED,
@@ -176,9 +184,20 @@ export const RETURN_FLOW_STATUSES: OrderStatus[] = [
 // đã giao trước khi đơn tự đi theo GHN.
 export const DELIVERY_CONFIRMABLE_STATUSES: OrderStatus[] = [
   OrderStatus.DELIVERED,
+  OrderStatus.DELIVERY_DISPUTED,
   OrderStatus.SHIPPING,
   OrderStatus.READY_TO_SHIP,
 ];
+
+/** Đơn có thể báo "chưa nhận được hàng" khi hãng vận chuyển đã báo giao. */
+export const DELIVERY_DISPUTABLE_STATUSES: OrderStatus[] = [
+  OrderStatus.READY_TO_SHIP,
+  OrderStatus.SHIPPING,
+  OrderStatus.DELIVERED,
+];
+
+/** Khách chỉ được báo chưa nhận trong vòng 7 ngày kể từ lúc hãng báo đã giao. */
+export const DELIVERY_DISPUTE_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
 
 // Khoản hoàn (tiền hàng hoặc phí ship) đã duyệt nhưng shop chưa chuyển xong.
 export const OPEN_REFUND_STATUSES: RefundStatus[] = [

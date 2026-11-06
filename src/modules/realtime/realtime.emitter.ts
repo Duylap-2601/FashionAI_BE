@@ -27,6 +27,14 @@ export class RealtimeEmitter {
     this.server.to(this.userRoom(userId)).emit(event, payload);
   }
 
+  toAdmins(event: string, payload: unknown): void {
+    if (!this.server) {
+      this.logger.warn(`Emit "${event}" trước khi gateway init, bỏ qua`);
+      return;
+    }
+    this.server.to('admins').emit(event, payload);
+  }
+
   userRoom(userId: string): string {
     return `user:${userId}`;
   }

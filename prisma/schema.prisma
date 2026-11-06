@@ -101,6 +101,7 @@ enum OrderStatus {
   READY_TO_SHIP
   SHIPPING
   DELIVERED
+  DELIVERY_DISPUTED
   COMPLETED
   CANCELLED
   RETURN_REQUESTED
@@ -196,6 +197,7 @@ enum NotificationType {
   SYSTEM
   REVIEW
   ORDER_ISSUE
+  ORDER_CHAT
 }
 
 enum OrderIssueReason {
@@ -257,6 +259,10 @@ model User {
   orders                  Order[]
   dailyUsages             DailyUsage[]
   chatSessions            ChatSession[]
+  orderChatConversations  OrderConversation[] @relation("OrderChatCustomer")
+  orderChatMessages       OrderChatMessage[]  @relation("OrderChatSender")
+  deliveryDisputes        DeliveryDispute[]   @relation("DeliveryDisputeCreatedBy")
+  deliveryDisputesResolved DeliveryDispute[]  @relation("DeliveryDisputeResolvedBy")
   notifications           Notification[]
   deviceTokens            DeviceToken[]
   subscriptions           Subscription[]
@@ -801,6 +807,7 @@ model Order {
   totalVnd                BigInt?        @map("total_vnd")
   amountPaidVnd           BigInt         @default(0) @map("amount_paid_vnd")
   amountRefundedVnd       BigInt         @default(0) @map("amount_refunded_vnd")
+  refundConfirmedAt       DateTime?      @map("refund_confirmed_at")
   currency                String         @default("VND")
   status                  OrderStatus    @default(CREATED)
   shippingInfo            Json?          @map("shipping_info")
@@ -839,6 +846,8 @@ model Order {
   idempotencyKeys  OrderIdempotencyKey[]
   quotes           OrderQuote[]
   couponRedemption CouponRedemption?
+  chatConversation OrderConversation?
+  deliveryDisputes DeliveryDispute[]
 
   @@index([userId])
   @@index([userId, createdAt])
@@ -1309,4 +1318,93 @@ model ProductCollection {
 
   @@id([collectionId, productId])
   @@map("product_collections")
+}
+
+enum OrderChatSenderRole {
+  CUSTOMER
+  ADMIN
+}
+
+/// Một hội thoại duy nhất cho mỗi đơn hàng giữa khách và shop.
+model OrderConversation {
+  id                  String    @id @default(uuid()) @db.Uuid
+  orderId             String    @unique @map("order_id") @db.Uuid
+  customerId          String    @map("customer_id") @db.Uuid
+  lastMessageAt       DateTime? @map("last_message_at")
+  lastMessagePreview  String?   @map("last_message_preview")
+  customerUnreadCount Int       @default(0) @map("customer_unread_count")
+  adminUnreadCount    Int       @default(0) @map("admin_unread_count")
+  createdAt           DateTime  @default(now()) @map("created_at")
+  updatedAt           DateTime  @updatedAt @map("updated_at")
+
+  order    Order             @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  customer User              @relation("OrderChatCustomer", fields: [customerId], references: [id], onDelete: Cascade)
+  messages OrderChatMessage[]
+
+  @@index([customerId, lastMessageAt])
+  @@index([lastMessageAt])
+  @@map("order_conversations")
+}
+
+enum DeliveryDisputeStatus {
+  OPEN
+  RESOLVED
+  CANCELLED
+}
+
+enum DeliveryDisputeResolution {
+  CUSTOMER_CONFIRMED_RECEIVED
+  ADMIN_CONFIRMED_RECEIVED
+  REFUNDED
+  LOST
+}
+
+/// Khách báo chưa nhận được hàng dù hãng vận chuyển đã báo đã giao.
+/// Mỗi đơn chỉ có tối đa một phiếu OPEN tại một thời điểm.
+model DeliveryDispute {
+  id                 String                    @id @default(uuid()) @db.Uuid
+  orderId            String                    @map("order_id") @db.Uuid
+  userId             String                    @map("user_id") @db.Uuid
+  status             DeliveryDisputeStatus     @default(OPEN)
+  resolution         DeliveryDisputeResolution?
+  description        String                    @db.Text
+  evidenceImages     Json?                     @map("evidence_images")
+  carrierRawStatus   String?                   @map("carrier_raw_status")
+  carrierDeliveredAt DateTime?                 @map("carrier_delivered_at")
+  adminNote          String?                   @map("admin_note") @db.Text
+  resolvedBy         String?                   @map("resolved_by") @db.Uuid
+  resolvedAt         DateTime?                 @map("resolved_at")
+  createdAt          DateTime                  @default(now()) @map("created_at")
+  updatedAt          DateTime                  @updatedAt @map("updated_at")
+
+  order    Order @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  user     User  @relation("DeliveryDisputeCreatedBy", fields: [userId], references: [id], onDelete: Cascade)
+  resolver User? @relation("DeliveryDisputeResolvedBy", fields: [resolvedBy], references: [id], onDelete: SetNull)
+
+  @@index([orderId, status])
+  @@index([userId, createdAt])
+  @@index([status, createdAt])
+  @@map("delivery_disputes")
+}
+
+model OrderChatMessage {
+  id                   String              @id @default(uuid()) @db.Uuid
+  conversationId       String              @map("conversation_id") @db.Uuid
+  senderId             String?             @map("sender_id") @db.Uuid
+  senderRole           OrderChatSenderRole @map("sender_role")
+  senderNameSnapshot   String?             @map("sender_name_snapshot")
+  senderAvatarSnapshot String?             @map("sender_avatar_snapshot")
+  content              String?             @db.Text
+  attachments          Json?
+  clientMessageId      String?             @map("client_message_id")
+  readByCustomerAt     DateTime?           @map("read_by_customer_at")
+  readByAdminAt        DateTime?           @map("read_by_admin_at")
+  createdAt            DateTime            @default(now()) @map("created_at")
+
+  conversation OrderConversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  sender       User?             @relation("OrderChatSender", fields: [senderId], references: [id], onDelete: SetNull)
+
+  @@unique([conversationId, clientMessageId])
+  @@index([conversationId, createdAt, id])
+  @@map("order_chat_messages")
 }

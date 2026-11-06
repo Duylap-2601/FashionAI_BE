@@ -9,6 +9,7 @@ import {
   MessageBody,
 } from '@nestjs/websockets';
 import { Logger } from '@nestjs/common';
+import { Role } from '@prisma/client';
 import { Server, Socket } from 'socket.io';
 import { AuthenticatedUser } from '../auth/interfaces/authenticated-user.interface';
 import { RealtimeAuthService } from './realtime-auth.service';
@@ -79,6 +80,9 @@ export class RealtimeGateway
     }
 
     void socket.join(this.emitter.userRoom(user.id));
+    if (user.role === Role.ADMIN) {
+      void socket.join('admins');
+    }
     this.scheduleExpiry(socket, user.exp);
     this.logger.debug(`Connected: user=${user.id} socket=${socket.id}`);
   }
