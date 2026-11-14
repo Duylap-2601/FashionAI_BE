@@ -1263,11 +1263,15 @@ model DeviceToken {
   @@map("device_tokens")
 }
 
+// RENEWED là dòng lưu vết của một lần gia hạn cộng dồn: quyền lợi vẫn nằm trên
+// dòng ACTIVE (mỗi user tối đa một dòng), RENEWED KHÔNG bao giờ được coi là
+// "đang hoạt động" khi kiểm tra quyền lợi.
 enum SubscriptionStatus {
   ACTIVE
   SCHEDULED
   EXPIRED
   CANCELLED
+  RENEWED
 }
 
 model Subscription {
@@ -1286,6 +1290,8 @@ model Subscription {
   order Order @relation(fields: [orderId], references: [id], onDelete: Restrict)
 
   @@index([userId, expiresAt])
+  // Partial unique index "một dòng ACTIVE / user" Prisma không khai báo được,
+  // nó chỉ tồn tại trong migration 20261114000000_one_active_subscription_per_user.
   @@index([userId, status])
   @@index([status, expiresAt])
   @@index([status, startsAt])

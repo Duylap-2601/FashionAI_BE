@@ -26,7 +26,7 @@ import { CartService } from '../cart/cart.service';
 import { OutboxService } from '../outbox/services/outbox.service';
 import { OUTBOX_EVENT_TYPE } from '../outbox/constants/outbox.constants';
 import { PaymentPostSuccessPayload } from '../outbox/types/outbox.types';
-import { SubscriptionService } from './subscription.service';
+import { SubscriptionService, RefundRevocationResult } from './subscription.service';
 import { paymentSucceededEventKey, paymentTransactionId } from './utils/payment-keys.util';
 import {
   TIER_PRICES,
@@ -839,6 +839,7 @@ export class PaymentsService {
       }
 
       let orderRefundedTotalVnd = 0;
+      let revoked: RefundRevocationResult | null = null;
       const updatedRefund = await this.prisma.$transaction(async (tx) => {
         const updated = await tx.refund.update({
           where: { id: refund.id },
@@ -881,6 +882,9 @@ export class PaymentsService {
             refundedAt: new Date(),
           },
         });
+        // Hoàn toàn bộ đơn gói thành viên thì thu hồi luôn quyền lợi trong cùng
+        // transaction; hoàn một phần thì khách vẫn giữ gói (helper tự trả null).
+        revoked = await this.revokeSubscriptionEntitlementForRefund(tx, payment.order, isPaymentOnly);
         await tx.orderEvent.create({
           data: {
             orderId: payment.orderId,
@@ -901,6 +905,9 @@ export class PaymentsService {
         return updated;
       });
       this.notifyRefundUpdate(payment.order.userId, payment.order.orderCode, 'COMPLETED', dto.amountVnd);
+      if (revoked) {
+        this.notifySubscriptionRevoked(revoked, payment.order.orderCode, dto.amountVnd);
+      }
       this.sendRefundCompletedEmail(payment.order.userId, {
         refundId: updatedRefund.id,
         orderId: payment.orderId,
@@ -921,6 +928,61 @@ export class PaymentsService {
       }).catch(() => undefined);
       throw new ServiceUnavailableException(`Chưa xác định kết quả hoàn tiền ${gateway.code}. Vui lòng query/reconcile bằng cùng idempotencyKey trước khi gửi lại.`);
     }
+  }
+
+  /**
+   * Thu hồi quyền lợi khi một đơn gói thành viên đã được hoàn tiền toàn bộ.
+   *
+   * Gọi TRONG transaction chốt refund, nên khi hàm này commit thì Refund, Order,
+   * Subscription và User.tier luôn khớp nhau. Thông báo cho khách được gửi sau
+   * khi transaction xong (create() tự ghi DB, không được nằm trong tx).
+   *
+   * @param revokeScope 'PAYMENT_ONLY' khi khoản hoàn chỉ trả lại một payment thu
+   * trùng (tiền chưa từng mua gói) — hoàn khoản đó không được cắt gói thật.
+   * @returns kết quả thu hồi, hoặc null khi không phải việc của hàm này (không
+   * phải đơn gói, hoàn một phần, hoặc quyền lợi đã bị thu hồi trước đó).
+   */
+  private async revokeSubscriptionEntitlementForRefund(
+    tx: Prisma.TransactionClient,
+    order: { id: string; userId: string; targetTier: UserTier | null; amount: Prisma.Decimal | number | string; amountPaidVnd?: bigint | number | null },
+    isPaymentOnly = false,
+  ) {
+    if (!order.targetTier) return null;
+    // Payment thu trùng không cấp quyền lợi nào: hoàn nó không được đụng tới gói.
+    if (isPaymentOnly) return null;
+
+    const revoked = await this.subscriptionService.revokeEntitlementForRefundedOrder(
+      tx,
+      order,
+    );
+    if (!revoked) return null;
+
+    return revoked;
+  }
+
+  /** Báo cho khách biết gói đã bị thu hồi vì hoàn tiền (best-effort). */
+  private notifySubscriptionRevoked(
+    revoked: RefundRevocationResult,
+    orderCode: number,
+    amountVnd: number,
+  ) {
+    this.notificationService
+      .create({
+        userId: revoked.userId,
+        type: 'SYSTEM',
+        title: 'Gói thành viên đã bị thu hồi',
+        message:
+          revoked.tier === UserTier.FREE
+            ? `Đơn #${orderCode} đã được hoàn ${amountVnd.toLocaleString('vi-VN')}đ nên gói thành viên mua từ đơn này không còn hiệu lực. Tài khoản đã chuyển về gói Miễn phí.`
+            : `Đơn #${orderCode} đã được hoàn ${amountVnd.toLocaleString('vi-VN')}đ nên gói mua từ đơn này không còn hiệu lực. Tài khoản đang dùng gói ${revoked.tier} còn lại.`,
+        data: {
+          orderCode,
+          revokedSubscriptionIds: revoked.cancelledSubscriptionIds,
+          tier: revoked.tier,
+          tierExpiresAt: revoked.tierExpiresAt,
+        },
+      })
+      .catch(() => undefined);
   }
 
   private toRefundResponse(refund: { id: string; orderId: string; paymentId: string | null; provider: string; providerRefundId: string | null; amountVnd: bigint; currency: string; reason: string | null; status: RefundStatus; idempotencyKey: string | null; requestedAt: Date; processedAt: Date | null; failedReason: string | null; metadata: Prisma.JsonValue | null }) {
@@ -1549,7 +1611,9 @@ export class PaymentsService {
           const result = await this.subscriptionService.createOrExtendSubscription(
             order.userId,
             order.targetTier,
-            order.id,
+            // Truyền cả đơn để bên dưới kiểm tra lại quote proration đã đóng băng
+            // lúc checkout (amount/createdAt) trước khi cấp quyền.
+            order,
             tx,
           );
           subscriptionMode = result.mode;
@@ -1865,6 +1929,7 @@ export class PaymentsService {
 
   private async finalizeGatewayRefund(refundId: string, outcome: 'COMPLETED' | 'FAILED', providerResponse: Record<string, unknown>, message?: string) {
     let orderRefundedTotalVnd = 0;
+    let revoked: RefundRevocationResult | null = null;
     const result = await this.prisma.$transaction(async (tx) => {
       const refund = await tx.refund.findUnique({ where: { id: refundId }, include: { payment: { include: { order: true } } } });
       if (!refund || !refund.payment) return null;
@@ -1907,6 +1972,8 @@ export class PaymentsService {
           where: { id: refund.paymentId! },
           data: { status: isPaymentOnly ? PaymentStatus.REFUNDED : fullyRefunded ? PaymentStatus.REFUNDED : PaymentStatus.PARTIALLY_REFUNDED, refundedAt: new Date() },
         });
+        // Hoàn toàn bộ đơn gói thành viên: thu hồi gói trong cùng transaction.
+        revoked = await this.revokeSubscriptionEntitlementForRefund(tx, refund.payment.order, isPaymentOnly);
       } else if (isPaymentOnly) {
         await tx.payment.update({ where: { id: refund.paymentId! }, data: { status: PaymentStatus.REFUND_REQUIRED } });
       } else {
@@ -1931,6 +1998,13 @@ export class PaymentsService {
         Number(result.refund.amountVnd),
       );
       if (outcome === 'COMPLETED') {
+        if (revoked) {
+          this.notifySubscriptionRevoked(
+            revoked,
+            result.refund.payment.order.orderCode,
+            Number(result.refund.amountVnd),
+          );
+        }
         this.sendRefundCompletedEmail(result.refund.payment.order.userId, {
           refundId: result.refund.id,
           orderId: result.refund.orderId,
@@ -1976,114 +2050,130 @@ export class PaymentsService {
   }
 
   async sendRenewalReminders() {
-    const subs = await this.subscriptionService.findSubscriptionsDueForRenewal(
-      RENEWAL_REMINDER_DAYS_BEFORE,
-    );
-
-    let remindersSent = 0;
-    let ordersCreated = 0;
-
-    for (const sub of subs) {
-      try {
-        // Tái dùng đơn renewal PENDING còn hạn để không đẻ nhiều đơn khi user
-        // bỏ qua email nhắc nhiều ngày liên tiếp.
-        const existingPending = await this.prisma.order.findFirst({
-          where: {
-            userId: sub.userId,
-            targetTier: sub.tier,
-            status: OrderStatus.CREATED,
-            checkoutExpiresAt: { gt: new Date() },
-          },
-          orderBy: { createdAt: 'desc' },
-        });
-
-        let renewalOrder = existingPending;
-        let checkoutUrl = existingPending?.checkoutUrl ?? null;
-
-        if (!renewalOrder || !checkoutUrl) {
-          // Create renewal order
-          renewalOrder = await createWithUniqueOrderCode((orderCode) =>
-            this.prisma.order.create({
-              data: {
-                orderCode,
-                userId: sub.userId,
-                targetTier: sub.tier,
-                amount: TIER_PRICES[sub.tier],
-                status: OrderStatus.CREATED,
-                paymentStatus: PaymentStatus.PENDING,
-              },
-            }),
-          );
-
-          // Generate checkout link
-          const link = await this.createSePayCheckoutLink(renewalOrder);
-          checkoutUrl = link.checkoutUrl;
-
-          await this.prisma.order.update({
-            where: { id: renewalOrder.id },
-            data: {
-              paymentProvider: 'SEPAY',
-              checkoutUrl,
-              checkoutExpiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000),
-            },
-          });
-
-          ordersCreated++;
-        }
-
-        if (!renewalOrder || !checkoutUrl) {
-          throw new Error(`Không tạo được đơn gia hạn cho subscription ${sub.id}`);
-        }
-
-        // Send notification
-        this.notificationService
-          .create({
-            userId: sub.userId,
-            type: 'PAYMENT',
-            title: `Gói ${sub.tier} sắp hết hạn`,
-            message: `Gói ${sub.tier} của bạn hết hạn vào ${sub.expiresAt.toLocaleDateString('vi-VN')}. Thanh toán ${TIER_PRICES[sub.tier].toLocaleString('vi-VN')}đ để tiếp tục sử dụng.`,
-            data: {
-              subscriptionId: sub.id,
-              orderId: renewalOrder.id,
-              orderCode: renewalOrder.orderCode,
-              checkoutUrl,
-              tier: sub.tier,
-              expiresAt: sub.expiresAt,
-              daysRemaining: Math.ceil(
-                (sub.expiresAt.getTime() - Date.now()) / (1000 * 60 * 60 * 24),
-              ),
-            },
-          })
-          .catch(() => undefined);
-
-        // Send email
-        await this.mailQueueService.sendRenewalReminderEmail(sub.user.email, {
-          name: sub.user.name || 'Khách hàng',
-          tier: sub.tier,
-          tierLabel: sub.tier,
-          price: TIER_PRICES[sub.tier],
-          expiresAt: sub.expiresAt,
-          daysRemaining: Math.ceil(
-            (sub.expiresAt.getTime() - Date.now()) / (1000 * 60 * 60 * 24),
-          ),
-          checkoutUrl,
-          orderCode: renewalOrder.orderCode,
-        });
-
-        // This records that the reminder was queued, not provider delivery.
-        await this.subscriptionService.markRenewalReminderSent(sub.id);
-        remindersSent++;
-      } catch (err) {
-        this.logger.error(
-          `Error processing renewal reminder for subscription ${sub.id}: ${err instanceof Error ? err.message : String(err)}`,
-        );
-      }
+    // Nhiều instance chạy cùng cron 09:00: chỉ instance lấy được lock mới gửi nhắc
+    // và tạo đơn gia hạn, tránh khách nhận 2 mail/2 đơn (idempotency của
+    // renewalReminderSentAt chỉ chặn trong phạm vi một instance).
+    const lockKey = 'subscription-renewal-reminders';
+    const acquired = await this.redisService.acquireLock(lockKey, 120);
+    if (!acquired) {
+      this.logger.log(
+        'Bỏ qua nhắc gia hạn: instance khác đang giữ lock subscription-renewal-reminders',
+      );
+      return { remindersSent: 0, ordersCreated: 0, totalProcessed: 0, skipped: true };
     }
 
-    this.logger.log(
-      `Renewal reminders sent: ${remindersSent}/${subs.length}, orders created: ${ordersCreated}`,
-    );
+    try {
+      const subs = await this.subscriptionService.findSubscriptionsDueForRenewal(
+        RENEWAL_REMINDER_DAYS_BEFORE,
+      );
 
-    return { remindersSent, ordersCreated, totalProcessed: subs.length };
+      let remindersSent = 0;
+      let ordersCreated = 0;
+
+      for (const sub of subs) {
+        try {
+          // Tái dùng đơn renewal PENDING còn hạn để không đẻ nhiều đơn khi user
+          // bỏ qua email nhắc nhiều ngày liên tiếp.
+          const existingPending = await this.prisma.order.findFirst({
+            where: {
+              userId: sub.userId,
+              targetTier: sub.tier,
+              status: OrderStatus.CREATED,
+              checkoutExpiresAt: { gt: new Date() },
+            },
+            orderBy: { createdAt: 'desc' },
+          });
+
+          let renewalOrder = existingPending;
+          let checkoutUrl = existingPending?.checkoutUrl ?? null;
+
+          if (!renewalOrder || !checkoutUrl) {
+            // Create renewal order
+            renewalOrder = await createWithUniqueOrderCode((orderCode) =>
+              this.prisma.order.create({
+                data: {
+                  orderCode,
+                  userId: sub.userId,
+                  targetTier: sub.tier,
+                  amount: TIER_PRICES[sub.tier],
+                  status: OrderStatus.CREATED,
+                  paymentStatus: PaymentStatus.PENDING,
+                },
+              }),
+            );
+
+            // Generate checkout link
+            const link = await this.createSePayCheckoutLink(renewalOrder);
+            checkoutUrl = link.checkoutUrl;
+
+            await this.prisma.order.update({
+              where: { id: renewalOrder.id },
+              data: {
+                paymentProvider: 'SEPAY',
+                checkoutUrl,
+                checkoutExpiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000),
+              },
+            });
+
+            ordersCreated++;
+          }
+
+          if (!renewalOrder || !checkoutUrl) {
+            throw new Error(`Không tạo được đơn gia hạn cho subscription ${sub.id}`);
+          }
+
+          // Send notification
+          this.notificationService
+            .create({
+              userId: sub.userId,
+              type: 'PAYMENT',
+              title: `Gói ${sub.tier} sắp hết hạn`,
+              message: `Gói ${sub.tier} của bạn hết hạn vào ${sub.expiresAt.toLocaleDateString('vi-VN')}. Thanh toán ${TIER_PRICES[sub.tier].toLocaleString('vi-VN')}đ để tiếp tục sử dụng.`,
+              data: {
+                subscriptionId: sub.id,
+                orderId: renewalOrder.id,
+                orderCode: renewalOrder.orderCode,
+                checkoutUrl,
+                tier: sub.tier,
+                expiresAt: sub.expiresAt,
+                daysRemaining: Math.ceil(
+                  (sub.expiresAt.getTime() - Date.now()) / (1000 * 60 * 60 * 24),
+                ),
+              },
+            })
+            .catch(() => undefined);
+
+          // Send email
+          await this.mailQueueService.sendRenewalReminderEmail(sub.user.email, {
+            name: sub.user.name || 'Khách hàng',
+            tier: sub.tier,
+            tierLabel: sub.tier,
+            price: TIER_PRICES[sub.tier],
+            expiresAt: sub.expiresAt,
+            daysRemaining: Math.ceil(
+              (sub.expiresAt.getTime() - Date.now()) / (1000 * 60 * 60 * 24),
+            ),
+            checkoutUrl,
+            orderCode: renewalOrder.orderCode,
+          });
+
+          // This records that the reminder was queued, not provider delivery.
+          await this.subscriptionService.markRenewalReminderSent(sub.id);
+          remindersSent++;
+        } catch (err) {
+          this.logger.error(
+            `Error processing renewal reminder for subscription ${sub.id}: ${err instanceof Error ? err.message : String(err)}`,
+          );
+        }
+      }
+
+      this.logger.log(
+        `Renewal reminders sent: ${remindersSent}/${subs.length}, orders created: ${ordersCreated}`,
+      );
+
+      return { remindersSent, ordersCreated, totalProcessed: subs.length };
+    } finally {
+      await this.redisService.releaseLock(lockKey);
+    }
   }
 }
