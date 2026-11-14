@@ -455,6 +455,15 @@ describe('POST /api/payments/checkout (e2e)', () => {
         .expect(400);
     });
 
+    it('từ chối MoMo cho gói thành viên và không tạo đơn rác', async () => {
+      await request(app.getHttpServer())
+        .post('/api/payments/checkout')
+        .send({ targetTier: 'MEMBER', provider: 'MOMO' })
+        .expect(400);
+
+      expect(prisma.order.create).not.toHaveBeenCalled();
+    });
+
     it('upgrade giữa kỳ được prorate: chỉ thu net + trả breakdown', async () => {
       prisma.user.findUnique.mockResolvedValue({
         id: AUTH_USER.id,

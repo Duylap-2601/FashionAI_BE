@@ -31,6 +31,12 @@ export const RENEWAL_REMINDER_DAYS_BEFORE = 3;
 export const PRORATION_ROUND_VND = 1000;
 /** Còn ít hơn ngưỡng này thì không prorate nữa: thu full giá như renewal. */
 export const PRORATION_MIN_REMAINING_DAYS = 1;
+/**
+ * Quote proration đóng băng vào Order lúc checkout (Order.createdAt) chỉ còn giá
+ * trị trong 24h — cùng hạn với link thanh toán (CHECKOUT_TTL_MS). Quá hạn thì
+ * coi là quote cũ: cấp quyền theo đúng số tiền khách đã trả.
+ */
+export const PRORATION_QUOTE_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 
 export interface UpgradeProration {
   oldTier: UserTier;

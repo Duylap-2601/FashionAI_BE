@@ -36,9 +36,10 @@ export class CheckoutDto {
   targetTier?: UserTier;
 
   @ApiProperty({
-    description: 'Cổng thanh toán. Nếu bỏ trống, backend dùng PAYMENT_DEFAULT_PROVIDER.',
-    enum: ['MOMO', 'ZALOPAY', 'SEPAY'],
-    example: 'MOMO',
+    description:
+      'Cổng thanh toán. Nếu bỏ trống, backend dùng PAYMENT_DEFAULT_PROVIDER. Đơn gói thành viên chỉ hỗ trợ ZALOPAY/SEPAY.',
+    enum: ['ZALOPAY', 'SEPAY', 'MOMO'],
+    example: 'ZALOPAY',
     required: false,
   })
   @IsIn(['MOMO', 'ZALOPAY', 'SEPAY'])

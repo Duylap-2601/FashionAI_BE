@@ -428,8 +428,15 @@ export class OrdersService {
     const search = options.search?.trim();
     const numericSearch = search ? Number(search.replace(/^ORD-/i, '')) : NaN;
 
+    // Đơn mua gói thành viên (targetTier != null) dùng chung bảng Order nhưng không
+    // có items: chúng không phải đơn sản phẩm nên không được xuất hiện trong
+    // "Đơn hàng của tôi" (và cũng không được kích hoạt nhắc "đơn chưa thanh toán"
+    // ở FE, vì helper đó gọi chính endpoint này với status=CREATED). Admin vẫn thấy
+    // đơn gói qua findAllAdmin để đối soát. Lọc trên where dùng chung cho findMany
+    // và count nên meta.total luôn khớp danh sách trả về.
     const where: Prisma.OrderWhereInput = {
       userId,
+      targetTier: null,
       ...(status ? { status } : {}),
       ...(search
         ? {

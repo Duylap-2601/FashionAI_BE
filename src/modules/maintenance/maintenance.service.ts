@@ -49,6 +49,7 @@ export class MaintenanceService {
         `Dọn dẹp định kỳ hoàn tất | refreshTokens=${tokens.deletedRefreshTokens} ` +
           `resetTokens=${tokens.deletedResetTokens} verifyTokens=${tokens.deletedVerifyTokens} ` +
           `tryOnCache=${tryOnCache.count} activatedSubscriptions=${subscriptionResult.activatedSubscriptions} ` +
+          `skippedUnpaidSubscriptions=${subscriptionResult.skippedUnpaidSubscriptions} ` +
           `cancelledSubscriptions=${subscriptionResult.cancelledSubscriptions} expiredSubscriptions=${subscriptionResult.expiredSubscriptions} ` +
           `downgradedUsers=${subscriptionResult.downgradedUsers}`,
       );
