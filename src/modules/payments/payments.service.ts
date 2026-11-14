@@ -72,11 +72,17 @@ export class PaymentsService {
    * - Đơn sản phẩm: truyền `orderId` của Order đã tạo qua `POST /orders`.
    */
   async createCheckoutLink(userId: string, dto: CheckoutDto) {
+    const provider = dto.provider ?? this.gatewayRegistry.getDefaultCode();
+
+    // Kiểm tra trước khi tạo Order: request bị từ chối không được để lại đơn chưa thanh toán.
+    this.assertSubscriptionProvider(dto.targetTier, provider);
+
     const order = dto.orderId
       ? await this.resolveProductOrder(userId, dto.orderId)
       : await this.createSubscriptionOrder(userId, dto.targetTier!);
 
-    const provider = dto.provider ?? this.gatewayRegistry.getDefaultCode();
+    // orderId cũng có thể trỏ tới đơn gói thành viên, kiểm tra lại theo đơn thực tế.
+    this.assertSubscriptionProvider(order.targetTier, provider);
 
     // Lưu định danh GA4 của trình duyệt để event purchase gửi từ server được gắn vào
     // đúng phiên truy cập. Checkout gọi lại thì ghi đè bằng phiên mới nhất. Ghi chung
@@ -113,6 +119,18 @@ export class PaymentsService {
 
     const gateway = this.gatewayRegistry.resolve(provider);
     return this.createGatewayCheckoutLink(order, gateway, gaData);
+  }
+
+  /** Gói thành viên chỉ hỗ trợ ZaloPay hoặc SePay (chuyển khoản). */
+  private assertSubscriptionProvider(
+    targetTier: UserTier | null | undefined,
+    provider: string,
+  ) {
+    if (targetTier && provider !== 'SEPAY' && provider !== 'ZALOPAY') {
+      throw new BadRequestException(
+        'Gói thành viên chỉ hỗ trợ thanh toán qua ZaloPay hoặc SePay.',
+      );
+    }
   }
 
   /**
