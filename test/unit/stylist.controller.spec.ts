@@ -32,7 +32,10 @@ describe('StylistController', () => {
 
     const res = await controller.analyze(buildRequest(), user, undefined, dto);
 
-    expect(service.analyzeAndAdvise).toHaveBeenCalledWith(user.id, undefined, dto);
+    expect(service.analyzeAndAdvise).toHaveBeenCalledWith(user.id, undefined, dto, {
+      tier: undefined,
+      tierExpiresAt: undefined,
+    });
     expect(res.data).toEqual({ id: 'r1', outfits: [] });
   });
 
@@ -70,6 +73,7 @@ describe('StylistController', () => {
       'user-1',
       file,
       expect.objectContaining({ garmentDescription: 'Vest navy' }),
+      { tier: undefined, tierExpiresAt: undefined },
     );
     expect(result).toMatchObject({
       success: true,

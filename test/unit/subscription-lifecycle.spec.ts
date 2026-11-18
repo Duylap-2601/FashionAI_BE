@@ -103,6 +103,38 @@ describe('SubscriptionService.createOrExtendSubscription – gia hạn cộng d�
   });
 });
 
+describe('SubscriptionService.createOrExtendSubscription – downgrade hẹn ngày', () => {
+  it('TC-221: VIP còn hạn mua MEMBER tạo SCHEDULED đúng hạn VIP, không hạ tier ngay', async () => {
+    const active = row({ tier: UserTier.VIP, expiresAt: days(12) });
+    const prisma = createPrisma(active);
+    const { service } = createService(prisma);
+
+    const result = await service.createOrExtendSubscription('user-1', UserTier.MEMBER, {
+      id: 'order-downgrade',
+      amount: 34000,
+      createdAt: new Date(),
+    });
+
+    expect(result.mode).toBe('DOWNGRADE');
+    // Chỗ giữ là SCHEDULED bắt đầu đúng lúc VIP hết hạn, kéo dài 30 ngày.
+    expect(prisma.subscription.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        status: 'SCHEDULED',
+        tier: UserTier.MEMBER,
+        orderId: 'order-downgrade',
+        startsAt: active.expiresAt,
+        expiresAt: new Date(active.expiresAt.getTime() + SUBSCRIPTION_DURATION_DAYS * DAY_MS),
+      }),
+    });
+    // Gói hiện tại tắt auto-renew nhưng KHÔNG bị đổi tier/hạn.
+    expect(prisma.subscription.updateMany).toHaveBeenCalledWith({
+      where: { id: 'sub-active', status: 'ACTIVE' },
+      data: { autoRenew: false },
+    });
+    expect(prisma.user.update).not.toHaveBeenCalled();
+  });
+});
+
 describe('SubscriptionService.createOrExtendSubscription – kiểm tra lại quote proration', () => {
   function upgradeOrder(overrides: Record<string, unknown> = {}) {
     return {

@@ -99,6 +99,16 @@ export function createRedisMock() {
       store.set(key, String(next));
       return next;
     }),
+    decrBy: jest.fn(async (key: string, amount: number) => {
+      const next = Number(store.get(key) ?? '0') - amount;
+      store.set(key, String(next));
+      return next;
+    }),
+    setIfAbsent: jest.fn(async (key: string, value: string) => {
+      if (store.has(key)) return false;
+      store.set(key, value);
+      return true;
+    }),
     del: jest.fn(async (key: string) => {
       store.delete(key);
     }),

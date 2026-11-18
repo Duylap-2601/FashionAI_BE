@@ -72,7 +72,10 @@ export class StylistController {
       filePipe.transform(humanImage);
     }
 
-    const result = await this.stylistService.analyzeAndAdvise(user.id, humanImage, dto);
+    const result = await this.stylistService.analyzeAndAdvise(user.id, humanImage, dto, {
+      tier: user.tier,
+      tierExpiresAt: user.tierExpiresAt,
+    });
 
     return buildApiResponse(
       req,
