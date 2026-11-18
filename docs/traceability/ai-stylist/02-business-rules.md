@@ -193,10 +193,10 @@ Quy ước: **Intended** lấy từ UI/API contract hiện tại (không có tà
 - **Type:** Constraint
 - **Condition:** Resolve kết quả.
 - **Expected behavior:** Outfit sai cấu trúc bị loại, không tự sửa thành bộ khác.
-- **Exception:** `resolveOutfits` chỉ chặn mã lạ/trùng/min item/max item/anchor; tổ hợp dress+quần hoặc 2 top hiện **không** bị chặn (BUG-056).
+- **Exception:** Không. Trước 2026-11-18 resolver bỏ qua tổ hợp dress+quần / 2 top (BUG-056, đã sửa).
 - **Related US/AC:** US-031 / AC-096
-- **Enforcement point:** `BE/src/modules/products/product-suggestion.service.ts:resolveOutfits:218-253`; prompt `BE/src/modules/stylist/stylist.service.ts:buildPrompt:471-476`
-- **Intended / Enforced:** yes / partial (prompt + kiểm tra một phần)
+- **Enforcement point:** `BE/src/modules/products/product-suggestion.service.ts:resolveOutfits:218-253`; `isValidOutfitComposition:398-408`; prompt `BE/src/modules/stylist/stylist.service.ts:buildPrompt:471-476`
+- **Intended / Enforced:** yes / yes
 - **Confidence:** High
 - **Verification:** Code-verified
 
@@ -279,10 +279,10 @@ Quy ước: **Intended** lấy từ UI/API contract hiện tại (không có tà
 - **Type:** Consistency
 - **Condition:** Mỗi analyze.
 - **Expected behavior:** Đổi bất kỳ input/catalog/prompt version/số đo → key khác.
-- **Exception:** Key **không chứa số đo** (`measurements`/`updatedAt`) nên đổi số đo vẫn hit cache — BUG-055.
-- **Related US/AC:** US-032 / AC-099
-- **Enforcement point:** `BE/src/modules/stylist/stylist.service.ts:buildCacheKey:119-138`; `STYLIST_PROMPT_VERSION:26`
-- **Intended / Enforced:** yes / no (thiếu measurements)
+- **Exception:** Không. Từ 2026-11-18 key có thêm fingerprint số đo (`buildMeasurementsFingerprint`) — BUG-055 đã sửa.
+- **Related US/AC:** US-032 / AC-099 / BR-140, BR-141 / TC-177
+- **Enforcement point:** `BE/src/modules/stylist/stylist.service.ts:buildCacheKey:125-156`; `STYLIST_PROMPT_VERSION:26`
+- **Intended / Enforced:** yes / yes
 - **Confidence:** High
 - **Verification:** Code-verified
 
@@ -291,7 +291,7 @@ Quy ước: **Intended** lấy từ UI/API contract hiện tại (không có tà
 - **Type:** Constraint
 - **Condition:** Tạo row / lookup.
 - **Expected behavior:** Lookup chỉ nhận `expiresAt=null` hoặc `> now`.
-- **Exception:** Row hết hạn vẫn còn trong DB (không có job purge — BUG-044).
+- **Exception:** Không. Từ 2026-11-18 `cleanupExpiredRecords` purge row hết hạn (BUG-044 đã sửa).
 - **Related US/AC:** US-032 / AC-099
 - **Enforcement point:** `BE/src/modules/stylist/stylist.service.ts:constructor:107-109`; `buildCacheExpiry:140-142`; `analyzeAndAdvise:181-185`
 - **Intended / Enforced:** yes / yes
@@ -425,10 +425,10 @@ Quy ước: **Intended** lấy từ UI/API contract hiện tại (không có tà
 - **Type:** Workflow
 - **Condition:** Quota 0 hoặc response 429.
 - **Expected behavior:** Không gửi request khi đã biết hết quota; modal có CTA nâng cấp.
-- **Exception:** Modal đang bỏ qua `requested/remaining/resetAt` từ BE (BUG-045).
+- **Exception:** Không. Từ 2026-11-18 modal nhận `requested/remaining/resetAt` từ `details` (BUG-045 đã sửa).
 - **Related US/AC:** US-034 / AC-107
 - **Enforcement point:** `FE/src/features/stylist/components/ai-stylist-page.tsx:99-111,124-153`; `QuotaExhaustedModal.tsx`
-- **Intended / Enforced:** yes / partial
+- **Intended / Enforced:** yes / yes
 - **Confidence:** High
 - **Verification:** Code-verified
 
@@ -449,10 +449,10 @@ Quy ước: **Intended** lấy từ UI/API contract hiện tại (không có tà
 - **Type:** Workflow
 - **Condition:** Mở panel / xoá.
 - **Expected behavior:** Phân trang và trạng thái chọn nhất quán.
-- **Exception:** Lỗi list im lặng (BUG-054).
+- **Exception:** Không. Từ 2026-11-18 lỗi list/quota hiện banner + retry (BUG-054 đã sửa).
 - **Related US/AC:** US-033, US-034 / AC-108
 - **Enforcement point:** `FE/src/features/stylist/components/ai-stylist-page.tsx:29,180-195`; `profile-stylist-history-page.tsx`
-- **Intended / Enforced:** yes / partial
+- **Intended / Enforced:** yes / yes
 - **Confidence:** High
 - **Verification:** Code-verified
 

@@ -8,7 +8,7 @@ import {
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { GoogleGenAI } from '@google/genai';
-import { Product, StylistResult } from '@prisma/client';
+import { Product, ProductStatus, StylistResult, UserTier } from '@prisma/client';
 import { PrismaService } from '../../database/prisma.service';
 import { QuotaService } from '../../common/services/quota.service';
 import {
@@ -42,6 +42,12 @@ interface MeasurementContext {
   waist?: number | null;
   hip?: number | null;
   shoulder?: number | null;
+}
+
+/** Tier của người gọi cần để giữ chỗ quota nguyên tử trước khi gọi provider. */
+export interface StylistQuotaContext {
+  tier?: UserTier;
+  tierExpiresAt?: Date | null;
 }
 
 interface CatalogPromptContext {
@@ -121,12 +127,14 @@ export class StylistService {
     humanImageHash: string | null,
     catalogFingerprint: string,
     dto: StylistRequestDto,
+    measurements: MeasurementContext | null,
   ): string {
     const parts = [
       STYLIST_PROMPT_VERSION,
       userId,
       humanImageHash ?? 'no-image',
       catalogFingerprint,
+      this.buildMeasurementsFingerprint(measurements),
       dto.productId ?? 'none',
       dto.garmentDescription?.trim() || 'none',
       dto.occasion?.trim() || 'none',
@@ -137,6 +145,16 @@ export class StylistService {
     return crypto.createHash('sha256').update(parts.join('|')).digest('hex');
   }
 
+  /**
+   * Số đo là dữ liệu cá nhân hoá ảnh hưởng trực tiếp tới lời khuyên. Đưa vào
+   * cache key để đổi số đo là cache miss ngay, không trả lại tư vấn cũ tới 30 ngày.
+   */
+  private buildMeasurementsFingerprint(measurements: MeasurementContext | null): string {
+    if (!measurements) return 'no-measurements';
+    const fields = ['height', 'weight', 'chest', 'waist', 'hip', 'shoulder'] as const;
+    return fields.map((field) => `${field}:${measurements[field] ?? '-'}`).join(',');
+  }
+
   private buildCacheExpiry(): Date {
     return new Date(Date.now() + this.CACHE_TTL_MS);
   }
@@ -145,6 +163,7 @@ export class StylistService {
     userId: string,
     humanImage: Express.Multer.File | undefined,
     dto: StylistRequestDto,
+    quotaContext?: StylistQuotaContext,
   ) {
     if (!this.hasApiKey) {
       throw new HttpException(
@@ -172,9 +191,13 @@ export class StylistService {
 
     // Ảnh chỉ dùng để phân tích rồi bỏ; giữ hash (không khôi phục được ảnh) để tra cache.
     const humanImageHash = humanImage ? this.computeHash(humanImage.buffer) : null;
-    // Chọn Nam/Nữ thì AI chỉ thấy đồ của giới tính đó và đồ unisex.
-    const catalog = await this.productSuggestions.getCatalog(toCatalogAudience(dto.genderPreference));
-    const cacheKey = this.buildCacheKey(userId, humanImageHash, catalog.fingerprint, dto);
+    // Số đo phải đọc trước khi tra cache: chúng nằm trong cache key (BUG-055).
+    const [catalog, measurements] = await Promise.all([
+      // Chọn Nam/Nữ thì AI chỉ thấy đồ của giới tính đó và đồ unisex.
+      this.productSuggestions.getCatalog(toCatalogAudience(dto.genderPreference)),
+      this.getMeasurementContext(userId),
+    ]);
+    const cacheKey = this.buildCacheKey(userId, humanImageHash, catalog.fingerprint, dto, measurements);
 
     const cachedResult = await this.prisma.stylistResult.findFirst({
       where: {
@@ -198,13 +221,25 @@ export class StylistService {
       `AI Stylist analyze request | userId=${userId} | model=${this.MODEL} | productId=${dto.productId ?? 'none'} | hasImage=${Boolean(humanImage)}`,
     );
 
+    let quotaReserved = false;
     try {
-      const [product, measurements] = await Promise.all([
-        dto.productId ? this.getProductContext(dto.productId) : Promise.resolve(null),
-        this.getMeasurementContext(userId),
-      ]);
+      // Giữ chỗ quota nguyên tử TRƯỚC khi gọi provider: hai request đồng thời
+      // không thể cùng vượt hạn mức (BUG-042). Hoàn lượt nếu bất kỳ bước nào lỗi.
+      quotaReserved = await this.quotaService.reserveQuota(
+        userId,
+        quotaContext?.tier,
+        'STYLIST',
+        quotaContext?.tierExpiresAt,
+      );
 
+      const product = dto.productId ? await this.getProductContext(dto.productId) : null;
       const anchorCode = product ? this.productSuggestions.findCodeByProductId(catalog, product.id) : null;
+      if (product && !anchorCode) {
+        throw new BadRequestException(
+          'Sản phẩm đang cân nhắc hiện không có trong danh mục đang bán. Vui lòng chọn sản phẩm khác.',
+        );
+      }
+
       const prompt = this.buildPrompt(dto, product, measurements, { catalog, anchorCode }, Boolean(humanImage));
       const { rawResponse, parsedResult } = await this.generateAnalysis(humanImage, prompt, {
         hasImage: Boolean(humanImage),
@@ -246,16 +281,26 @@ export class StylistService {
         include: { product: true },
       });
 
-      await this.quotaService.consumeQuota(userId, 'STYLIST');
-
+      // Lượt đã được giữ chỗ trước khi gọi provider, không trừ thêm.
       const outfits = await this.productSuggestions.hydrateOutfits(parsedResult.outfits);
       return this.toResultResponse(record, outfits, false);
     } catch (error: unknown) {
+      if (quotaReserved) {
+        await this.quotaService.releaseQuota(userId, 'STYLIST').catch((releaseError: unknown) => {
+          this.logger.warn(
+            `Failed to release reserved stylist quota for user ${userId}: ${this.getErrorMessage(releaseError)}`,
+          );
+        });
+      }
       return this.handleError(error);
     }
   }
 
-  private toResultResponse(record: StylistRecord, outfits: OutfitSuggestion[], isCached: boolean) {
+  /**
+   * Response DTO: chỉ trả field UI cần, giữ `rawProviderResponse`, `cacheKey`,
+   * `humanImageHash`, `inputContext`, `userId` ở phía server (BUG-043).
+   */
+  private toResultResponse(record: StylistRecord, outfits: OutfitSuggestion[], isCached?: boolean) {
     // JSON do chính service lưu; bản ghi cũ có thể thiếu field mới nên vẫn đọc an toàn bên dưới.
     const analysis = record.analysisResult as unknown as ParsedStylistResult;
     return {
@@ -275,7 +320,8 @@ export class StylistService {
       outfits,
       model: record.model ?? this.MODEL,
       createdAt: record.createdAt,
-      isCached,
+      // Lịch sử không có khái niệm cache hit; chỉ response analyze mới gắn cờ này.
+      ...(isCached === undefined ? {} : { isCached }),
     };
   }
 
@@ -288,8 +334,10 @@ export class StylistService {
       where: { id: productId },
       include: { images: true },
     });
-    if (!product) {
-      throw new NotFoundException(`Không tìm thấy sản phẩm có ID ${productId}`);
+    if (!product || product.status !== ProductStatus.ACTIVE) {
+      // Sản phẩm ngừng bán không được làm neo: nó không nằm trong catalog nên
+      // ràng buộc "outfit phải chứa sản phẩm này" sẽ bị bỏ qua âm thầm (BUG-057).
+      throw new NotFoundException(`Không tìm thấy sản phẩm đang bán có ID ${productId}`);
     }
 
     const mainImage =
@@ -723,8 +771,12 @@ export class StylistService {
   }
 
   async getUserHistory(userId: string, page = 1, limit = 20) {
-    const safeLimit = Math.min(Math.max(limit, 1), 100);
-    const skip = (page - 1) * safeLimit;
+    // Query string có thể là `abc`/`-1`: chặn NaN và số âm trước khi vào Prisma.
+    const safePage = Number.isFinite(page) ? Math.max(1, Math.floor(page)) : 1;
+    const safeLimit = Number.isFinite(limit)
+      ? Math.min(Math.max(1, Math.floor(limit)), 100)
+      : 20;
+    const skip = (safePage - 1) * safeLimit;
     const [items, total] = await Promise.all([
       this.prisma.stylistResult.findMany({
         where: { userId },
@@ -745,14 +797,15 @@ export class StylistService {
     const products = await this.productSuggestions.loadProducts(storedByItem.flatMap(collectProductIds));
 
     return {
-      items: items.map((item, index) => ({
-        ...item,
-        hasImage: this.hasImage(item),
-        outfits: this.productSuggestions.buildOutfits(storedByItem[index], products),
-      })),
+      items: items.map((item, index) =>
+        this.toResultResponse(
+          item,
+          this.productSuggestions.buildOutfits(storedByItem[index], products),
+        ),
+      ),
       meta: {
         total,
-        page,
+        page: safePage,
         limit: safeLimit,
         totalPages: Math.ceil(total / safeLimit),
       },
@@ -764,7 +817,7 @@ export class StylistService {
     const outfits = await this.productSuggestions.hydrateOutfits(
       (item.analysisResult as Partial<ParsedStylistResult> | null)?.outfits,
     );
-    return { ...item, hasImage: this.hasImage(item), outfits };
+    return this.toResultResponse(item, outfits);
   }
 
   async deleteHistoryItem(userId: string, id: string) {

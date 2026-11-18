@@ -1,4 +1,4 @@
-import { ExecutionContext, Injectable, UnauthorizedException } from '@nestjs/common';
+import { ExecutionContext, HttpException, Injectable, UnauthorizedException } from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
 import { AuthGuard } from '@nestjs/passport';
 import { TokenExpiredError } from 'jsonwebtoken';
@@ -26,12 +26,19 @@ export class JwtAuthGuard extends AuthGuard('jwt') {
   handleRequest<TUser = any>(err: unknown, user: TUser, info: unknown): TUser {
     if (info instanceof TokenExpiredError) {
       throw new UnauthorizedException({
+        code: 'ACCESS_TOKEN_EXPIRED',
         message: 'Access token đã hết hạn',
         error: 'ACCESS_TOKEN_EXPIRED',
       });
     }
     if (err || !user) {
-      throw err || new UnauthorizedException();
+      // Giữ nguyên lỗi cụ thể do JwtStrategy.validate ném (token thu hồi, user bị khoá...).
+      if (err instanceof HttpException) throw err;
+      // Mã ổn định `UNAUTHORIZED` cho client phân biệt "thiếu/sai token" (xem BR-118).
+      throw new UnauthorizedException({
+        code: 'UNAUTHORIZED',
+        message: 'Bạn cần đăng nhập để tiếp tục.',
+      });
     }
     return user;
   }

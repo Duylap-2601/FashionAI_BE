@@ -135,6 +135,27 @@ describe('ProductSuggestionService', () => {
     expect(outfits.map((o) => o.name)).toEqual(['Có blazer']);
   });
 
+  it('resolveOutfits loại outfit sai cấu trúc: dress + quần, hai top hoặc hai bottom', async () => {
+    prisma.product.findMany.mockResolvedValue([
+      ...catalogRows,
+      { id: 'shirt-2', name: 'Áo Sơ Mi Xanh', category: 'UPPER', garmentType: 'SHIRT', gender: 'FEMALE', color: 'xanh', colors: [], material: null, price: '500000' },
+      { id: 'skirt-1', name: 'Chân Váy Đen', category: 'LOWER', garmentType: 'SKIRT', gender: 'FEMALE', color: 'đen', colors: [], material: null, price: '450000' },
+    ]);
+    const catalog = await service.getCatalog();
+    const outfits = service.resolveOutfits(
+      [
+        { name: 'Đầm + quần', items: [{ code: 'P4' }, { code: 'P2' }] },
+        { name: 'Hai áo', items: [{ code: 'P1' }, { code: 'P5' }, { code: 'P2' }] },
+        { name: 'Hai quần', items: [{ code: 'P1' }, { code: 'P2' }, { code: 'P6' }] },
+        { name: 'Đầm + blazer', items: [{ code: 'P4' }, { code: 'P3' }] },
+        { name: 'Chuẩn', items: [{ code: 'P1' }, { code: 'P2' }, { code: 'P3' }] },
+      ],
+      catalog,
+    );
+
+    expect(outfits.map((o) => o.name)).toEqual(['Đầm + blazer', 'Chuẩn']);
+  });
+
   it('resolveProductCodes bỏ mã không hợp lệ và trùng', async () => {
     const catalog = await service.getCatalog();
     expect(service.resolveProductCodes(['P3', 'P3', 'P77', { code: 'P1' }, null], catalog)).toEqual([

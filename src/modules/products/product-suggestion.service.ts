@@ -228,17 +228,22 @@ export class ProductSuggestionService {
 
       const seen = new Set<string>();
       const items: StoredOutfit['items'] = [];
+      const roles: OutfitRole[] = [];
       for (const rawItem of candidate.items) {
         const entry = this.lookupCode(catalog, isRecord(rawItem) ? (rawItem.code ?? rawItem.productCode) : rawItem);
         if (!entry || seen.has(entry.id)) continue;
         seen.add(entry.id);
         items.push({ productId: entry.id, note: isRecord(rawItem) ? toText(rawItem.note) : null });
+        roles.push(toOutfitRole(entry));
         if (items.length === MAX_ITEMS_PER_OUTFIT) break;
       }
 
       const isSingleDress =
         items.length === 1 && catalog.entries.find((e) => e.id === items[0].productId)?.category === GarmentCategory.FULL_BODY;
       if (items.length < 2 && !isSingleDress) continue;
+      // Prompt chỉ là hướng dẫn; kiểm tra lại tổ hợp vai trò ở đây để chặn
+      // đầm + quần hay hai áo/hai quần mà model vẫn có thể trả về (BUG-056).
+      if (!isValidOutfitComposition(roles)) continue;
       if (options.anchorProductId && !seen.has(options.anchorProductId)) continue;
 
       outfits.push({
@@ -388,6 +393,18 @@ function buildAudienceNote(products: CatalogProduct[], audience: CatalogAudience
     }
   }
   return notes.join(' ');
+}
+
+/**
+ * BR-133: outfit hợp lệ là 1 top + 1 bottom, hoặc 1 dress (được thêm outer).
+ * Trả false cho dress+bottom, hai top, hai bottom hoặc nhiều dress.
+ */
+function isValidOutfitComposition(roles: OutfitRole[]): boolean {
+  const count = (role: OutfitRole) => roles.filter((item) => item === role).length;
+  const dresses = count('dress');
+  if (dresses > 1) return false;
+  if (dresses === 1) return count('top') === 0 && count('bottom') === 0;
+  return count('top') === 1 && count('bottom') === 1;
 }
 
 function toOutfitRole(product: Pick<SuggestedProduct, 'layerRole'>): OutfitRole {

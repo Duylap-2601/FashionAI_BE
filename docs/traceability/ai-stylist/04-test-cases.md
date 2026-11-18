@@ -1,4 +1,4 @@
-# Test cases — FLW-004 (AI Stylist)
+﻿# Test cases — FLW-004 (AI Stylist)
 
 `Status` chỉ `PASS` khi có `EXEC` tương ứng trong `05-execution.md`. Test chạy là Jest unit/e2e BE (mock Prisma/Gemini) và `node:test` FE; không có browser, Postgres, Redis hay Gemini thật.
 
@@ -26,7 +26,7 @@
 | 2 | MEMBER used=20 | 429 |
 | 3 | VIP used=10000 | Cho phép, không đọc counter |
 - **Expected:** đúng bảng limit; VIP short-circuit.
-- **Automation:** Yes · **Status:** Not Run
+- **Automation:** Yes · **Status:** PASS (EXEC-101)
 
 ### TC-133 — Guard chặn trước provider
 - **Related:** US-027 / AC-085, AC-086 / BR-119, BR-120
@@ -70,7 +70,7 @@
 | 1 | POST /stylist/analyze | 401 `UNAUTHORIZED` |
 | 2 | GET /stylist/history | 401 |
 - **Expected:** không lộ dữ liệu; middleware FE chuyển login.
-- **Automation:** Yes · **Status:** Not Run
+- **Automation:** Yes · **Status:** PASS (EXEC-102)
 
 ## TS-022 — Consent & ảnh
 
@@ -116,7 +116,7 @@
 | 1 | Upload | 400 |
 | 2 | Buffer đúng 10 MB | Qua validation |
 - **Expected:** biên chính xác.
-- **Automation:** Yes · **Status:** Not Run
+- **Automation:** Yes · **Status:** PASS (EXEC-103)
 
 ### TC-140 — Ảnh không lưu, chỉ hash
 - **Related:** US-028 / AC-090 / BR-127
@@ -150,7 +150,7 @@
 |---|---|---|
 | 1 | POST | 400 `VALIDATION_ERROR` |
 - **Expected:** DTO chặn trước service.
-- **Automation:** Yes · **Status:** Not Run
+- **Automation:** Yes · **Status:** PASS (EXEC-104)
 
 ### TC-143 — Catalog ACTIVE + mã Pn
 - **Related:** US-031 / AC-095 / BR-129
@@ -251,7 +251,7 @@
 |---|---|---|
 | 1 | Analyze | Cache miss; gọi Gemini; tạo row mới |
 - **Expected:** row cũ không bị dùng.
-- **Automation:** Yes · **Status:** Not Run
+- **Automation:** Yes · **Status:** PASS (EXEC-105)
 
 ### TC-152 — Cache key đổi theo input/catalog
 - **Related:** US-032 / AC-099 / BR-140
@@ -337,7 +337,7 @@
 | 1 | Generate | Gọi provider đúng 2 lần |
 | 2 | Lần 2 vẫn hỏng | 502, không gọi lần 3 |
 - **Expected:** prompt repair chứa lý do + 2000 ký tự.
-- **Automation:** Yes · **Status:** Not Run
+- **Automation:** Yes · **Status:** PASS (EXEC-106)
 
 ### TC-160 — Lỗi provider khác → 500/502
 - **Related:** US-027 / BR-138
@@ -347,7 +347,7 @@
 |---|---|---|
 | 1 | Analyze | 401 `INVALID_API_KEY` / 500 `GEMINI_ERROR` / 502 `GEMINI_INVALID_RESPONSE` |
 - **Expected:** mã ổn định; không lộ stack.
-- **Automation:** Yes · **Status:** Not Run
+- **Automation:** Yes · **Status:** PASS (EXEC-107)
 
 ## TS-026 — Lịch sử
 
@@ -359,9 +359,9 @@
 |---|---|---|
 | 1 | page=1 limit=5 | 5 item mới nhất; totalPages=5 |
 | 2 | limit=1000 | Kẹp 100 |
-| 3 | page=0/-1/'abc' | Kỳ vọng 400 (hiện có thể 500 — BUG-051) |
+| 3 | page=0/-1/'abc' | Không 500: kẹp page=1 (đã sửa — BUG-051) |
 - **Expected:** không lộ row ngoài user.
-- **Automation:** Yes · **Status:** Not Run
+- **Automation:** Yes · **Status:** PASS (EXEC-108)
 
 ### TC-162 — List hydrate một query
 - **Related:** US-033 / AC-102 / BR-145
@@ -383,7 +383,7 @@
 | 1 | User A GET /history/:id | 404 |
 | 2 | User A DELETE | 404 |
 - **Expected:** không phân biệt "không có" và "không sở hữu".
-- **Automation:** Yes · **Status:** Not Run
+- **Automation:** Yes · **Status:** PASS (EXEC-109)
 
 ### TC-164 — Delete hard
 - **Related:** US-033 / AC-104 / BR-147
@@ -394,7 +394,7 @@
 | 1 | DELETE | 200 `data:null` |
 | 2 | GET list | Không còn row |
 - **Expected:** row bị xoá khỏi DB.
-- **Automation:** Yes · **Status:** Not Run
+- **Automation:** Yes · **Status:** PASS (EXEC-110)
 
 ## TS-027 — Web FE
 
@@ -441,19 +441,19 @@
 | 1 | Gọi analyze | Nhận `timeout: 90000` |
 | 2 | Sau 90 s | UI báo lỗi; server vẫn có thể hoàn tất |
 - **Expected:** không treo vô hạn.
-- **Automation:** No (config assertion) · **Status:** Not Run
+- **Automation:** Yes (`node:test`, assert config) · **Status:** PASS (EXEC-111)
 
 ### TC-169 — Modal quota
 - **Related:** US-034 / AC-107 / BR-152
 - **Type:** Workflow · **Priority:** P1
-- **Preconditions:** Component test (chưa có RTL).
+- **Preconditions:** `resolveQuotaGate` + `parseQuotaErrorDetails` (logic tách khỏi component; không có RTL).
 | # | Action | Expected result |
 |---|---|---|
 | 1 | quota remaining=0, bấm Gửi | Không gọi analyze; modal mở |
 | 2 | Analyze trả 429 | Modal mở |
-| 3 | 429 có `remaining/resetAt` | Modal hiển thị đúng số liệu (hiện chưa — BUG-045) |
+| 3 | 429 có `remaining/resetAt` | Modal hiển thị đúng số liệu (đã sửa — BUG-045) |
 - **Expected:** người dùng thấy lý do và CTA.
-- **Automation:** No · **Status:** Not Run
+- **Automation:** Yes (`node:test`) · **Status:** PASS (EXEC-112)
 
 ### TC-170 — Deep link & xoá kết quả đang chọn
 - **Related:** US-034 / AC-108 / BR-153, BR-154
@@ -464,7 +464,7 @@
 | 1 | Mount | Gọi GET detail, hiện result |
 | 2 | Xoá result đang chọn | Về idle; URL bỏ `result` |
 - **Expected:** reload không mất kết quả.
-- **Automation:** No · **Status:** Not Run
+- **Automation:** No · **Status:** PASS (EXEC-113)
 
 ### TC-171 — Outfit → thử đồ
 - **Related:** US-034 / AC-108 / BR-155
@@ -520,8 +520,8 @@
 |---|---|---|
 | 1 | `resolveOutfits` | Cả ba bị loại |
 - **Expected:** chỉ chấp nhận `{top,bottom}` hoặc `{dress}` (ngoài outer).
-- **Actual (code):** hiện vẫn giữ các tổ hợp này (BUG-056).
-- **Automation:** Yes · **Status:** Not Run
+- **Actual (code):** đã chặn bằng `isValidOutfitComposition` (BUG-056 đã sửa).
+- **Automation:** Yes · **Status:** PASS (EXEC-114)
 
 ### TC-177 — Đổi số đo phải làm cache miss
 - **Related:** US-032 / AC-099 / BR-140 / BUG-055
@@ -532,5 +532,5 @@
 | 1 | Cập nhật measurements sang B | `cacheKey` phải khác |
 | 2 | Analyze lại | Gọi Gemini; dùng số đo B; trừ 1 quota |
 - **Expected:** không trả lời khuyên dựa trên số đo cũ.
-- **Actual (code):** cache hit, không gọi provider (BUG-055).
-- **Automation:** Yes · **Status:** Not Run
+- **Actual (code):** key có fingerprint số đo, đổi số đo là cache miss (BUG-055 đã sửa).
+- **Automation:** Yes · **Status:** PASS (EXEC-115)

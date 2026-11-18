@@ -115,22 +115,7 @@ export class RedisService implements OnModuleInit, OnModuleDestroy {
   }
 
   async incr(key: string, ttlSeconds?: number): Promise<number> {
-    if (this.isConnected && this.client) {
-      try {
-        const val = await this.client.incr(key);
-        if (val === 1 && ttlSeconds) {
-          await this.client.expire(key, ttlSeconds);
-        }
-        return val;
-      } catch (e) {
-        this.logger.warn(`Redis operation failed | operation=incr | namespace=${this.getKeyNamespace(key)}`);
-      }
-    }
-
-    const currentStr = await this.get(key);
-    const val = (currentStr ? parseInt(currentStr, 10) : 0) + 1;
-    await this.set(key, val.toString(), ttlSeconds);
-    return val;
+    return this.incrBy(key, 1, ttlSeconds);
   }
 
   async incrBy(key: string, amount: number, ttlSeconds?: number): Promise<number> {
@@ -146,10 +131,80 @@ export class RedisService implements OnModuleInit, OnModuleDestroy {
       }
     }
 
-    const currentStr = await this.get(key);
-    const val = (currentStr ? parseInt(currentStr, 10) : 0) + amount;
-    await this.set(key, val.toString(), ttlSeconds);
-    return val;
+    return this.incrementMemory(key, amount, ttlSeconds);
+  }
+
+  /**
+   * Giảm counter (hoàn lượt đã giữ chỗ). Nếu khóa đã hết hạn thì `DECRBY` sẽ tạo
+   * khóa âm, nên kẹp về 0 thay vì để counter âm.
+   */
+  async decrBy(key: string, amount: number, ttlSeconds?: number): Promise<number> {
+    if (this.isConnected && this.client) {
+      try {
+        const val = await this.client.decrby(key, amount);
+        if (val < 0) {
+          if (ttlSeconds) {
+            await this.client.set(key, '0', 'EX', ttlSeconds);
+          } else {
+            await this.client.set(key, '0');
+          }
+          return 0;
+        }
+        if (ttlSeconds) {
+          await this.client.expire(key, ttlSeconds);
+        }
+        return val;
+      } catch (e) {
+        this.logger.warn(`Redis operation failed | operation=decrby | namespace=${this.getKeyNamespace(key)}`);
+      }
+    }
+
+    return this.incrementMemory(key, -amount, ttlSeconds);
+  }
+
+  /**
+   * Gán giá trị chỉ khi khóa chưa tồn tại (SET NX). Dùng để seed counter quota
+   * từ DB mà không ghi đè giá trị một request khác vừa tạo.
+   */
+  async setIfAbsent(key: string, value: string, ttlSeconds?: number): Promise<boolean> {
+    if (this.isConnected && this.client) {
+      try {
+        const result = ttlSeconds
+          ? await this.client.set(key, value, 'EX', ttlSeconds, 'NX')
+          : await this.client.set(key, value, 'NX');
+        return result === 'OK';
+      } catch (e) {
+        this.logger.warn(`Redis operation failed | operation=setnx | namespace=${this.getKeyNamespace(key)}`);
+      }
+    }
+
+    const now = Date.now();
+    const item = this.inMemoryStore.get(key);
+    if (item && (!item.expiresAt || item.expiresAt > now)) return false;
+    this.inMemoryStore.set(key, {
+      value,
+      expiresAt: ttlSeconds ? now + ttlSeconds * 1000 : undefined,
+    });
+    return true;
+  }
+
+  /**
+   * Tăng counter trong bộ nhớ một cách đồng bộ. Không có `await` giữa bước đọc
+   * và ghi nên hai request đồng thời không thể cùng đọc một giá trị cũ.
+   */
+  private incrementMemory(key: string, amount: number, ttlSeconds?: number): number {
+    const now = Date.now();
+    const item = this.inMemoryStore.get(key);
+    const isLive = item && (!item.expiresAt || item.expiresAt > now);
+    const current = isLive ? parseInt(item!.value, 10) || 0 : 0;
+    const next = Math.max(0, current + amount);
+    const expiresAt = isLive && item!.expiresAt
+      ? item!.expiresAt
+      : ttlSeconds
+        ? now + ttlSeconds * 1000
+        : undefined;
+    this.inMemoryStore.set(key, { value: String(next), expiresAt });
+    return next;
   }
 
   async acquireLock(lockKey: string, ttlSeconds = 30): Promise<boolean> {

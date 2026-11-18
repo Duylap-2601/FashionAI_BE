@@ -11,9 +11,9 @@ Workflow **FLW-004**: tư vấn outfit từ catalog bằng Gemini, quota theo ti
 | `02-business-rules.md` | 38 BR (BR-118…BR-155) |
 | `03-screens-and-flows.md` | 2 SCR, 12 CMP, 6 API |
 | `04-test-cases.md` | 9 TS, 47 TC (TC-131…TC-177) |
-| `05-execution.md` | 32 EXEC thật (BE Jest + FE node:test, mock provider) |
+| `05-execution.md` | 47 EXEC thật (BE Jest + FE node:test, mock provider) |
 | `06-defects.md` | 16 defect candidate (2 High, 4 Medium, 10 Low) |
-| `07-report.md` | Pass 100% (32/32), execution 68,1% (32/47) |
+| `07-report.md` | Pass 100% (47/47), execution 100% (47/47) |
 | `08-traceability-matrix.md` | 38 dòng BR + kiểm tra hai chiều |
 | `09-audit.md` | 3 High, 4 Medium, 7 Low finding; 6 OQ |
 
@@ -37,6 +37,6 @@ Prisma/Gemini đều mock; không chạy Postgres/Redis/Gemini/browser thật.
 
 ## Kết luận
 
-- 38/38 BR và 24/24 AC có test thiết kế; 32/47 TC đã chạy.
-- 2 High: quota race (BUG-042), cache bỏ qua số đo (BUG-055).
-- Release: **Not Ready** tới khi 2 High đóng và nhóm test `Not Run` chạy trên staging.
+- 38/38 BR và 24/24 AC có test thiết kế; 47/47 TC đã chạy.
+- 2 High (quota race BUG-042, cache bỏ qua số đo BUG-055) và toàn bộ Medium/Low đã **sửa trong code 2026-11-18**, có test hồi quy.
+- Release: **Not Ready** tới khi chạy smoke provider thật + browser test trên staging (mock chưa thay thế được).

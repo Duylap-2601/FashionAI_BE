@@ -153,4 +153,26 @@ describe('POST /api/stylist/analyze (e2e)', () => {
     await request(app.getHttpServer()).post('/api/stylist/analyze').field('budget', '1 triệu').expect(400);
     expect(generateContent).not.toHaveBeenCalled();
   });
+
+  it('TC-142: productId sai UUID bị DTO chặn với VALIDATION_ERROR', async () => {
+    const res = await request(app.getHttpServer())
+      .post('/api/stylist/analyze')
+      .field('productId', 'abc')
+      .field('occasion', 'Công sở')
+      .expect(400);
+
+    expect(res.body).toMatchObject({ success: false, code: 'VALIDATION_ERROR' });
+    expect(generateContent).not.toHaveBeenCalled();
+  });
+
+  it('TC-141: productId hợp lệ nhưng không tồn tại trả 404 và không gọi provider', async () => {
+    const res = await request(app.getHttpServer())
+      .post('/api/stylist/analyze')
+      .field('productId', '11111111-1111-4111-8111-999999999999')
+      .field('occasion', 'Công sở')
+      .expect(404);
+
+    expect(res.body).toMatchObject({ success: false });
+    expect(generateContent).not.toHaveBeenCalled();
+  });
 });

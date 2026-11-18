@@ -42,13 +42,19 @@ export class MaintenanceService {
       const tryOnCache = await this.prisma.tryOnResult.deleteMany({
         where: { expiresAt: { lt: new Date() } },
       });
+      // StylistResult giữ cả rawProviderResponse; row quá TTL cache phải bị xoá
+      // thay vì tồn tại vô thời hạn (BUG-044).
+      const stylistCache = await this.prisma.stylistResult.deleteMany({
+        where: { expiresAt: { lt: new Date() } },
+      });
 
       const subscriptionResult = await this.subscriptionService.expireSubscriptions();
 
       this.logger.log(
         `Dọn dẹp định kỳ hoàn tất | refreshTokens=${tokens.deletedRefreshTokens} ` +
           `resetTokens=${tokens.deletedResetTokens} verifyTokens=${tokens.deletedVerifyTokens} ` +
-          `tryOnCache=${tryOnCache.count} activatedSubscriptions=${subscriptionResult.activatedSubscriptions} ` +
+          `tryOnCache=${tryOnCache.count} stylistCache=${stylistCache.count} ` +
+          `activatedSubscriptions=${subscriptionResult.activatedSubscriptions} ` +
           `skippedUnpaidSubscriptions=${subscriptionResult.skippedUnpaidSubscriptions} ` +
           `cancelledSubscriptions=${subscriptionResult.cancelledSubscriptions} expiredSubscriptions=${subscriptionResult.expiredSubscriptions} ` +
           `downgradedUsers=${subscriptionResult.downgradedUsers}`,

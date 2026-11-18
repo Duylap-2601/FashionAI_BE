@@ -53,9 +53,46 @@
 | FE `outfit-suggestions.test.cjs` | 8 | 8 PASS |
 | FE `error-handling.test.cjs` | 2 | 2 PASS (1 stylist) |
 
+## Lần chạy bổ sung — fix defect 2026-11-18
+
+| EXEC | BUG/TC | File | Kết quả | Test |
+|---|---|---|---|---|
+| EXEC-094 | BUG-042 / TC-131, TC-133 | `test/unit/quota.service.spec.ts` | PASS | `reserveQuota` atomic: giữ chỗ, 429 + hoàn lượt, seed `SET NX` |
+| EXEC-095 | BUG-043 | `test/unit/stylist.service.spec.ts` | PASS | `getUserHistory should not leak internal storage fields` |
+| EXEC-096 | BUG-051 / TC-161 | `stylist.service.spec.ts` | PASS | `getUserHistory should clamp invalid page/limit values` |
+| EXEC-097 | BUG-055 / TC-177 | `stylist.service.spec.ts` | PASS | `should change the cache key when body measurements change` |
+| EXEC-098 | BUG-056 / TC-147, TC-176 | `product-suggestion.service.spec.ts` | PASS | `resolveOutfits loại outfit sai cấu trúc` |
+| EXEC-099 | BUG-057 | `stylist.service.spec.ts` | PASS | `should reject an inactive anchor product and release the reserved quota` |
+| EXEC-100 | BUG-046/047/048/049/050/052/053/054 | `tests/error-handling.test.cjs` | PASS | `validateStylistImage` + `parseQuotaErrorDetails` |
+
+Kết quả lần chạy: BE unit `318/318` (49 suite), BE e2e `stylist-analyze` `4/4`, FE `122/122`; `tsc --noEmit` cả hai repo sạch.
+
+## Lần chạy bổ sung — đóng 15 TC `Not Run` (2026-11-18)
+
+| EXEC | TC | File | Kết quả | Test |
+|---|---|---|---|---|
+| EXEC-101 | TC-132 | `test/unit/quota.service.spec.ts` | PASS | MEMBER 19→20, VIP không đọc counter |
+| EXEC-102 | TC-175 | `test/e2e/stylist-auth.e2e-spec.ts` | PASS | 401 `UNAUTHORIZED` cho analyze + history; token sai chữ ký |
+| EXEC-103 | TC-139 | `test/unit/file-validation.pipe.spec.ts` | PASS | Biên 10 MB + 1 byte → 400; đúng 10 MB qua |
+| EXEC-104 | TC-142 | `test/e2e/stylist-analyze.e2e-spec.ts` | PASS | `productId='abc'` → 400 `VALIDATION_ERROR` |
+| EXEC-105 | TC-151 | `test/unit/stylist.service.spec.ts` | PASS | Lookup chỉ nhận `expiresAt` còn hạn; cache miss tạo row mới |
+| EXEC-106 | TC-159 | `test/unit/stylist.service.spec.ts` | PASS | Repair đúng 1 lần; vẫn hỏng → 502, không gọi lần 3 |
+| EXEC-107 | TC-160 | `test/unit/stylist.service.spec.ts` | PASS | 401 `INVALID_API_KEY`; 500 `GEMINI_ERROR`; không lưu row |
+| EXEC-108 | TC-161 | `test/unit/stylist.service.spec.ts` | PASS | page=2 limit=5 → skip 5; limit=1000 → kẹp 100; `abc` → page 1 |
+| EXEC-109 | TC-163 | `test/unit/stylist.service.spec.ts` | PASS | Detail/delete row của user khác → 404, không xoá |
+| EXEC-110 | TC-164 | `test/unit/stylist.service.spec.ts` | PASS | Delete row của chính mình → xoá theo `{id, userId}` |
+| EXEC-111 | TC-168 | `tests/error-handling.test.cjs` | PASS | `http.post('/stylist/analyze', …, {timeout: 90000})` |
+| EXEC-112 | TC-169 | `tests/error-handling.test.cjs` | PASS | `resolveQuotaGate`: blocked/loading/unavailable; `details` vào modal |
+| EXEC-113 | TC-170 | `tests/error-handling.test.cjs` | PASS | `parseStylistDeepLink`/`buildStylistDeepLink` giữ/xoá `result` |
+| EXEC-114 | TC-176 | `test/unit/product-suggestion.service.spec.ts` | PASS | Loại `[dress,trousers]`, `[top,top]`, `[bottom,bottom]` |
+| EXEC-115 | TC-177 | `test/unit/stylist.service.spec.ts` | PASS | Đổi số đo → `cacheKey` khác |
+
+Kết quả: BE unit `326/326` (50 suite), BE e2e `147/147` (16 suite), FE `125/125`; `tsc --noEmit` sạch. Không còn TC `Not Run`.
+
 ## Giới hạn bằng chứng
 
 - `admin-stats` (2 test) chỉ stub `stylistResult.count`; không tính là coverage stylist.
-- Không test `getHistoryItem`, `deleteHistoryItem` ownership/404, pagination, repair, 401/500/502, cache expiry, upload >10 MB, component/hook FE.
+- Đã bổ sung test cho ownership/404, pagination, repair, 401/500/502, cache expiry, upload >10 MB, quota gate và deep link FE (EXEC-101…115).
+- Vẫn chưa có: browser/RTL component test, Gemini/Postgres/Redis thật, upload ảnh thật.
 - Không chứng minh Gemini trả JSON đúng schema ngoài đời, không chứng minh WebRTC/UI thật.
 - Không có test nào bị tính hai lần: mỗi EXEC ánh xạ một test/nhánh riêng.

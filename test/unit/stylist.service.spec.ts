@@ -93,7 +93,10 @@ describe('StylistService', () => {
       },
     };
     productSuggestions = new ProductSuggestionService(prisma as PrismaService);
-    quota = { consumeQuota: jest.fn().mockResolvedValue(1) };
+    quota = {
+      reserveQuota: jest.fn().mockResolvedValue(true),
+      releaseQuota: jest.fn().mockResolvedValue(undefined),
+    };
 
     const config = {
       get: jest.fn((key: string, fallback?: string) => {
@@ -192,7 +195,7 @@ describe('StylistService', () => {
         }),
       }),
     );
-    expect(quota.consumeQuota).toHaveBeenCalledWith('user-1', 'STYLIST');
+    expect(quota.reserveQuota).toHaveBeenCalledWith('user-1', undefined, 'STYLIST', undefined);
     expect(result.analysisResult.verdict).toBe('Rất phù hợp!');
     expect(result.fitAdvice).toBe('Nên may ôm nhẹ ở eo');
     expect(result.hasImage).toBe(true);
@@ -298,7 +301,196 @@ describe('StylistService', () => {
     expect(result.isCached).toBe(true);
     expect(result.outfits[0].items.map((i) => i.product.name)).toEqual(['Áo Sơ Mi Trắng', 'Quần Tây Be']);
     expect((service as any).ai.models.generateContent).not.toHaveBeenCalled();
-    expect(quota.consumeQuota).not.toHaveBeenCalled();
+    expect(quota.reserveQuota).not.toHaveBeenCalled();
+  });
+
+  it('should change the cache key when body measurements change', async () => {
+    const dto = new StylistRequestDto();
+    dto.occasion = 'Công sở';
+
+    const measurements = {
+      userId: 'user-1',
+      height: 160,
+      weight: 50,
+      chest: 84,
+      waist: 66,
+      hip: 90,
+      shoulder: 38,
+      updatedAt: new Date('2026-01-01'),
+    };
+    prisma.measurement.findUnique.mockResolvedValue(measurements);
+    prisma.stylistResult.findFirst.mockResolvedValue(null);
+    (service as any).ai.models.generateContent.mockResolvedValue({
+      text: JSON.stringify({ ...JSON.parse(outfitJson), skinTone: null, personalColor: null, bodyType: null }),
+    });
+    prisma.stylistResult.create.mockImplementation(({ data }: any) =>
+      Promise.resolve({ ...data, id: 'result-m1', product: null, createdAt: new Date() }),
+    );
+
+    await service.analyzeAndAdvise('user-1', undefined, dto);
+    const firstKey = prisma.stylistResult.findFirst.mock.calls[0][0].where.cacheKey;
+
+    prisma.measurement.findUnique.mockResolvedValue({ ...measurements, waist: 72 });
+    await service.analyzeAndAdvise('user-1', undefined, dto);
+    const secondKey = prisma.stylistResult.findFirst.mock.calls[1][0].where.cacheKey;
+
+    expect(secondKey).not.toBe(firstKey);
+  });
+
+  it('getUserHistory should not leak internal storage fields', async () => {
+    prisma.stylistResult.findMany.mockResolvedValue([
+      {
+        id: 'r1',
+        userId: 'user-1',
+        cacheKey: 'cache-key',
+        humanImageHash: 'image-hash',
+        humanImageUrl: null,
+        inputContext: { hasMeasurements: true },
+        rawProviderResponse: { text: 'raw provider text' },
+        expiresAt: new Date(),
+        analysisResult: { outfits: [] },
+      },
+    ]);
+    prisma.stylistResult.count.mockResolvedValue(1);
+
+    const { items } = await service.getUserHistory('user-1');
+
+    for (const field of ['userId', 'cacheKey', 'humanImageHash', 'inputContext', 'rawProviderResponse', 'expiresAt']) {
+      expect(items[0]).not.toHaveProperty(field);
+    }
+    expect(items[0]).toMatchObject({ id: 'r1', hasImage: true });
+  });
+
+  it('getUserHistory should clamp invalid page/limit values', async () => {
+    prisma.stylistResult.findMany.mockResolvedValue([]);
+    prisma.stylistResult.count.mockResolvedValue(0);
+
+    const { meta } = await service.getUserHistory('user-1', NaN, NaN);
+
+    expect(meta).toMatchObject({ page: 1, limit: 20 });
+    expect(prisma.stylistResult.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({ skip: 0, take: 20 }),
+    );
+  });
+
+  it('TC-151: cache hết hạn không được dùng lại, phải tạo row mới', async () => {
+    const dto = new StylistRequestDto();
+    dto.occasion = 'Công sở';
+    prisma.stylistResult.findFirst.mockResolvedValue(null);
+    (service as any).ai.models.generateContent.mockResolvedValue({
+      text: JSON.stringify({ ...JSON.parse(outfitJson), skinTone: null, personalColor: null, bodyType: null }),
+    });
+    prisma.stylistResult.create.mockImplementation(({ data }: any) =>
+      Promise.resolve({ ...data, id: 'fresh', product: null, createdAt: new Date() }),
+    );
+
+    const result = await service.analyzeAndAdvise('user-1', undefined, dto);
+
+    const where = prisma.stylistResult.findFirst.mock.calls[0][0].where;
+    // Lookup chỉ nhận row chưa hết hạn.
+    expect(where.OR).toEqual([{ expiresAt: null }, { expiresAt: { gt: expect.any(Date) } }]);
+    expect(result.isCached).toBe(false);
+    expect((service as any).ai.models.generateContent).toHaveBeenCalledTimes(1);
+    expect(prisma.stylistResult.create).toHaveBeenCalledTimes(1);
+  });
+
+  it('TC-159: repair đúng một lần rồi trả kết quả; vẫn hỏng thì 502 và không gọi lần 3', async () => {
+    const dto = new StylistRequestDto();
+    dto.occasion = 'Công sở';
+    prisma.stylistResult.create.mockImplementation(({ data }: any) =>
+      Promise.resolve({ ...data, id: 'repair-ok', product: null, createdAt: new Date() }),
+    );
+    const generate = (service as any).ai.models.generateContent;
+
+    generate
+      .mockResolvedValueOnce({ text: 'không phải json' })
+      .mockResolvedValueOnce({ text: outfitJson });
+    const ok = await service.analyzeAndAdvise('user-1', undefined, dto);
+
+    expect(generate).toHaveBeenCalledTimes(2);
+    const repairPrompt = generate.mock.calls[1][0].contents[0].parts[0].text;
+    expect(repairPrompt).toContain('SỬA LỖI ĐỊNH DẠNG');
+    expect(repairPrompt).toContain('did not contain JSON');
+    expect(repairPrompt).toContain('không phải json');
+    expect(ok.isCached).toBe(false);
+
+    generate.mockReset();
+    generate.mockResolvedValue({ text: 'vẫn hỏng' });
+    prisma.stylistResult.create.mockClear();
+
+    await expect(service.analyzeAndAdvise('user-1', undefined, dto)).rejects.toMatchObject({
+      status: HttpStatus.BAD_GATEWAY,
+      response: { error: 'GEMINI_INVALID_RESPONSE' },
+    });
+    // Lượt đầu + 1 repair, không có lần thứ 3.
+    expect(generate).toHaveBeenCalledTimes(2);
+    expect(prisma.stylistResult.create).not.toHaveBeenCalled();
+  });
+
+  it('TC-160: lỗi provider map 401 INVALID_API_KEY và 500 GEMINI_ERROR', async () => {
+    const dto = new StylistRequestDto();
+    dto.occasion = 'Công sở';
+    const generate = (service as any).ai.models.generateContent;
+
+    generate.mockReset();
+    generate.mockRejectedValue(new Error('401 API key not valid'));
+    await expect(service.analyzeAndAdvise('user-1', undefined, dto)).rejects.toMatchObject({
+      status: HttpStatus.UNAUTHORIZED,
+      response: { error: 'INVALID_API_KEY' },
+    });
+
+    generate.mockReset();
+    generate.mockRejectedValue(new Error('connection reset by peer'));
+    await expect(service.analyzeAndAdvise('user-1', undefined, dto)).rejects.toMatchObject({
+      status: HttpStatus.INTERNAL_SERVER_ERROR,
+      response: { error: 'GEMINI_ERROR' },
+    });
+    // Không lưu row khi provider lỗi.
+    expect(prisma.stylistResult.create).not.toHaveBeenCalled();
+  });
+
+  it('TC-163/TC-164: detail/delete của người khác trả 404, delete của chính mình xoá row', async () => {
+    prisma.stylistResult.findFirst.mockResolvedValue(null);
+    await expect(service.getHistoryItem('user-a', 'row-b')).rejects.toMatchObject({
+      status: HttpStatus.NOT_FOUND,
+    });
+    await expect(service.deleteHistoryItem('user-a', 'row-b')).rejects.toMatchObject({
+      status: HttpStatus.NOT_FOUND,
+    });
+    expect(prisma.stylistResult.delete).not.toHaveBeenCalled();
+
+    prisma.stylistResult.findFirst.mockResolvedValue({
+      id: 'row-a',
+      humanImageHash: null,
+      humanImageUrl: null,
+      analysisResult: { outfits: [] },
+      product: null,
+    });
+    prisma.stylistResult.delete.mockResolvedValue({ id: 'row-a' });
+
+    await expect(service.deleteHistoryItem('user-a', 'row-a')).resolves.toEqual({ id: 'row-a' });
+    expect(prisma.stylistResult.delete).toHaveBeenCalledWith({ where: { id: 'row-a' } });
+    // Ownership luôn lọc theo userId, không chỉ id.
+    expect(prisma.stylistResult.findFirst).toHaveBeenLastCalledWith(
+      expect.objectContaining({ where: { id: 'row-a', userId: 'user-a' } }),
+    );
+  });
+
+  it('TC-161: phân trang trả đúng trang mới nhất và kẹp limit', async () => {
+    prisma.stylistResult.findMany.mockResolvedValue([{ id: 'r1', analysisResult: { outfits: [] } }]);
+    prisma.stylistResult.count.mockResolvedValue(25);
+
+    const { meta } = await service.getUserHistory('user-1', 2, 5);
+
+    expect(meta).toEqual({ total: 25, page: 2, limit: 5, totalPages: 5 });
+    expect(prisma.stylistResult.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({ skip: 5, take: 5, orderBy: { createdAt: 'desc' }, where: { userId: 'user-1' } }),
+    );
+
+    await service.getUserHistory('user-1', 1, 1000);
+    expect(prisma.stylistResult.findMany).toHaveBeenLastCalledWith(
+      expect.objectContaining({ take: 100 }),
+    );
   });
 
   it('getUserHistory should attach hydrated outfits to every item with one product query', async () => {
@@ -319,36 +511,27 @@ describe('StylistService', () => {
 
   it('should include product context and fetch product when productId is provided', async () => {
     const dto = new StylistRequestDto();
-    dto.productId = 'product-1';
+    dto.productId = 'blazer-1';
 
-    prisma.product.findUnique.mockResolvedValue({
-      id: 'product-1',
-      name: 'Áo Sơ Mi Trắng',
-      description: 'Sơ mi trắng premium',
-      category: 'UPPER',
-      color: 'Trắng',
-      price: 350000,
-      garmentUrl: 'https://example.com/shirt.jpg',
-      images: [],
-    });
+    prisma.product.findUnique.mockResolvedValue({ ...productRows[2], description: null });
     dto.imageConsent = true;
 
     (service as any).ai.models.generateContent.mockResolvedValue({ text: validGeminiJson });
     prisma.stylistResult.create.mockResolvedValue({
       id: 'result-2',
-      product: { id: 'product-1', name: 'Áo Sơ Mi Trắng' },
+      product: { id: 'blazer-1', name: 'Blazer Đen' },
       createdAt: new Date(),
     });
 
     const result = await service.analyzeAndAdvise('user-1', sampleFile, dto);
 
     expect(prisma.product.findUnique).toHaveBeenCalledWith({
-      where: { id: 'product-1' },
+      where: { id: 'blazer-1' },
       include: { images: true },
     });
     const createCall = prisma.stylistResult.create.mock.calls[0][0];
-    expect(createCall.data.productId).toBe('product-1');
-    expect(result.product?.name).toBe('Áo Sơ Mi Trắng');
+    expect(createCall.data.productId).toBe('blazer-1');
+    expect(result.product?.name).toBe('Blazer Đen');
   });
 
   it('should throw NotFoundException for unknown product', async () => {
@@ -359,6 +542,17 @@ describe('StylistService', () => {
     await expect(service.analyzeAndAdvise('user-1', undefined, dto)).rejects.toMatchObject({
       status: HttpStatus.NOT_FOUND,
     });
+  });
+
+  it('should reject an inactive anchor product and release the reserved quota', async () => {
+    const dto = new StylistRequestDto();
+    dto.productId = 'blazer-1';
+    prisma.product.findUnique.mockResolvedValue({ ...productRows[2], status: 'ARCHIVED' });
+
+    await expect(service.analyzeAndAdvise('user-1', undefined, dto)).rejects.toMatchObject({
+      status: HttpStatus.NOT_FOUND,
+    });
+    expect(quota.releaseQuota).toHaveBeenCalledWith('user-1', 'STYLIST');
   });
 
   it('parseRawResponse should strip markdown fences', () => {

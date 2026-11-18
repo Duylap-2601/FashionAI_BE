@@ -2,11 +2,13 @@
 
 ## 1. Findings
 
+> **Cập nhật 2026-11-18:** 10/10 finding code-level đã được sửa (kèm test hồi quy); finding "15/47 TC Not Run" đã chạy đủ trên mock (EXEC-101…115), chỉ còn thiếu bằng chứng staging với provider/DB/browser thật. Bảng dưới giữ nguyên trạng thái lúc audit để đối chiếu ID/evidence.
+
 | Severity | Check | Finding | Evidence | Required action |
 |---|---|---|---|---|
 | High | Consistency | Quota check-then-act không atomic; 2 request đồng thời vượt hạn mức | BUG-042; `quota.guard.ts:44-52`; `stylist.service.ts:209-249` | Reserve slot atomic trước provider + test đồng thời |
 | High | Consistency | Cache key bỏ qua số đo; đổi số đo vẫn nhận tư vấn cũ tới 30 ngày | BUG-055; `buildCacheKey:119-138` | Đưa measurements/version vào key; test TC-177 |
-| High | Forward | 15/47 TC `Not Run`, gồm ownership, pagination, quota modal, cache số đo, 401; không có Gemini/Postgres/browser thật | `05-execution.md` | Chạy staging + provider thật trước release |
+| High | Forward | 15/47 TC `Not Run`, gồm ownership, pagination, quota modal, cache số đo, 401; không có Gemini/Postgres/browser thật | `05-execution.md` | Đã chạy 47/47 TC trên mock (EXEC-101…115). Còn thiếu: provider/DB/browser thật |
 | Medium | Backward | History trả `userId/cacheKey/humanImageHash/rawProviderResponse` | BUG-043; `getUserHistory:748-752` | Response DTO, bỏ internals |
 | Medium | Consistency | Row/cache stylist hết hạn không purge; raw provider text giữ vô thời hạn | BUG-044; `maintenance.service.ts:42` | Retention/purge job |
 | Medium | Backward | Modal 429 không dùng `remaining/resetAt` BE trả | BUG-045; `ai-stylist-page.tsx:219` | Truyền error details; test component |
@@ -27,14 +29,14 @@
 | AC→BR | 24/24 AC ánh xạ ít nhất một BR |
 | BR→TC | 38/38 BR có TC; không có BR mồ côi |
 | TC→BR | 47/47 TC có link; không có test mồ côi |
-| TC→EXEC | 32/47 có EXEC; 15 `Not Run` được liệt kê, không tính PASS |
+| TC→EXEC | 47/47 có EXEC; không còn `Not Run`, nhưng toàn bộ vẫn là mock provider |
 | BUG→BR/TC | 16/16 defect candidate có link |
-| ID | Không trùng; BR-118…BR-155, TC-131…TC-177, BUG-042…BUG-057, EXEC-062…EXEC-093 |
+| ID | Không trùng; BR-118…BR-155, TC-131…TC-177, BUG-042…BUG-057, EXEC-062…EXEC-115 |
 
 ## 3. Điểm lệch có chủ đích (không tự sửa requirement theo code)
 
-- BR-133 (cấu trúc outfit) và BR-140 (cache key) đã hạ `Enforced` xuống `partial/no` và mở BUG-055/056 thay vì viết lại rule cho khớp code.
-- BR-128/131 giữ yêu cầu "neo phải là sản phẩm bán được"; code chấp nhận INACTIVE → BUG-057.
+- BR-133 (cấu trúc outfit) và BR-140 (cache key) đã được code enforce đầy đủ sau khi sửa BUG-055/056.
+- BR-128/131 "neo phải là sản phẩm bán được" nay được enforce (neo INACTIVE → 404/400), BUG-057 đã đóng.
 - History over-exposure là lỗi triển khai, không phải đặc tả; BR-139/146 giữ nguyên.
 
 ## 4. Open questions
@@ -50,7 +52,7 @@
 
 ## 5. Kết luận audit
 
-- Không có Critical; 2 High defect + 1 High bằng chứng thiếu.
-- Không thể tuyên bố coverage đầy đủ: 32 test chạy đều mock provider; 15 TC chưa chạy.
-- Đã giữ toàn bộ ID và lịch sử execution; không sửa code ứng dụng.
+- Không có Critical; 2 High defect đã sửa trong code; 1 High bằng chứng (provider/browser thật) còn thiếu.
+- Không thể tuyên bố coverage đầy đủ: 47/47 TC đã chạy nhưng đều mock provider/DB.
+- Đã giữ toàn bộ ID và lịch sử execution; code ứng dụng đã sửa theo defect, không sửa requirement.
 - Release: **Not Ready** (xem `07-report.md`).
