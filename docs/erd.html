@@ -1,0 +1,661 @@
+<!doctype html>
+<html lang="vi">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>FashionAI — ERD (Prisma schema)</title>
+<style>
+  :root {
+    --bg: #0b0f16;
+    --panel: #121826;
+    --panel-2: #0e1420;
+    --line: #22304a;
+    --text: #e6edf7;
+    --muted: #8b9bb4;
+    --identity: #6ea8fe;
+    --catalog: #f0a35e;
+    --commerce: #7ee0b0;
+    --money: #ff8f8f;
+    --ai: #c9a0ff;
+    --engage: #6fd3e8;
+    --infra: #9aa4b2;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif;
+    font-size: 13px;
+    overflow: hidden;
+  }
+  .app { display: flex; height: 100vh; }
+
+  aside {
+    width: 254px; flex: 0 0 254px; height: 100%;
+    background: var(--panel-2); border-right: 1px solid var(--line);
+    padding: 18px 16px; display: flex; flex-direction: column; gap: 18px; overflow: auto;
+  }
+  .brand { display: flex; flex-direction: column; gap: 4px; }
+  .brand h1 { margin: 0; font-size: 15px; letter-spacing: .2px; }
+  .brand p { margin: 0; font-size: 11.5px; color: var(--muted); line-height: 1.5; }
+  .stat { display: flex; gap: 14px; font-size: 11px; color: var(--muted); }
+  .stat b { color: var(--text); font-weight: 600; }
+
+  .search {
+    display: flex; align-items: center; gap: 8px;
+    background: #0a0f18; border: 1px solid var(--line); border-radius: 8px; padding: 7px 9px;
+  }
+  .search input {
+    all: unset; flex: 1; color: var(--text); font-size: 12px; min-width: 0;
+  }
+  .search input::placeholder { color: #5c6b82; }
+  .search svg { flex: 0 0 auto; color: var(--muted); }
+
+  .group-title { font-size: 10.5px; letter-spacing: .12em; text-transform: uppercase; color: #5f7088; margin: 0 0 8px; }
+  .filters { display: flex; flex-direction: column; gap: 3px; }
+  .filter {
+    display: flex; align-items: center; gap: 9px; cursor: pointer;
+    padding: 7px 9px; border-radius: 7px; border: 1px solid transparent; color: var(--text);
+    font-size: 12px; text-align: left; background: transparent; width: 100%;
+    transition: background .12s ease, border-color .12s ease;
+  }
+  .filter:hover { background: #161e2e; }
+  .filter.on { background: #16203a; border-color: #2b3d61; }
+  .filter .sw { width: 8px; height: 8px; border-radius: 50%; background: var(--c); box-shadow: 0 0 0 3px color-mix(in srgb, var(--c) 18%, transparent); }
+  .filter .n { flex: 1; }
+  .filter .c { font-size: 10.5px; color: var(--muted); font-variant-numeric: tabular-nums; }
+
+  .legend { display: flex; flex-direction: column; gap: 7px; font-size: 11px; color: var(--muted); }
+  .legend .row { display: flex; align-items: center; gap: 9px; }
+  .legend svg { flex: 0 0 46px; }
+  .hint { font-size: 10.5px; line-height: 1.6; color: #6a7b95; border-top: 1px solid var(--line); padding-top: 12px; }
+  kbd {
+    background: #1a2437; border: 1px solid #2b3d61; border-radius: 4px; padding: 0 4px;
+    font: inherit; font-size: 10px; color: #cfe0f7;
+  }
+
+  main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+  .toolbar {
+    display: flex; align-items: center; gap: 12px; padding: 10px 18px;
+    border-bottom: 1px solid var(--line); background: linear-gradient(180deg, #101726, #0d1320);
+  }
+  .toolbar .chip {
+    font-size: 11px; color: var(--muted); padding: 4px 9px; border: 1px solid var(--line);
+    border-radius: 999px; background: #0c1220;
+  }
+  .toolbar .chip b { color: #cfe0f7; font-weight: 600; }
+  .toolbar .grow { flex: 1; }
+  .toolbar button {
+    all: unset; cursor: pointer; font-size: 11.5px; color: #cfe0f7;
+    padding: 5px 11px; border: 1px solid #2b3d61; border-radius: 7px; background: #131c2c;
+  }
+  .toolbar button:hover { background: #1a2540; }
+
+  .wrap { flex: 1; overflow: auto; position: relative; }
+  .zoomholder { position: relative; }
+  .canvas { position: relative; transform-origin: 0 0; }
+  .compact .fields { display: none; }
+  .compact .card { height: 31px !important; }
+  #edges { position: absolute; left: 0; top: 0; overflow: visible; }
+  #nodes { position: absolute; left: 0; top: 0; }
+
+  .col-label {
+    position: absolute; font-size: 10px; letter-spacing: .14em; text-transform: uppercase;
+    color: #566b8a; font-weight: 600;
+  }
+
+  .card {
+    position: absolute; border-radius: 10px; overflow: hidden;
+    background: linear-gradient(180deg, #141c2b, #101724);
+    border: 1px solid #23314a;
+    box-shadow: 0 1px 0 rgba(255,255,255,.03) inset, 0 8px 18px -14px #000;
+    transition: border-color .12s ease, box-shadow .12s ease, opacity .18s ease, transform .12s ease;
+    cursor: pointer;
+  }
+  .card::before {
+    content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 3px; background: var(--c);
+  }
+  .card.dim { opacity: .26; }
+  .card.hot {
+    border-color: var(--c);
+    box-shadow: 0 0 0 1px var(--c) inset, 0 14px 34px -18px var(--c);
+    transform: translateY(-1px);
+  }
+  .card.sel { border-color: var(--c); box-shadow: 0 0 0 2px color-mix(in srgb, var(--c) 55%, transparent); }
+  .card-h {
+    display: flex; align-items: center; gap: 6px;
+    padding: 8px 10px 7px 12px; border-bottom: 1px solid #1e2a40;
+    font-weight: 600; font-size: 12px; letter-spacing: .1px;
+  }
+  .card-h .sw { width: 6px; height: 6px; border-radius: 50%; background: var(--c); }
+  .card-h .nm { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .fields { padding: 5px 10px 7px 12px; }
+  .f { display: flex; align-items: center; gap: 6px; height: 18px; font-size: 11px; }
+  .f .k { flex: 1; color: #a9bad2; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .f .t {
+    font-size: 8.5px; letter-spacing: .06em; font-weight: 700; padding: 1px 4px; border-radius: 3px;
+    background: #1c2942; color: #8fa8c8;
+  }
+  .f .t.PK { background: #2a3a26; color: #b6d98e; }
+  .f .t.FK { background: #2c2a44; color: #b9a8f0; }
+  .f .t.UQ { background: #2a3644; color: #93c3e0; }
+
+  .detail {
+    position: fixed; top: 0; right: 0; height: 100%; width: 372px;
+    background: var(--panel); border-left: 1px solid var(--line);
+    transform: translateX(102%); transition: transform .18s ease;
+    display: flex; flex-direction: column; z-index: 20;
+    box-shadow: -24px 0 60px -30px #000;
+  }
+  .detail.open { transform: none; }
+  .detail-h { display: flex; align-items: flex-start; gap: 10px; padding: 16px 16px 12px; border-bottom: 1px solid var(--line); }
+  .detail-h .sw { width: 9px; height: 9px; border-radius: 50%; background: var(--c); margin-top: 4px; }
+  .detail-h h2 { margin: 0; font-size: 14px; }
+  .detail-h p { margin: 2px 0 0; font-size: 11px; color: var(--muted); }
+  .detail-h .x { all: unset; cursor: pointer; color: var(--muted); font-size: 18px; line-height: 1; padding: 0 4px; margin-left: auto; }
+  .detail-h .x:hover { color: var(--text); }
+  .detail-b { overflow: auto; padding: 14px 16px 28px; display: flex; flex-direction: column; gap: 20px; }
+  .sec-t { font-size: 10px; letter-spacing: .13em; text-transform: uppercase; color: #5f7088; margin-bottom: 8px; }
+  .cols { display: flex; flex-direction: column; gap: 2px; }
+  .cols .row { display: flex; justify-content: space-between; gap: 8px; font-size: 11.5px; padding: 3px 0; border-bottom: 1px dashed #1c2740; }
+  .cols .row span:first-child { color: #a9bad2; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+  .cols .row span:last-child { color: #7d8fa8; font-size: 10px; }
+  .rel { display: flex; flex-direction: column; gap: 1px; }
+  .rel a {
+    all: unset; cursor: pointer; display: flex; align-items: baseline; gap: 8px;
+    padding: 5px 7px; border-radius: 6px; font-size: 11.5px;
+  }
+  .rel a:hover { background: #182238; }
+  .rel a .arrow { color: #5c708c; width: 12px; }
+  .rel a .nm { color: #dbe7f5; font-weight: 500; }
+  .rel a .via { color: #6f83a0; font-size: 10.5px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; margin-left: auto; }
+  .rel a .tag { font-size: 9px; font-weight: 700; color: #93a7c2; background: #1b2740; border-radius: 3px; padding: 1px 4px; }
+  .empty { font-size: 11.5px; color: #6a7b95; }
+</style>
+</head>
+<body>
+<div class="app">
+  <aside>
+    <div class="brand">
+      <h1>FashionAI · ERD</h1>
+      <p>Sinh từ <code>prisma/schema.prisma</code> — quan hệ khoá ngoại thực tế của Prisma.</p>
+    </div>
+    <div class="stat">
+      <span><b id="s-tables">0</b> bảng</span>
+      <span><b id="s-enums">0</b> enum</span>
+      <span><b id="s-rel">0</b> quan hệ</span>
+    </div>
+    <div class="search">
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg>
+      <input id="q" placeholder="Tìm bảng hoặc cột…" autocomplete="off" spellcheck="false" />
+    </div>
+    <div>
+      <p class="group-title">Nhóm miền</p>
+      <div class="filters" id="filters"></div>
+    </div>
+    <div class="legend">
+      <div class="row">
+        <svg width="46" height="10"><path d="M2 5H44" stroke="#8b9bb4" stroke-width="1.6"/><path d="M38 1.5L44 5L38 8.5" fill="#8b9bb4"/></svg>
+        <span>1 : N</span>
+      </div>
+      <div class="row">
+        <svg width="46" height="10"><path d="M2 3H44M2 7H44" stroke="#8b9bb4" stroke-width="1.4"/><path d="M38 1L44 5L38 9" fill="#8b9bb4"/></svg>
+        <span>1 : 1 (unique FK)</span>
+      </div>
+      <div class="row">
+        <svg width="46" height="10"><path d="M2 5H44" stroke="#8b9bb4" stroke-width="1.4" stroke-dasharray="3 3"/><path d="M38 1.5L44 5L38 8.5" fill="#8b9bb4"/></svg>
+        <span>N : M / tham chiếu mềm</span>
+      </div>
+    </div>
+    <p class="hint">Rê chuột lên một bảng để xem các quan hệ của nó. Bấm để mở chi tiết bảng. <kbd>Esc</kbd> để đóng.</p>
+  </aside>
+
+  <main>
+    <div class="toolbar">
+      <span class="chip">Nguồn: <b>prisma/schema.prisma</b></span>
+      <span class="chip" id="scope-chip">Phạm vi: <b>toàn bộ schema</b></span>
+      <span class="grow"></span>
+      <button id="btn-compact">Thu gọn</button>
+      <button id="btn-fit">Vừa màn hình</button>
+      <button id="btn-100">100%</button>
+      <button id="btn-all">Hiện tất cả</button>
+    </div>
+    <div class="wrap" id="wrap">
+      <div class="zoomholder" id="zoomholder">
+        <div class="canvas" id="canvas">
+          <svg id="edges"></svg>
+          <div id="nodes"></div>
+        </div>
+      </div>
+    </div>
+  </main>
+
+  <div class="detail" id="detail"></div>
+</div>
+
+<script>
+(function () {
+  "use strict";
+
+  const G = {
+    identity: { label: "Danh tính & Xác thực", color: "#6ea8fe" },
+    catalog:  { label: "Danh mục sản phẩm",   color: "#f0a35e" },
+    commerce: { label: "Giỏ hàng & Đơn hàng",  color: "#7ee0b0" },
+    money:    { label: "Thanh toán & Vận chuyển", color: "#ff8f8f" },
+    ai:       { label: "AI & Hạn mức",         color: "#c9a0ff" },
+    engage:   { label: "Chat & Thông báo",     color: "#6fd3e8" },
+    infra:    { label: "Hạ tầng",              color: "#9aa4b2" }
+  };
+
+  const N = (n, g, f) => ({ n, g, f });
+
+  const nodes = [
+    N("User", "identity", [["id","PK"],["email","UQ"],["tier",""],["role",""],["provider",""],["isVerified",""],["createdAt",""]]),
+    N("UserAddress", "identity", [["id","PK"],["userId","FK"],["recipientName",""],["phone",""],["ghnProvinceV3Id",""],["ghnWardV3Id",""]]),
+    N("Measurement", "identity", [["id","PK"],["userId","FK"],["height",""],["weight",""],["chest",""],["waist",""],["hip",""]]),
+    N("RefreshToken", "identity", [["id","PK"],["userId","FK"],["tokenHash","UQ"],["expiresAt",""]]),
+    N("PasswordResetToken", "identity", [["id","PK"],["userId","FK"],["tokenHash","UQ"],["expiresAt",""]]),
+    N("EmailVerificationToken", "identity", [["id","PK"],["userId","FK"],["tokenHash","UQ"],["expiresAt",""]]),
+    N("DeviceToken", "identity", [["id","PK"],["userId","FK"],["token","UQ"],["platform",""]]),
+
+    N("Product", "catalog", [["id","PK"],["name",""],["category",""],["garmentType",""],["layerRole",""],["gender",""],["price",""],["status",""]]),
+    N("ProductImage", "catalog", [["id","PK"],["productId","FK"],["imageUrl",""],["isMain",""],["colorName",""]]),
+    N("Collection", "catalog", [["id","PK"],["name","UQ"],["slug","UQ"],["isPublished",""],["displayOrder",""]]),
+    N("ProductCollection", "catalog", [["collectionId","PK"],["productId","PK"]]),
+    N("SaleCampaign", "catalog", [["id","PK"],["name",""],["discountPercent",""],["isActive",""],["startsAt",""],["endsAt",""]]),
+    N("SaleCampaignItem", "catalog", [["campaignId","PK"],["productId","PK"]]),
+    N("Review", "catalog", [["id","PK"],["userId","FK"],["productId","FK"],["orderId","FK"],["rating",""],["comment",""]]),
+    N("ReviewReply", "catalog", [["id","PK"],["reviewId","FK"],["userId","FK"],["content",""]]),
+
+    N("CartItem", "commerce", [["id","PK"],["userId","FK"],["productId","FK"],["color",""],["comboType",""],["quantity",""]]),
+    N("Order", "commerce", [["id","PK"],["orderCode","UQ"],["userId","FK"],["status",""],["totalVnd",""],["paymentStatus",""],["refundStatus",""]]),
+    N("OrderItem", "commerce", [["id","PK"],["orderId","FK"],["productId","FK"],["quantity",""],["price",""],["lineTotalVnd",""],["measurementSnapshot",""]]),
+    N("OrderIssue", "commerce", [["id","PK"],["orderId","FK"],["orderItemId","FK"],["userId","FK"],["adminId","FK"],["reason",""],["status",""]]),
+    N("Coupon", "commerce", [["id","PK"],["code","UQ"],["discountType",""],["discountValue",""],["usageLimit",""],["isActive",""]]),
+    N("CouponRedemption", "commerce", [["id","PK"],["couponId","FK"],["userId","FK"],["orderId","FK UQ"]]),
+    N("OrderQuote", "commerce", [["id","PK"],["tokenHash","UQ"],["userId","FK"],["consumedOrderId","FK"],["status",""],["expiresAt",""]]),
+    N("OrderIdempotencyKey", "commerce", [["id","PK"],["userId","FK"],["key",""],["orderId","FK"],["quoteId","FK"],["state",""]]),
+    N("Subscription", "commerce", [["id","PK"],["userId","FK"],["orderId","FK"],["tier",""],["status",""],["startsAt",""],["expiresAt",""]]),
+    N("RackItem", "commerce", [["id","PK"],["userId","FK"],["productId","FK"]]),
+
+    N("Payment", "money", [["id","PK"],["orderId","FK"],["provider",""],["transactionId",""],["status",""],["amountVnd",""]]),
+    N("Refund", "money", [["id","PK"],["orderId","FK"],["paymentId","FK"],["kind",""],["amountVnd",""],["status",""]]),
+    N("Shipment", "money", [["id","PK"],["orderId","FK"],["provider",""],["providerOrderCode",""],["status",""],["shippingFeeVnd",""]]),
+    N("OrderEvent", "money", [["id","PK"],["orderId","FK"],["shipmentId","FK"],["type",""],["fromStatus",""],["toStatus",""]]),
+    N("DeliveryDispute", "money", [["id","PK"],["orderId","FK"],["userId","FK"],["resolvedBy","FK"],["status",""],["resolution",""]]),
+    N("WebhookEvent", "money", [["id","PK"],["provider",""],["eventKey","UQ"],["orderId","FK"],["paymentId","FK"],["shipmentId","FK"],["status",""]]),
+    N("WebhookFailure", "money", [["id","PK"],["provider",""],["reason",""],["orderCode",""],["resolved",""]]),
+    N("OutboxEvent", "money", [["id","PK"],["eventKey","UQ"],["type",""],["aggregateType",""],["aggregateId",""],["status",""]]),
+
+    N("TryOnResult", "ai", [["id","PK"],["userId","FK"],["productId","FK?"],["category",""],["resultUrl",""],["cacheKey",""]]),
+    N("StylistResult", "ai", [["id","PK"],["userId","FK"],["productId","FK?"],["analysisResult",""],["cacheKey",""]]),
+    N("LiveTryOnSession", "ai", [["id","PK"],["userId","FK"],["productId","FK"],["status",""],["credentialStatus",""],["reservedSeconds",""]]),
+    N("LiveTryOnSessionItem", "ai", [["id","PK"],["sessionId","FK"],["productId","FK"],["layerRole",""],["isPrimary",""]]),
+    N("LiveTryOnLease", "ai", [["id","PK"],["userId","FK UQ"],["sessionId","FK UQ"],["expiresAt",""]]),
+    N("LiveTryOnBudget", "ai", [["id","PK"],["scopeKey",""],["userId","FK?"],["date",""],["limitSeconds",""]]),
+    N("LiveTryOnPolicyAudit", "ai", [["id","PK"],["actorId","FK?"],["before",""],["after",""]]),
+    N("DailyUsage", "ai", [["id","PK"],["userId","FK"],["action",""],["date",""],["count",""]]),
+
+    N("ChatSession", "engage", [["id","PK"],["userId","FK"],["title",""],["updatedAt",""]]),
+    N("ChatMessage", "engage", [["id","PK"],["sessionId","FK"],["role",""],["content",""],["suggestions",""]]),
+    N("OrderConversation", "engage", [["id","PK"],["orderId","FK UQ"],["customerId","FK"],["lastMessageAt",""]]),
+    N("OrderChatMessage", "engage", [["id","PK"],["conversationId","FK"],["senderId","FK?"],["senderRole",""],["content",""]]),
+    N("Notification", "engage", [["id","PK"],["userId","FK"],["type",""],["title",""],["isRead",""]]),
+
+    N("AppSetting", "infra", [["key","PK"],["value",""]]),
+    N("GhnLocation", "infra", [["id","PK"],["level",""],["code",""],["parentCode",""],["isActive",""]]),
+    N("GhnCatalogMetadata", "infra", [["addressModel","PK"],["publishedGeneration",""],["catalogRevision",""]]),
+    N("GhnCatalogPublication", "infra", [["id","PK"],["addressModel",""],["catalogRevision",""],["retainedUntil",""]]),
+    N("GhnLocationSyncRun", "infra", [["id","PK"],["addressModel",""],["status",""],["startedAt",""]])
+  ];
+
+  const R = (a, b, t, via) => ({ a, b, t, via });
+  const relations = [
+    R("User","Measurement","1:1","userId (unique)"),
+    R("User","UserAddress","1:N","userId"),
+    R("User","RefreshToken","1:N","userId"),
+    R("User","PasswordResetToken","1:N","userId"),
+    R("User","EmailVerificationToken","1:N","userId"),
+    R("User","DeviceToken","1:N","userId"),
+    R("User","RackItem","1:N","userId"),
+    R("User","CartItem","1:N","userId"),
+    R("User","Review","1:N","userId"),
+    R("User","ReviewReply","1:N","userId"),
+    R("User","Order","1:N","userId"),
+    R("User","Subscription","1:N","userId"),
+    R("User","OrderIssue","1:N","userId (người tạo)"),
+    R("User","OrderIssue","1:N","adminId (người duyệt)"),
+    R("User","OrderQuote","1:N","userId"),
+    R("User","OrderIdempotencyKey","1:N","userId"),
+    R("User","CouponRedemption","1:N","userId"),
+    R("User","TryOnResult","1:N","userId"),
+    R("User","StylistResult","1:N","userId"),
+    R("User","LiveTryOnSession","1:N","userId"),
+    R("User","LiveTryOnLease","1:1","userId (unique)"),
+    R("User","LiveTryOnBudget","1:N","userId"),
+    R("User","LiveTryOnPolicyAudit","1:N","actorId"),
+    R("User","DailyUsage","1:N","userId"),
+    R("User","ChatSession","1:N","userId"),
+    R("User","Notification","1:N","userId"),
+    R("User","OrderConversation","1:N","customerId"),
+    R("User","OrderChatMessage","1:N","senderId"),
+    R("User","DeliveryDispute","1:N","userId (người báo)"),
+    R("User","DeliveryDispute","1:N","resolvedBy (admin)"),
+
+    R("Product","ProductImage","1:N","productId"),
+    R("Product","ProductCollection","N:M","productId"),
+    R("Product","SaleCampaignItem","N:M","productId"),
+    R("Product","Review","1:N","productId"),
+    R("Product","RackItem","1:N","productId"),
+    R("Product","CartItem","1:N","productId"),
+    R("Product","OrderItem","1:N","productId"),
+    R("Product","TryOnResult","1:N","productId?"),
+    R("Product","StylistResult","1:N","productId?"),
+    R("Product","LiveTryOnSession","1:N","productId"),
+    R("Product","LiveTryOnSessionItem","1:N","productId"),
+    R("Collection","ProductCollection","N:M","collectionId"),
+    R("SaleCampaign","SaleCampaignItem","N:M","campaignId"),
+    R("Review","ReviewReply","1:N","reviewId"),
+
+    R("Order","OrderItem","1:N","orderId"),
+    R("Order","OrderIssue","1:N","orderId"),
+    R("Order","Payment","1:N","orderId"),
+    R("Order","Refund","1:N","orderId"),
+    R("Order","Shipment","1:N","orderId"),
+    R("Order","OrderEvent","1:N","orderId"),
+    R("Order","Subscription","1:N","orderId"),
+    R("Order","Review","1:N","orderId"),
+    R("Order","CouponRedemption","1:1","orderId (unique)"),
+    R("Order","OrderConversation","1:1","orderId (unique)"),
+    R("Order","DeliveryDispute","1:N","orderId"),
+    R("Order","OrderQuote","1:N","consumedOrderId"),
+    R("Order","OrderIdempotencyKey","1:N","orderId"),
+
+    R("OrderItem","OrderIssue","1:N","orderItemId"),
+    R("Coupon","CouponRedemption","1:N","couponId"),
+    R("Payment","Refund","1:N","paymentId"),
+    R("Shipment","OrderEvent","1:N","shipmentId"),
+    R("LiveTryOnSession","LiveTryOnLease","1:1","sessionId (unique)"),
+    R("LiveTryOnSession","LiveTryOnSessionItem","1:N","sessionId"),
+    R("ChatSession","ChatMessage","1:N","sessionId"),
+    R("OrderConversation","OrderChatMessage","1:N","conversationId"),
+
+    R("WebhookEvent","Order","ref","orderId (FK mềm)"),
+    R("WebhookEvent","Payment","ref","paymentId (FK mềm)"),
+    R("WebhookEvent","Shipment","ref","shipmentId (FK mềm)")
+  ];
+
+  const cols = [
+    ["User","UserAddress","Measurement","RefreshToken","PasswordResetToken","EmailVerificationToken","DeviceToken"],
+    ["Product","ProductImage","Collection","ProductCollection","SaleCampaign","SaleCampaignItem","Review","ReviewReply"],
+    ["Order","OrderItem","OrderIssue","Coupon","CouponRedemption","OrderQuote","OrderIdempotencyKey","Subscription","CartItem","RackItem"],
+    ["Payment","Refund","Shipment","OrderEvent","DeliveryDispute","WebhookEvent","WebhookFailure","OutboxEvent"],
+    ["TryOnResult","StylistResult","LiveTryOnSession","LiveTryOnSessionItem","LiveTryOnLease","LiveTryOnBudget","LiveTryOnPolicyAudit","DailyUsage"],
+    ["ChatSession","ChatMessage","OrderConversation","OrderChatMessage","Notification","AppSetting","GhnLocation","GhnCatalogMetadata","GhnCatalogPublication","GhnLocationSyncRun"]
+  ];
+
+  const byId = {};
+  nodes.forEach(n => { byId[n.n] = n; });
+
+  const W = 202, GAP_X = 66, GAP_Y = 20, PAD = 30, HEAD = 31, ROW = 18, FOOT = 10;
+  const nodeH = (n, compact) => compact ? HEAD : HEAD + n.f.length * ROW + FOOT;
+  const card = {};
+  let edgeEls = [];
+  let canvasW = 0, canvasH = 0;
+  let compact = false;
+
+  const nodesEl = document.getElementById("nodes");
+  const svg = document.getElementById("edges");
+  const canvas = document.getElementById("canvas");
+
+  canvas.style.transform = "";
+
+  const markerDefs = Object.keys(G).map(k =>
+    '<marker id="ar-' + k + '" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">' +
+      '<path d="M0 0 L10 5 L0 10 z" fill="' + G[k].color + '"/></marker>').join("");
+  svg.innerHTML = "<defs>" + markerDefs + "</defs>";
+
+  function pathFor(a, b) {
+    const s = card[a], t = card[b];
+    const scx = s.x + s.w / 2, scy = s.y + s.h / 2;
+    const tcx = t.x + t.w / 2, tcy = t.y + t.h / 2;
+    const dx = tcx - scx, dy = tcy - scy;
+    let sx, sy, tx, ty, c1x, c1y, c2x, c2y;
+    if (Math.abs(dx) > W * 0.6) {
+      const right = dx > 0;
+      sx = right ? s.x + s.w : s.x;
+      tx = right ? t.x : t.x + t.w;
+      sy = scy + Math.max(-s.h / 3, Math.min(s.h / 3, dy * 0.08));
+      ty = tcy + Math.max(-t.h / 3, Math.min(t.h / 3, -dy * 0.08));
+      const mid = (sx + tx) / 2;
+      c1x = mid; c1y = sy; c2x = mid; c2y = ty;
+    } else {
+      const down = dy > 0;
+      sx = scx; sy = down ? s.y + s.h : s.y;
+      tx = tcx; ty = down ? t.y : t.y + t.h;
+      const midy = (sy + ty) / 2;
+      c1x = sx; c1y = midy; c2x = tx; c2y = midy;
+    }
+    return "M" + sx + "," + sy + " C" + c1x + "," + c1y + " " + c2x + "," + c2y + " " + tx + "," + ty;
+  }
+
+  function build() {
+    nodesEl.innerHTML = "";
+    [...svg.querySelectorAll("path")].forEach(p => p.remove());
+    edgeEls = [];
+    let maxH = 0;
+
+    cols.forEach((col, ci) => {
+      const x = PAD + ci * (W + GAP_X);
+      let y = compact ? 38 : 46;
+      const label = document.createElement("div");
+      label.className = "col-label";
+      label.style.left = x + "px";
+      label.style.top = "16px";
+      label.textContent = G[byId[col[0]].g].label;
+      label.style.color = G[byId[col[0]].g].color;
+      label.style.opacity = ".75";
+      nodesEl.appendChild(label);
+
+      col.forEach(name => {
+        const n = byId[name];
+        const h = nodeH(n, compact);
+        card[name] = { x, y, w: W, h };
+        const el = document.createElement("div");
+        el.className = "card" + (compact ? " compact" : "");
+        el.dataset.id = name;
+        el.style.left = x + "px";
+        el.style.top = y + "px";
+        el.style.width = W + "px";
+        el.style.height = h + "px";
+        el.style.setProperty("--c", G[n.g].color);
+        el.innerHTML =
+          '<div class="card-h"><span class="sw"></span><span class="nm">' + n.n + '</span></div>' +
+          (compact ? "" :
+            '<div class="fields">' +
+              n.f.map(f => '<div class="f"><span class="k">' + f[0] + '</span>' +
+                (f[1] ? '<span class="t ' + f[1].split(" ")[0] + '">' + f[1] + '</span>' : "") +
+              '</div>').join("") +
+            '</div>');
+        nodesEl.appendChild(el);
+        y += h + (compact ? 12 : GAP_Y);
+      });
+      maxH = Math.max(maxH, y);
+    });
+
+    canvasW = PAD * 2 + cols.length * W + (cols.length - 1) * GAP_X;
+    canvasH = maxH + 24;
+    canvas.style.width = canvasW + "px";
+    canvas.style.height = canvasH + "px";
+    svg.setAttribute("width", canvasW);
+    svg.setAttribute("height", canvasH);
+    svg.setAttribute("viewBox", "0 0 " + canvasW + " " + canvasH);
+
+    relations.forEach(r => {
+      if (!card[r.a] || !card[r.b]) return;
+      const g = byId[r.a].g;
+      const p = document.createElementNS("http://www.w3.org/2000/svg", "path");
+      p.setAttribute("d", pathFor(r.a, r.b));
+      p.setAttribute("fill", "none");
+      p.setAttribute("stroke", G[g].color);
+      p.setAttribute("stroke-width", r.t === "ref" ? "1" : "1.3");
+      p.setAttribute("stroke-opacity", "0.13");
+      p.setAttribute("stroke-dasharray", r.t === "ref" ? "4 4" : (r.t === "1:1" ? "7 3" : "none"));
+      p.setAttribute("marker-end", "url(#ar-" + g + ")");
+      p.dataset.a = r.a;
+      p.dataset.b = r.b;
+      svg.appendChild(p);
+      edgeEls.push(p);
+    });
+
+    bindCards();
+    apply();
+  }
+
+  function scaleTo(s) {
+    canvas.style.transform = "scale(" + s + ")";
+    const holder = document.getElementById("zoomholder");
+    holder.style.width = canvasW * s + "px";
+    holder.style.height = canvasH * s + "px";
+  }
+
+  function fit() {
+    const wrap = document.getElementById("wrap");
+    const s = Math.min((wrap.clientWidth - 8) / canvasW, (wrap.clientHeight - 8) / canvasH);
+    scaleTo(Math.max(0.18, Math.min(1, s)));
+    wrap.scrollTo({ left: 0, top: 0 });
+  }
+
+  let hovered = null, selected = null, activeGroup = null, query = "";
+
+  function relationsOf(id) {
+    return relations.filter(r => r.a === id || r.b === id);
+  }
+
+  function apply() {
+    const focus = hovered || selected;
+    document.querySelectorAll(".card").forEach(el => {
+      const id = el.dataset.id;
+      const n = byId[id];
+      const dimByGroup = activeGroup && n.g !== activeGroup;
+      const dimByQuery = query && !(id.toLowerCase().includes(query) || n.f.some(f => f[0].toLowerCase().includes(query)));
+      const dimByFocus = focus && !(id === focus || relationsOf(focus).some(r => r.a === id || r.b === id));
+      el.classList.toggle("dim", !!(dimByGroup || dimByQuery || dimByFocus));
+      el.classList.toggle("hot", id === focus);
+      el.classList.toggle("sel", id === selected);
+    });
+    edgeEls.forEach(p => {
+      const a = p.dataset.a, b = p.dataset.b;
+      const na = byId[a], nb = byId[b];
+      let vis = 0.13;
+      if (focus && (a === focus || b === focus)) vis = 0.95;
+      else if (activeGroup && (na.g === activeGroup || nb.g === activeGroup)) vis = 0.3;
+      if (query) vis = Math.max(vis, 0.06);
+      p.setAttribute("stroke-opacity", vis);
+      p.setAttribute("stroke-width", vis > 0.6 ? "2" : (vis > 0.25 ? "1.5" : "1.2"));
+    });
+    document.querySelectorAll(".filter").forEach(b => b.classList.toggle("on", b.dataset.g === activeGroup));
+    const chip = document.getElementById("scope-chip");
+    chip.innerHTML = "Phạm vi: <b>" + (activeGroup ? G[activeGroup].label : "toàn bộ schema") + "</b>";
+  }
+
+  function bindCards() {
+    document.querySelectorAll(".card").forEach(el => {
+      el.addEventListener("mouseenter", () => { hovered = el.dataset.id; apply(); });
+      el.addEventListener("mouseleave", () => { hovered = null; apply(); });
+      el.addEventListener("click", () => openDetail(el.dataset.id));
+    });
+  }
+
+  /* detail panel */
+  const detail = document.getElementById("detail");
+  function openDetail(id) {
+    const n = byId[id];
+    selected = id;
+    const out = relations.filter(r => r.a === id);
+    const inc = relations.filter(r => r.b === id);
+    const row = (k, t) => '<div class="row"><span>' + k + '</span><span>' + (t || "") + '</span></div>';
+    const relRow = r => '<a data-go="' + (r.a === id ? r.b : r.a) + '">' +
+        '<span class="arrow">' + (r.a === id ? "→" : "←") + '</span>' +
+        '<span class="nm">' + (r.a === id ? r.b : r.a) + '</span>' +
+        '<span class="tag">' + r.t + '</span>' +
+        '<span class="via">' + r.via + '</span></a>';
+
+    detail.style.setProperty("--c", G[n.g].color);
+    detail.innerHTML =
+      '<div class="detail-h"><span class="sw"></span><div><h2>' + n.n + '</h2>' +
+        '<p>' + G[n.g].label + " · " + n.f.length + ' cột hiển thị</p></div>' +
+        '<button class="x" id="close">×</button></div>' +
+      '<div class="detail-b">' +
+        '<div><p class="sec-t">Cột</p><div class="cols">' +
+          n.f.map(f => row(f[0], f[1])).join("") + '</div></div>' +
+        '<div><p class="sec-t">Trỏ tới (' + out.length + ')</p><div class="rel">' +
+          (out.length ? out.map(relRow).join("") : '<p class="empty">Không có quan hệ đi ra.</p>') +
+        '</div></div>' +
+        '<div><p class="sec-t">Được tham chiếu bởi (' + inc.length + ')</p><div class="rel">' +
+          (inc.length ? inc.map(relRow).join("") : '<p class="empty">Không có quan hệ đi vào.</p>') +
+        '</div></div>' +
+      '</div>';
+    detail.classList.add("open");
+    document.getElementById("close").addEventListener("click", closeDetail);
+    detail.querySelectorAll("[data-go]").forEach(a => {
+      a.addEventListener("click", () => openDetail(a.dataset.go));
+    });
+    apply();
+  }
+  function closeDetail() {
+    detail.classList.remove("open");
+    selected = null;
+    apply();
+  }
+  document.addEventListener("keydown", e => { if (e.key === "Escape") closeDetail(); });
+
+  /* sidebar filters */
+  const filters = document.getElementById("filters");
+  const counts = {};
+  nodes.forEach(n => { counts[n.g] = (counts[n.g] || 0) + 1; });
+  const all = document.createElement("button");
+  all.className = "filter on";
+  all.dataset.g = "";
+  all.innerHTML = '<span class="sw" style="--c:#dfe8f6"></span><span class="n">Toàn bộ schema</span><span class="c">' + nodes.length + '</span>';
+  all.addEventListener("click", () => { activeGroup = null; apply(); });
+  filters.appendChild(all);
+
+  Object.keys(G).forEach(k => {
+    const b = document.createElement("button");
+    b.className = "filter";
+    b.dataset.g = k;
+    b.style.setProperty("--c", G[k].color);
+    b.innerHTML = '<span class="sw"></span><span class="n">' + G[k].label + '</span><span class="c">' + (counts[k] || 0) + '</span>';
+    b.addEventListener("click", () => { activeGroup = activeGroup === k ? null : k; apply(); });
+    filters.appendChild(b);
+  });
+
+  const q = document.getElementById("q");
+  q.addEventListener("input", () => { query = q.value.trim().toLowerCase(); apply(); });
+
+  document.getElementById("btn-all").addEventListener("click", () => {
+    activeGroup = null; query = ""; q.value = ""; closeDetail();
+  });
+  document.getElementById("btn-compact").addEventListener("click", (e) => {
+    compact = !compact;
+    e.currentTarget.textContent = compact ? "Hiện cột" : "Thu gọn";
+    build();
+    if (scaleFit) fit();
+  });
+  document.getElementById("btn-fit").addEventListener("click", () => { scaleFit = true; fit(); });
+  document.getElementById("btn-100").addEventListener("click", () => { scaleFit = false; scaleTo(1); });
+
+  document.getElementById("s-tables").textContent = nodes.length;
+  document.getElementById("s-enums").textContent = 34;
+  document.getElementById("s-rel").textContent = relations.filter(r => r.t !== "ref").length;
+
+  let scaleFit = true;
+  build();
+  fit();
+  window.addEventListener("resize", () => { if (scaleFit) fit(); });
+})();
+</script>
+</body>
+</html>

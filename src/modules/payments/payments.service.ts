@@ -211,6 +211,29 @@ export class PaymentsService {
 
     // Upgrade giữa kỳ: prorate về cuối chu kỳ hiện tại, khách chỉ trả chênh
     // lệch phần còn lại (làm tròn lên 1.000đ). Còn ít ngày thì thu full như renewal.
+    const { amount, proration } = await this.resolveSubscriptionPrice(userId, targetTier);
+
+    return createWithUniqueOrderCode((orderCode) =>
+      this.prisma.order.create({
+        data: {
+          orderCode,
+          userId,
+          targetTier,
+          amount,
+          prorationSnapshot: (proration ?? undefined) as Prisma.InputJsonValue | undefined,
+          status: OrderStatus.CREATED,
+          paymentStatus: PaymentStatus.PENDING,
+        },
+      }),
+    );
+  }
+
+  /**
+   * Giá phải thu cho một gói: giá niêm yết, hoặc net proration khi user đang ở
+   * gói thấp hơn còn hạn. Dùng chung cho checkout và endpoint báo giá để hai nơi
+   * không bao giờ lệch nhau.
+   */
+  private async resolveSubscriptionPrice(userId: string, targetTier: UserTier) {
     let amount = TIER_PRICES[targetTier];
     let proration: UpgradeProration | null = null;
 
@@ -240,19 +263,28 @@ export class PaymentsService {
       }
     }
 
-    return createWithUniqueOrderCode((orderCode) =>
-      this.prisma.order.create({
-        data: {
-          orderCode,
-          userId,
-          targetTier,
-          amount,
-          prorationSnapshot: (proration ?? undefined) as Prisma.InputJsonValue | undefined,
-          status: OrderStatus.CREATED,
-          paymentStatus: PaymentStatus.PENDING,
-        },
-      }),
-    );
+    return { amount, proration };
+  }
+
+  /**
+   * Báo giá trước khi checkout để UI hiện đúng số tiền thực thu (gói niêm yết
+   * 99.000đ nhưng nâng cấp giữa kỳ chỉ còn phải trả phần chênh lệch).
+   */
+  async getSubscriptionQuote(userId: string, targetTier: UserTier) {
+    if (targetTier === UserTier.FREE) {
+      throw new BadRequestException(
+        'Không thể mua gói FREE. Dùng gói miễn phí mặc định của tài khoản.',
+      );
+    }
+
+    const { amount, proration } = await this.resolveSubscriptionPrice(userId, targetTier);
+
+    return {
+      targetTier,
+      listPrice: TIER_PRICES[targetTier],
+      amount,
+      proration,
+    };
   }
 
   /**
@@ -387,6 +419,7 @@ export class PaymentsService {
         deeplink: existingData?.deeplink,
         qrCodeUrl: existingData?.qrCodeUrl,
         qrCode: existingData?.qrCode,
+        proration: order.prorationSnapshot ?? null,
         extra: { providerOrderId: existingPayment.providerPaymentId, requestId: existingPayment.idempotencyKey },
       };
     }
@@ -490,6 +523,7 @@ export class PaymentsService {
       deeplink: result.deeplink,
       qrCodeUrl: result.qrCodeUrl,
       qrCode: result.qrCode,
+      proration: order.prorationSnapshot ?? null,
       extra: { providerOrderId, requestId },
     };
   }

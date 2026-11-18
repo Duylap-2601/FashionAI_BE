@@ -1,0 +1,473 @@
+<!doctype html>
+<html lang="vi">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>FashionAI — ERD (Prisma schema)</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #fff; color: #1f1f1f;
+    font-family: ui-sans-serif, system-ui, "Segoe UI", Arial, sans-serif; }
+  body { overflow: hidden; }
+
+  .bar {
+    display: flex; align-items: center; gap: 6px; padding: 7px 14px;
+    border-bottom: 1px solid #d8d8d8; background: #fafafa; font-size: 12px;
+  }
+  .bar .name { font-weight: 600; color: #333; margin-right: 10px; }
+  .bar .sep { width: 1px; height: 18px; background: #d8d8d8; margin: 0 4px; }
+  .bar .sp { flex: 1; }
+  .bar button {
+    all: unset; cursor: pointer; font-size: 11.5px; color: #333;
+    padding: 3px 9px; border: 1px solid #c4c4c4; border-radius: 3px; background: #fff;
+  }
+  .bar button:hover { background: #f0f0f0; }
+  .bar button.on { background: #e8eef7; border-color: #9db4d0; }
+  .bar .meta { color: #777; font-size: 11px; }
+
+  .view { flex: 1; overflow: auto; background: #fff; height: calc(100vh - 37px); }
+  .inner { position: relative; }
+  .canvas { position: relative; transform-origin: 0 0; }
+
+  svg#edges { position: absolute; left: 0; top: 0; overflow: visible; }
+  #nodes { position: absolute; left: 0; top: 0; }
+
+  .col-label {
+    position: absolute; font-size: 10px; letter-spacing: .08em; text-transform: uppercase;
+    color: #8a8a8a; font-weight: 600;
+  }
+
+  .ent {
+    position: absolute; border: 1px solid #8c8c8c; background: #fff;
+    box-sizing: border-box; overflow: hidden;
+  }
+  .ent-h {
+    height: 28px; display: flex; align-items: center; padding: 0 9px;
+    font-size: 12.5px; font-weight: 600; color: #1b1b1b;
+    border-bottom: 1px solid #8c8c8c; background: var(--h);
+  }
+  .ent-h .dim { color: #777; font-weight: 400; font-size: 10.5px; margin-left: auto; }
+  .ent-b { background: #fff; }
+  .ent-b .r {
+    height: 21px; display: flex; align-items: center; gap: 6px;
+    padding: 0 9px; font-size: 11.5px; color: #2a2a2a; border-bottom: 1px solid #e2e2e2;
+    white-space: nowrap;
+  }
+  .ent-b .r:last-child { border-bottom: 0; }
+  .ent-b .r .f { flex: 1; overflow: hidden; text-overflow: ellipsis; }
+  .ent-b .r .k { font-size: 9px; color: #909090; letter-spacing: .04em; }
+  .ent-b .r.fk .f { color: #2a2a2a; }
+</style>
+</head>
+<body>
+
+<div class="bar">
+  <span class="name">FashionAI ERD</span>
+  <span id="views" style="display:flex;gap:4px"></span>
+  <span class="sep"></span>
+  <button id="fit">Vừa màn hình</button>
+  <button id="one">100%</button>
+  <span class="sp"></span>
+  <span class="meta" id="meta"></span>
+</div>
+
+<div class="view" id="view">
+  <div class="inner" id="inner">
+    <div class="canvas" id="canvas">
+      <svg id="edges"></svg>
+      <div id="nodes"></div>
+    </div>
+  </div>
+</div>
+
+<script>
+(function () {
+  "use strict";
+
+  var ENT = {
+    User: [["id","PK"],["email","UK"],["passwordHash",""],["name",""],["tier",""],["tierExpiresAt",""],["role",""],["provider",""],["isVerified",""]],
+    UserAddress: [["id","PK"],["userId","FK"],["recipientName",""],["phone",""],["ghnProvinceV3Id",""],["ghnWardV3Id",""],["isDefault",""]],
+    Measurement: [["id","PK"],["userId","FK"],["height",""],["weight",""],["chest",""],["waist",""],["hip",""],["shoulder",""]],
+    RefreshToken: [["id","PK"],["userId","FK"],["tokenHash","UK"],["expiresAt",""]],
+    PasswordResetToken: [["id","PK"],["userId","FK"],["tokenHash","UK"],["expiresAt",""]],
+    EmailVerificationToken: [["id","PK"],["userId","FK"],["tokenHash","UK"],["expiresAt",""]],
+    DeviceToken: [["id","PK"],["userId","FK"],["token","UK"],["platform",""]],
+
+    Product: [["id","PK"],["name",""],["category",""],["garmentType",""],["layerRole",""],["gender",""],["price",""],["status",""]],
+    ProductImage: [["id","PK"],["productId","FK"],["imageUrl",""],["isMain",""],["colorName",""]],
+    Collection: [["id","PK"],["name","UK"],["slug","UK"],["isPublished",""],["displayOrder",""]],
+    ProductCollection: [["collectionId","PK"],["productId","PK"]],
+    SaleCampaign: [["id","PK"],["name",""],["discountPercent",""],["isActive",""],["startsAt",""],["endsAt",""]],
+    SaleCampaignItem: [["campaignId","PK"],["productId","PK"]],
+    Review: [["id","PK"],["userId","FK"],["productId","FK"],["orderId","FK"],["rating",""],["comment",""]],
+    ReviewReply: [["id","PK"],["reviewId","FK"],["userId","FK"],["content",""]],
+
+    CartItem: [["id","PK"],["userId","FK"],["productId","FK"],["color",""],["comboType",""],["quantity",""]],
+    RackItem: [["id","PK"],["userId","FK"],["productId","FK"]],
+    Order: [["id","PK"],["orderCode","UK"],["userId","FK"],["status",""],["totalVnd",""],["paymentStatus",""],["refundStatus",""],["couponCode",""]],
+    OrderItem: [["id","PK"],["orderId","FK"],["productId","FK"],["quantity",""],["color",""],["price",""],["lineTotalVnd",""]],
+    OrderIssue: [["id","PK"],["orderId","FK"],["orderItemId","FK"],["userId","FK"],["adminId","FK"],["reason",""],["status",""]],
+    Coupon: [["id","PK"],["code","UK"],["discountType",""],["discountValue",""],["usageLimit",""],["isActive",""]],
+    CouponRedemption: [["id","PK"],["couponId","FK"],["userId","FK"],["orderId","FK"]],
+    OrderQuote: [["id","PK"],["tokenHash","UK"],["userId","FK"],["consumedOrderId","FK"],["status",""],["expiresAt",""]],
+    OrderIdempotencyKey: [["id","PK"],["userId","FK"],["key",""],["orderId","FK"],["quoteId","FK"],["state",""]],
+    Subscription: [["id","PK"],["userId","FK"],["orderId","FK"],["tier",""],["status",""],["expiresAt",""]],
+
+    Payment: [["id","PK"],["orderId","FK"],["provider",""],["transactionId",""],["status",""],["amountVnd",""]],
+    Refund: [["id","PK"],["orderId","FK"],["paymentId","FK"],["kind",""],["amountVnd",""],["status",""]],
+    Shipment: [["id","PK"],["orderId","FK"],["provider",""],["providerOrderCode",""],["status",""],["shippingFeeVnd",""]],
+    OrderEvent: [["id","PK"],["orderId","FK"],["shipmentId","FK"],["type",""],["toStatus",""]],
+    DeliveryDispute: [["id","PK"],["orderId","FK"],["userId","FK"],["resolvedBy","FK"],["status",""],["resolution",""]],
+    WebhookEvent: [["id","PK"],["provider",""],["eventKey","UK"],["orderId","FK"],["paymentId","FK"],["shipmentId","FK"],["status",""]],
+    WebhookFailure: [["id","PK"],["provider",""],["reason",""],["orderCode",""],["resolved",""]],
+    OutboxEvent: [["id","PK"],["eventKey","UK"],["type",""],["aggregateType",""],["aggregateId",""],["status",""]],
+
+    TryOnResult: [["id","PK"],["userId","FK"],["productId","FK"],["category",""],["resultUrl",""],["cacheKey",""]],
+    StylistResult: [["id","PK"],["userId","FK"],["productId","FK"],["analysisResult",""],["cacheKey",""]],
+    LiveTryOnSession: [["id","PK"],["userId","FK"],["productId","FK"],["status",""],["credentialStatus",""],["reservedSeconds",""]],
+    LiveTryOnSessionItem: [["id","PK"],["sessionId","FK"],["productId","FK"],["layerRole",""],["isPrimary",""]],
+    LiveTryOnLease: [["id","PK"],["userId","FK"],["sessionId","FK"],["expiresAt",""]],
+    LiveTryOnBudget: [["id","PK"],["scopeKey",""],["userId","FK"],["date",""],["limitSeconds",""]],
+    LiveTryOnPolicyAudit: [["id","PK"],["actorId","FK"],["before",""],["after",""]],
+    DailyUsage: [["id","PK"],["userId","FK"],["action",""],["date",""],["count",""]],
+
+    ChatSession: [["id","PK"],["userId","FK"],["title",""],["updatedAt",""]],
+    ChatMessage: [["id","PK"],["sessionId","FK"],["role",""],["content",""],["suggestions",""]],
+    OrderConversation: [["id","PK"],["orderId","FK"],["customerId","FK"],["lastMessageAt",""]],
+    OrderChatMessage: [["id","PK"],["conversationId","FK"],["senderId","FK"],["senderRole",""],["content",""]],
+    Notification: [["id","PK"],["userId","FK"],["type",""],["title",""],["isRead",""]],
+
+    AppSetting: [["key","PK"],["value",""]],
+    GhnLocation: [["id","PK"],["level",""],["code",""],["parentCode",""],["name",""],["isActive",""]],
+    GhnCatalogMetadata: [["addressModel","PK"],["publishedGeneration",""],["catalogRevision",""]],
+    GhnCatalogPublication: [["id","PK"],["addressModel",""],["catalogRevision",""],["retainedUntil",""]],
+    GhnLocationSyncRun: [["id","PK"],["addressModel",""],["status",""],["startedAt",""]]
+  };
+
+  var GROUPS = [
+    { id: "identity", label: "Danh tính", h: "#bdd7ee",
+      m: ["User","UserAddress","Measurement","RefreshToken","PasswordResetToken","EmailVerificationToken","DeviceToken"] },
+    { id: "catalog", label: "Danh mục", h: "#c6e0b4",
+      m: ["Product","ProductImage","Collection","ProductCollection","SaleCampaign","SaleCampaignItem","Review","ReviewReply"] },
+    { id: "commerce", label: "Đơn hàng", h: "#d9d2e9",
+      m: ["Order","OrderItem","OrderIssue","Coupon","CouponRedemption","OrderQuote","OrderIdempotencyKey","Subscription","CartItem","RackItem"] },
+    { id: "money", label: "Thanh toán · Vận chuyển", h: "#f8cbad",
+      m: ["Payment","Refund","Shipment","OrderEvent","DeliveryDispute","WebhookEvent","WebhookFailure","OutboxEvent"] },
+    { id: "ai", label: "AI · Hạn mức", h: "#b4c7e7",
+      m: ["TryOnResult","StylistResult","LiveTryOnSession","LiveTryOnSessionItem","LiveTryOnLease","LiveTryOnBudget","LiveTryOnPolicyAudit","DailyUsage"] },
+    { id: "engage", label: "Chat · Thông báo", h: "#cfe2d8",
+      m: ["ChatSession","ChatMessage","OrderConversation","OrderChatMessage","Notification"] },
+    { id: "infra", label: "Hạ tầng", h: "#e2e2e2",
+      m: ["AppSetting","GhnLocation","GhnCatalogMetadata","GhnCatalogPublication","GhnLocationSyncRun"] }
+  ];
+
+  // a = phía "một", b = phía "nhiều" (b giữ khoá ngoại). ref: a giữ FK (tham chiếu mềm).
+  var RELS = [
+    ["User","Measurement","1:1","userId"],
+    ["User","UserAddress","1:N","userId"],
+    ["User","RefreshToken","1:N","userId"],
+    ["User","PasswordResetToken","1:N","userId"],
+    ["User","EmailVerificationToken","1:N","userId"],
+    ["User","DeviceToken","1:N","userId"],
+    ["User","CartItem","1:N","userId"],
+    ["User","RackItem","1:N","userId"],
+    ["User","Review","1:N","userId"],
+    ["User","ReviewReply","1:N","userId"],
+    ["User","Order","1:N","userId"],
+    ["User","OrderIssue","1:N","userId"],
+    ["User","OrderIssue","1:N","adminId"],
+    ["User","CouponRedemption","1:N","userId"],
+    ["User","OrderQuote","1:N","userId"],
+    ["User","OrderIdempotencyKey","1:N","userId"],
+    ["User","Subscription","1:N","userId"],
+    ["User","TryOnResult","1:N","userId"],
+    ["User","StylistResult","1:N","userId"],
+    ["User","LiveTryOnSession","1:N","userId"],
+    ["User","LiveTryOnLease","1:1","userId"],
+    ["User","LiveTryOnBudget","1:N","userId"],
+    ["User","LiveTryOnPolicyAudit","1:N","actorId"],
+    ["User","DailyUsage","1:N","userId"],
+    ["User","ChatSession","1:N","userId"],
+    ["User","Notification","1:N","userId"],
+    ["User","OrderConversation","1:N","customerId"],
+    ["User","OrderChatMessage","1:N","senderId"],
+    ["User","DeliveryDispute","1:N","userId"],
+    ["User","DeliveryDispute","1:N","resolvedBy"],
+
+    ["Product","ProductImage","1:N","productId"],
+    ["Product","ProductCollection","N:M","productId"],
+    ["Product","SaleCampaignItem","N:M","productId"],
+    ["Product","Review","1:N","productId"],
+    ["Product","RackItem","1:N","productId"],
+    ["Product","CartItem","1:N","productId"],
+    ["Product","OrderItem","1:N","productId"],
+    ["Product","TryOnResult","1:N","productId"],
+    ["Product","StylistResult","1:N","productId"],
+    ["Product","LiveTryOnSession","1:N","productId"],
+    ["Product","LiveTryOnSessionItem","1:N","productId"],
+    ["Collection","ProductCollection","N:M","collectionId"],
+    ["SaleCampaign","SaleCampaignItem","N:M","campaignId"],
+    ["Review","ReviewReply","1:N","reviewId"],
+
+    ["Order","OrderItem","1:N","orderId"],
+    ["Order","OrderIssue","1:N","orderId"],
+    ["Order","Payment","1:N","orderId"],
+    ["Order","Refund","1:N","orderId"],
+    ["Order","Shipment","1:N","orderId"],
+    ["Order","OrderEvent","1:N","orderId"],
+    ["Order","Subscription","1:N","orderId"],
+    ["Order","Review","1:N","orderId"],
+    ["Order","CouponRedemption","1:1","orderId"],
+    ["Order","OrderConversation","1:1","orderId"],
+    ["Order","DeliveryDispute","1:N","orderId"],
+    ["Order","OrderQuote","1:N","consumedOrderId"],
+    ["Order","OrderIdempotencyKey","1:N","orderId"],
+    ["OrderItem","OrderIssue","1:N","orderItemId"],
+    ["Coupon","CouponRedemption","1:N","couponId"],
+    ["Payment","Refund","1:N","paymentId"],
+    ["Shipment","OrderEvent","1:N","shipmentId"],
+    ["LiveTryOnSession","LiveTryOnLease","1:1","sessionId"],
+    ["LiveTryOnSession","LiveTryOnSessionItem","1:N","sessionId"],
+    ["ChatSession","ChatMessage","1:N","sessionId"],
+    ["OrderConversation","OrderChatMessage","1:N","conversationId"],
+
+    ["WebhookEvent","Order","ref","orderId"],
+    ["WebhookEvent","Payment","ref","paymentId"],
+    ["WebhookEvent","Shipment","ref","shipmentId"]
+  ];
+
+  var VIEWS = [
+    { id: "core", label: "Lõi đơn hàng", cols: [
+      ["User","OrderQuote"],
+      ["Product"],
+      ["Order","OrderItem","OrderIssue"],
+      ["Payment","Refund","Shipment","OrderEvent"],
+      ["Coupon","CouponRedemption"]
+    ]},
+    { id: "all", label: "Toàn bộ (51)", cols: GROUPS.map(function (g) { return g.m; }) }
+  ];
+  GROUPS.forEach(function (g) {
+    VIEWS.push({ id: g.id, label: g.label, cols: chunk(g.m, 6) });
+  });
+
+  function chunk(arr, n) {
+    var out = [], i;
+    for (i = 0; i < arr.length; i += n) out.push(arr.slice(i, i + n));
+    return out;
+  }
+
+  var hOf = {};
+  GROUPS.forEach(function (g) { g.m.forEach(function (n) { hOf[n] = g.h; }); });
+
+  var PAD_L = 40, PAD_T = 64, W = 236, H_H = 28, ROW = 21, GAP_X = 104, GAP_Y = 24;
+  var canvas = document.getElementById("canvas");
+  var nodesEl = document.getElementById("nodes");
+  var svg = document.getElementById("edges");
+  var viewEl = document.getElementById("view");
+
+  var state = { cols: [], pos: {}, colOf: {}, canvasW: 0, canvasH: 0, scale: 1 };
+
+  function rIndex(name, field) {
+    var f = ENT[name], i;
+    for (i = 0; i < f.length; i++) if (f[i][0] === field) return i;
+    return -1;
+  }
+  function rowY(name, field) {
+    var p = state.pos[name], i = rIndex(name, field);
+    if (!p) return 0;
+    if (i < 0) return p.y + H_H + 10;
+    return p.y + H_H + i * ROW + ROW / 2;
+  }
+  function entH(name) { return H_H + ENT[name].length * ROW; }
+
+  function layout(cols) {
+    state.cols = cols;
+    state.pos = {};
+    state.colOf = {};
+    var x = PAD_L, ci, i, maxH = 0;
+    for (ci = 0; ci < cols.length; ci++) {
+      var y = PAD_T;
+      for (i = 0; i < cols[ci].length; i++) {
+        var n = cols[ci][i];
+        state.pos[n] = { x: x, y: y, w: W, h: entH(n) };
+        state.colOf[n] = ci;
+        y += entH(n) + GAP_Y;
+      }
+      maxH = Math.max(maxH, y);
+      x += W + GAP_X;
+    }
+    state.canvasW = x - GAP_X + PAD_L;
+    state.canvasH = maxH + PAD_L;
+  }
+
+  function render() {
+    nodesEl.innerHTML = "";
+    svg.innerHTML = '<defs></defs>';
+
+    state.cols.forEach(function (col) {
+      col.forEach(function (name) {
+        var p = state.pos[name];
+        var el2 = document.createElement("div");
+        el2.className = "ent";
+        el2.style.left = p.x + "px";
+        el2.style.top = p.y + "px";
+        el2.style.width = p.w + "px";
+        el2.style.setProperty("--h", hOf[name] || "#bdd7ee");
+        var rows = ENT[name].map(function (f) {
+          return '<div class="r' + (f[1] === "FK" || f[1] === "PK" ? " fk" : "") + '">' +
+            '<span class="f">' + f[0] + '</span>' +
+            (f[1] ? '<span class="k">' + f[1] + '</span>' : "") + '</div>';
+        }).join("");
+        el2.innerHTML = '<div class="ent-h">' + name + '</div><div class="ent-b">' + rows + '</div>';
+        nodesEl.appendChild(el2);
+      });
+    });
+
+    canvas.style.width = state.canvasW + "px";
+    canvas.style.height = state.canvasH + "px";
+    svg.setAttribute("width", state.canvasW);
+    svg.setAttribute("height", state.canvasH);
+    svg.setAttribute("viewBox", "0 0 " + state.canvasW + " " + state.canvasH);
+
+    drawEdges();
+  }
+
+  function el(tag, attrs) {
+    var e = document.createElementNS("http://www.w3.org/2000/svg", tag);
+    for (var k in attrs) e.setAttribute(k, attrs[k]);
+    return e;
+  }
+
+  function drawEdges() {
+    var present = {};
+    state.cols.forEach(function (c) { c.forEach(function (n) { present[n] = true; }); });
+
+    var sameLane = {}, crossLane = 0;
+
+    RELS.forEach(function (r) {
+      var a = r[0], b = r[1], kind = r[2], field = r[3];
+      if (!present[a] || !present[b]) return;
+
+      var holder, other, ay, by, isRef = kind === "ref";
+      if (isRef) {
+        holder = a; other = b;
+        ay = rowY(holder, field);
+        by = state.pos[other].y + state.pos[other].h / 2;
+      } else {
+        holder = b; other = a;
+        by = rowY(holder, field);
+        ay = state.pos[other].y + state.pos[other].h / 2;
+      }
+
+      var ca = state.colOf[a], cb = state.colOf[b];
+      var pa = state.pos[a], pb = state.pos[b];
+      var pts = [];
+
+      if (ca === cb) {
+        var key = ca + ":" + Math.min(ay, by) + ":" + Math.max(ay, by);
+        sameLane[key] = (sameLane[key] || 0) + 1;
+        var off = Math.min(44, 14 + (sameLane[key] - 1) * 7);
+        var x1 = pa.x + pa.w + off;
+        pts = [[pa.x + pa.w, ay], [x1, ay], [x1, by], [pb.x + pb.w, by]];
+      } else {
+        var rightward = cb > ca;
+        var gx1 = rightward ? (pa.x + pa.w + GAP_X / 2) : (pa.x - GAP_X / 2);
+        var gx2 = rightward ? (pb.x - GAP_X / 2) : (pb.x + pb.w + GAP_X / 2);
+        var busY = 16 + (crossLane % 9) * 5;
+        crossLane++;
+        var xa2 = rightward ? pa.x + pa.w : pa.x;
+        var xb2 = rightward ? pb.x : pb.x + pb.w;
+        pts = [[xa2, ay], [gx1, ay], [gx1, busY], [gx2, busY], [gx2, by], [xb2, by]];
+      }
+
+      var d = "M" + pts[0][0] + "," + pts[0][1];
+      for (var i = 1; i < pts.length; i++) d += " L" + pts[i][0] + "," + pts[i][1];
+
+      svg.appendChild(el("path", {
+        d: d, fill: "none", stroke: "#5a5a5a", "stroke-width": 1.3,
+        "stroke-dasharray": isRef ? "5 4" : "none", "stroke-linejoin": "round"
+      }));
+
+      if (!isRef) {
+        drawOne(pts[0], pts[1], kind === "1:1");
+        drawManyOrOne(pts[pts.length - 1], pts[pts.length - 2], kind);
+      }
+    });
+  }
+
+  function drawOne(p, next, double) {
+    // p là điểm trên cạnh entity, next là điểm phía ngoài/kế tiếp
+    var dx = next[0] - p[0], dy = next[1] - p[1];
+    var len = Math.hypot(dx, dy) || 1;
+    var ux = dx / len, uy = dy / len;
+    var bars = double ? [9, 15] : [9];
+    bars.forEach(function (off) {
+      var cx = p[0] + ux * off, cy = p[1] + uy * off;
+      // vạch vuông góc
+      var px = -uy * 6, py = ux * 6;
+      svg.appendChild(el("path", {
+        d: "M" + (cx - px) + "," + (cy - py) + " L" + (cx + px) + "," + (cy + py),
+        stroke: "#5a5a5a", "stroke-width": 1.6, fill: "none"
+      }));
+    });
+  }
+
+  function drawManyOrOne(p, prev, kind) {
+    if (kind === "1:1") { drawOne(p, prev, true); return; }
+    var dx = prev[0] - p[0], dy = prev[1] - p[1];
+    var len = Math.hypot(dx, dy) || 1;
+    var ux = dx / len, uy = dy / len;       // hướng từ cạnh ra ngoài
+    var nx = -uy, ny = ux;                  // phương dọc theo cạnh
+    // chân vịt: 3 nhánh, gốc tại điểm cách cạnh 13px
+    var baseX = p[0] + ux * 13, baseY = p[1] + uy * 13;
+    [-5.5, 0, 5.5].forEach(function (s) {
+      svg.appendChild(el("path", {
+        d: "M" + baseX + "," + baseY + " L" + (p[0] + nx * s) + "," + (p[1] + ny * s),
+        stroke: "#5a5a5a", "stroke-width": 1.3, fill: "none"
+      }));
+    });
+  }
+
+  function scaleTo(s) {
+    state.scale = s;
+    canvas.style.transform = "scale(" + s + ")";
+    var holder = canvas.parentNode;
+    holder.style.width = state.canvasW * s + "px";
+    holder.style.height = Math.max(state.canvasH * s, viewEl.clientHeight) + "px";
+  }
+  function fit() {
+    var s = Math.min((viewEl.clientWidth - 12) / state.canvasW, (viewEl.clientHeight - 12) / state.canvasH);
+    scaleTo(Math.max(0.2, Math.min(1, s)));
+  }
+
+  function show(viewId) {
+    var v = VIEWS.filter(function (x) { return x.id === viewId; })[0];
+    layout(v.cols);
+    render();
+    scaleTo(1);
+    fit();
+    document.querySelectorAll("#views button").forEach(function (b) {
+      b.classList.toggle("on", b.dataset.v === viewId);
+    });
+    var total = 0;
+    v.cols.forEach(function (c) { total += c.length; });
+    document.getElementById("meta").textContent =
+      total + " bảng · " + document.querySelectorAll("#edges path").length + " đường";
+  }
+
+  var vb = document.getElementById("views");
+  VIEWS.forEach(function (v) {
+    var b = document.createElement("button");
+    b.dataset.v = v.id;
+    b.textContent = v.label;
+    b.addEventListener("click", function () { show(v.id); });
+    vb.appendChild(b);
+  });
+
+  document.getElementById("fit").addEventListener("click", fit);
+  document.getElementById("one").addEventListener("click", function () { scaleTo(1); });
+
+  show("core");
+})();
+</script>
+</body>
+</html>

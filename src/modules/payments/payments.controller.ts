@@ -27,6 +27,7 @@ import { RefundPaymentDto } from './dto/refund-payment.dto';
 import { FinalizeRefundDto } from './dto/finalize-refund.dto';
 import { UnmatchedTransactionsQueryDto } from './dto/unmatched-transactions-query.dto';
 import { SubscriptionHistoryQueryDto } from './dto/subscription-history-query.dto';
+import { SubscriptionQuoteQueryDto } from './dto/subscription-quote-query.dto';
 import { PaymentsService } from './payments.service';
 import { SubscriptionService } from './subscription.service';
 import { toZaloPayAck } from './zalopay/zalopay-ack.util';
@@ -264,6 +265,23 @@ export class PaymentsController {
   async getCurrentSubscription(@Req() req: Request, @CurrentUser() user: AuthenticatedUser) {
     const data = await this.subscriptionService.getCurrentSubscription(user.id);
     return buildApiResponse(req, 'SUBSCRIPTION_ME_SUCCESS', 'Lấy thông tin gói đăng ký thành công', data);
+  }
+
+  @Get('subscriptions/quote')
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth('access-token')
+  @ApiOperation({
+    summary: 'Báo giá gói trước khi thanh toán',
+    description:
+      'Trả giá niêm yết và số tiền thực thu. Nâng cấp giữa kỳ trả kèm breakdown proration để UI hiện đúng số tiền trước khi bấm thanh toán.',
+  })
+  async getSubscriptionQuote(
+    @Req() req: Request,
+    @CurrentUser() user: AuthenticatedUser,
+    @Query() query: SubscriptionQuoteQueryDto,
+  ) {
+    const data = await this.paymentsService.getSubscriptionQuote(user.id, query.targetTier);
+    return buildApiResponse(req, 'SUBSCRIPTION_QUOTE_SUCCESS', 'Lấy báo giá gói thành công', data);
   }
 
   @Get('subscriptions/history')

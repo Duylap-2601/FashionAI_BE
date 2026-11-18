@@ -255,6 +255,62 @@ describe('POST /api/payments/checkout (e2e)', () => {
     });
   });
 
+  describe('báo giá gói trước khi thanh toán', () => {
+    it('nâng cấp giữa kỳ trả net proration để UI hiện đúng số tiền', async () => {
+      prisma.subscription.findFirst.mockResolvedValue({
+        id: 'sub-active',
+        userId: AUTH_USER.id,
+        tier: UserTier.MEMBER,
+        status: 'ACTIVE',
+        expiresAt: new Date(Date.now() + 15 * 24 * 60 * 60 * 1000),
+      });
+
+      const res = await request(app.getHttpServer())
+        .get('/api/payments/subscriptions/quote')
+        .query({ targetTier: 'VIP' })
+        .expect(200);
+
+      expect(res.body.data).toMatchObject({
+        targetTier: 'VIP',
+        listPrice: 99000,
+        amount: 33000,
+        proration: {
+          oldTier: 'MEMBER',
+          newTier: 'VIP',
+          remainingDays: 15,
+          credit: 17000,
+          debit: 50000,
+          net: 33000,
+        },
+      });
+      // Chỉ báo giá, không được tạo đơn rác.
+      expect(prisma.order.create).not.toHaveBeenCalled();
+    });
+
+    it('user chưa có gói thì trả giá niêm yết, không kèm proration', async () => {
+      prisma.subscription.findFirst.mockResolvedValue(null);
+
+      const res = await request(app.getHttpServer())
+        .get('/api/payments/subscriptions/quote')
+        .query({ targetTier: 'VIP' })
+        .expect(200);
+
+      expect(res.body.data).toMatchObject({
+        targetTier: 'VIP',
+        listPrice: 99000,
+        amount: 99000,
+        proration: null,
+      });
+    });
+
+    it('từ chối gói FREE', async () => {
+      await request(app.getHttpServer())
+        .get('/api/payments/subscriptions/quote')
+        .query({ targetTier: 'FREE' })
+        .expect(400);
+    });
+  });
+
   describe('cổng thanh toán ZaloPay', () => {
     const ORDER_ID = '3f0e5a54-1f6f-4c0e-9a52-2a1f8f2c9b11';
     const minutesFromNow = (minutes: number) => new Date(Date.now() + minutes * 60_000);
@@ -514,6 +570,66 @@ describe('POST /api/payments/checkout (e2e)', () => {
             prorationSnapshot: expect.objectContaining({ net: 33000 }),
           }),
         }),
+      );
+    });
+
+    it('upgrade qua ZaloPay vẫn trả breakdown proration để FE xác nhận trước khi redirect', async () => {
+      prisma.user.findUnique.mockResolvedValue({
+        id: AUTH_USER.id,
+        tier: UserTier.MEMBER,
+      });
+      prisma.subscription.findFirst.mockImplementation(async (args: any) =>
+        args?.where?.status === 'SCHEDULED'
+          ? null
+          : {
+              id: 'sub-active',
+              userId: AUTH_USER.id,
+              tier: UserTier.MEMBER,
+              status: 'ACTIVE',
+              expiresAt: new Date(Date.now() + 15 * 24 * 60 * 60 * 1000),
+            },
+      );
+      prisma.order.create.mockImplementation(async ({ data }: any) => ({
+        id: 'order-upgrade-zalo',
+        userId: AUTH_USER.id,
+        status: OrderStatus.CREATED,
+        paymentStatus: PaymentStatus.PENDING,
+        ...data,
+      }));
+      prisma.order.update.mockImplementation(async ({ data }: any) => ({
+        id: 'order-upgrade-zalo',
+        ...data,
+      }));
+      prisma.payment.findMany.mockResolvedValue([]);
+      prisma.payment.create.mockResolvedValue({
+        id: 'pay-zalo',
+        orderId: 'order-upgrade-zalo',
+        provider: 'ZALOPAY',
+        status: PaymentStatus.PENDING,
+        providerPaymentId: '261102_12345678abcdef',
+        idempotencyKey: 'req-zalo',
+        paymentData: null,
+      });
+
+      const res = await request(app.getHttpServer())
+        .post('/api/payments/checkout')
+        .send({ targetTier: 'VIP', provider: 'ZALOPAY' })
+        .expect(200);
+
+      expect(res.body.data).toMatchObject({
+        provider: 'ZALOPAY',
+        amount: 33000,
+        proration: {
+          oldTier: 'MEMBER',
+          newTier: 'VIP',
+          remainingDays: 15,
+          credit: 17000,
+          debit: 50000,
+          net: 33000,
+        },
+      });
+      expect(zaloGateway.createPayment).toHaveBeenCalledWith(
+        expect.objectContaining({ amountVnd: 33000 }),
       );
     });
 
